@@ -51,3 +51,25 @@ Mapping of storage slots to their index in `database.bin`.
 - Note: `Index` points to the 1-word entry.
 
 These artifacts allow a PIR client to look up any account state or storage slot privately.
+
+## Statistics (Mainnet Snapshot)
+
+*As of Block #23,237,684 (Nov 23, 2025)*
+
+- **Total Unique Accounts**: 328,168,813
+- **Total Storage Slots**: 1,415,847,352
+- **Total Database Size**: ~87 GB
+- **Total Mapping Size**: ~87 GB
+
+## Update Strategy
+
+To keep the PIR database fresh without re-downloading the entire ~175GB dataset:
+
+1.  **Initial Sync**: Client downloads the full `database.bin` snapshot (once).
+2.  **Incremental Updates**:
+    *   A separate service monitors the chain for state changes.
+    *   It publishes a compact list of `(DatabaseIndex, NewValue)` for each block.
+    *   **Client Update**: The Plinko client updates its local hints using the XOR property:
+        `NewHint = OldHint XOR (OldVal at Index) XOR (NewVal at Index)`
+    *   This operation is $O(1)$ per changed state entry.
+
