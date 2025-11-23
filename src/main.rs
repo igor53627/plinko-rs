@@ -82,6 +82,16 @@ fn main() -> Result<()> {
     let limit = args.limit.unwrap_or(usize::MAX);
     let batch_size = args.batch_size;
 
+    // --- READ CHAIN INFO ---
+    println!("[{}] Reading Chain Info...", now());
+    let tx = db.tx()?;
+    let last_block = tx.cursor_read::<tables::CanonicalHeaders>()?
+        .last()?
+        .map(|(num, _hash)| num)
+        .unwrap_or(0);
+    println!("[{}] Database Tip: Block #{}", now(), last_block);
+    drop(tx);
+
     // --- PROCESS ACCOUNTS ---
     println!("[{}] Processing Accounts...", now());
     let mut count_acc = 0;
@@ -272,7 +282,8 @@ fn main() -> Result<()> {
         drop(tx);
     }
 
-    pb.finish_with_message(format!("Done! Acc: {}, Sto: {}, Total Indices: {}", count_acc, count_sto, total_indices));
+    pb.finish_and_clear();
+    println!("[{}] Done! Acc: {}, Sto: {}, Total Indices: {}", now(), count_acc, count_sto, total_indices);
     
     if let Some(mut writer) = db_writer { writer.flush()?; }
     if let Some(mut writer) = acc_map_writer { writer.flush()?; }
