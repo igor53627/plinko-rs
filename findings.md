@@ -1,10 +1,12 @@
 # Plinko Extractor: State Size & Performance Findings
 
-This document provides exact data sizes for the full Ethereum state (as of Nov 23, 2025) and estimates the client-side storage requirements for the Plinko PIR protocol.
+This document provides exact data sizes for the full Ethereum state and estimates the client-side storage requirements for the Plinko PIR protocol.
 
 ## 1. Ethereum State Statistics (Exact)
 
-Based on a full scan of the **Reth** node (`v1.8.2`) on `reth-onion-dev`:
+**Source**: Reth Archive Node (`v1.8.2`) on `reth-onion-dev`
+**Block Height**: **#23,237,684** (Mainnet)
+**Date**: Nov 23, 2025
 
 - **Total Unique Accounts ($N_{acc}$)**: **328,168,813**
 - **Total Storage Slots ($N_{sto}$)**: **1,415,847,352**
@@ -82,6 +84,17 @@ If we apply the "Concrete Efficiency" idea of **partially stateless nodes**:
 *   We can split the state (e.g., by address prefix).
 *   A node/client only maintains hints for the "slice" of the state they care about (e.g., 1/16th of the state).
 *   **Result**: Client storage drops from ~214 MB to **~13.4 MB**.
+
+## 4. Update Strategy
+
+The extractor produces a static snapshot at a specific block height. To handle new blocks efficiently without re-downloading the entire 175GB dataset:
+
+1.  **State Diffs**: A separate service monitors the chain for state changes (balance updates, storage writes).
+2.  **Incremental Updates**:
+    *   The server publishes a compact list of `(DatabaseIndex, NewValue)` for each block.
+    *   **Client Update**: The Plinko client updates its local hints using the XOR property:
+        $$ H_{new} = H_{old} \oplus \text{Val}_{old} \oplus \text{Val}_{new} $$
+    *   This operation is $O(1)$ per changed state entry and does not require access to the full database.
 
 ## Conclusion
 
