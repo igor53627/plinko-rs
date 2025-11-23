@@ -4,10 +4,10 @@ This document provides an extrapolation of data sizes for the full Ethereum stat
 
 ## 1. Ethereum State Extrapolation (2025)
 
-Based on direct queries from the **Reth** node (`v1.8.2`) on `reth-onion-dev`, we have the following exact counts for the Ethereum Mainnet state (as of current block height):
+Based on direct queries from the **Reth** node (`v1.8.2`) on `reth-onion-dev`, we have the following exact counts for the Ethereum Mainnet state (as of Nov 23, 2025):
 
-- **Total Unique Accounts ($N_{acc}$)**: **328,138,215** (Measured)
-- **Total Storage Slots ($N_{sto}$)**: **~1,150,000,000** (Estimated, scan ongoing)
+- **Total Unique Accounts ($N_{acc}$)**: **328,148,516** (Measured)
+- **Total Storage Slots ($N_{sto}$)**: **~1,150,000,000** (Estimated from scan duration)
 
 ### Processed Artifact Sizes
 
