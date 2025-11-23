@@ -36,8 +36,9 @@ A flat binary file containing 32-byte words.
   - Word 1: Balance
   - Word 2: Bytecode Hash
   - Word 3: Padding (Reserved)
-- **Storage Slots**: occupy 1 entry (32 bytes).
+- **Storage Slots**: Each individual storage slot occupies 1 entry (32 bytes).
   - Word 0: Storage Value
+  - *Note*: If an account has multiple storage slots (e.g., a smart contract), each slot is stored as a separate, independent entry in this flat file. The `storage-mapping.bin` allows looking up the index for any specific `(Address, SlotKey)` pair.
 
 ### 2. `account-mapping.bin`
 Mapping of addresses to their index in `database.bin`.
