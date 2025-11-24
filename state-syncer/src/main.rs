@@ -2,18 +2,22 @@ mod config;
 mod db;
 mod iprf;
 mod update_manager;
+mod rpc;
 
 use clap::Parser;
 use config::Config;
 use db::{Database, DB_ENTRY_U64_COUNT};
 use update_manager::{UpdateManager, DBUpdate, HintDelta};
+use rpc::EthClient;
 use eyre::Result;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 use std::path::Path;
 use std::fs::File;
 use std::io::Write;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::io::Read;
 
 #[derive(Debug, Deserialize)]
 struct Metadata {
@@ -27,14 +31,25 @@ async fn main() -> Result<()> {
 
     info!("State Syncer starting (rpc={}, simulated={})", cfg.rpc_url, cfg.simulated);
 
+    let rpc_client = if !cfg.simulated {
+        Some(EthClient::new(cfg.rpc_url.clone()))
+    } else {
+        None
+    };
+
     // 1. Start Metrics/Health Server
     let metrics_port = cfg.http_port;
     tokio::spawn(async move {
         start_metrics_server(metrics_port).await;
     });
 
-    // 2. Load Address Mapping (Mock for now as we don't use it in simulation)
-    // info!("Loading address mapping from {:?}", cfg.address_mapping_path);
+    // 2. Load Address Mapping
+    let mut address_mapping = HashMap::new();
+    if !cfg.simulated {
+        info!("Loading address mapping from {:?}", cfg.address_mapping_path);
+        address_mapping = load_address_mapping(&cfg.address_mapping_path)?;
+        info!("Loaded {} addresses", address_mapping.len());
+    }
     
     // 3. Load Database
     info!("Loading database from {:?}", cfg.database_path);
@@ -68,8 +83,21 @@ async fn main() -> Result<()> {
         let next_block = last_block + 1;
         
         // Check head block from RPC
-        if !cfg.simulated {
-             // TODO: Implement RPC head check
+        if let Some(client) = &rpc_client {
+             match client.block_number() {
+                 Ok(head) => {
+                     if head < next_block {
+                         // info!("Waiting for block {}. Head is {}", next_block, head);
+                         tokio::time::sleep(cfg.poll_interval()).await;
+                         continue;
+                     }
+                 }
+                 Err(e) => {
+                     warn!("RPC error: {}. Retrying...", e);
+                     tokio::time::sleep(cfg.poll_interval()).await;
+                     continue;
+                 }
+             }
         }
 
         // Fetch updates
@@ -84,8 +112,14 @@ async fn main() -> Result<()> {
                 }
             }).collect()
         } else {
-            // TODO: Implement RPC fetch
-            vec![]
+            match rpc::fetch_updates_rpc(rpc_client.as_ref().unwrap(), next_block, &manager, &address_mapping) {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("Failed to fetch updates for block {}: {}. Retrying...", next_block, e);
+                    tokio::time::sleep(cfg.poll_interval()).await;
+                    continue;
+                }
+            }
         };
 
         if updates.is_empty() {
@@ -94,7 +128,9 @@ async fn main() -> Result<()> {
                 last_block = next_block;
                 continue;
             } else {
-                tokio::time::sleep(cfg.poll_interval()).await;
+                info!("Block {}: No updates found", next_block);
+                last_block = next_block;
+                // Don't sleep, catch up fast
                 continue;
             }
         }
@@ -119,6 +155,28 @@ async fn main() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await; // Fast simulation
         }
     }
+}
+
+fn load_address_mapping(path: &Path) -> Result<HashMap<String, u64>> {
+    let mut file = std::io::BufReader::new(File::open(path)?);
+    let mut map = HashMap::new();
+    
+    // Format: Address (20 bytes) || Index (4 bytes)
+    let mut buf = [0u8; 24];
+    loop {
+        match file.read_exact(&mut buf) {
+            Ok(_) => {
+                let addr_bytes = &buf[0..20];
+                let idx_bytes = &buf[20..24];
+                let addr = hex::encode(addr_bytes);
+                let idx = u32::from_le_bytes(idx_bytes.try_into().unwrap()) as u64;
+                map.insert(addr, idx);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(map)
 }
 
 fn simulate_updates(db_size: u64, block: u64) -> Vec<(u64, [u64; 4])> {
