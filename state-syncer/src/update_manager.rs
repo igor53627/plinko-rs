@@ -1,13 +1,8 @@
 use crate::db::{Database, DB_ENTRY_U64_COUNT};
-use crate::iprf::Iprf;
 use std::time::Instant;
-use rand::RngCore;
 
 pub struct UpdateManager<'a> {
     db: &'a mut Database,
-    iprf: Iprf,
-    use_cache_mode: bool,
-    index_to_hint: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -18,43 +13,19 @@ pub struct DBUpdate {
 }
 
 #[derive(Debug)]
-pub struct HintDelta {
-    pub hint_set_id: u64,
-    pub is_backup_set: bool,
+pub struct AccountDelta {
+    pub account_index: u64,
     pub delta: [u64; DB_ENTRY_U64_COUNT],
 }
 
 impl<'a> UpdateManager<'a> {
     pub fn new(db: &'a mut Database) -> Self {
-        // Generate random key for now (per Go implementation)
-        let mut key = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut key);
-        
-        let iprf = Iprf::new(key, db.num_entries, db.set_size);
-
-        Self { 
-            db, 
-            iprf,
-            use_cache_mode: false,
-            index_to_hint: Vec::new(),
-        }
+        Self { db }
     }
 
-    pub fn enable_cache_mode(&mut self) {
+    pub fn apply_updates(&mut self, updates: &[DBUpdate]) -> (Vec<AccountDelta>, std::time::Duration) {
         let start = Instant::now();
-        let db_size = self.db.num_entries;
-        self.index_to_hint = vec![0; db_size as usize];
-        
-        for i in 0..db_size {
-            self.index_to_hint[i as usize] = self.iprf.forward(i);
-        }
-        self.use_cache_mode = true;
-        tracing::info!("Cache mode enabled in {:?}", start.elapsed());
-    }
-
-    pub fn apply_updates(&mut self, updates: &[DBUpdate]) -> (Vec<HintDelta>, std::time::Duration) {
-        let start = Instant::now();
-        let mut deltas = Vec::new();
+        let mut deltas = Vec::with_capacity(updates.len());
 
         for update in updates {
             // XOR Difference
@@ -66,16 +37,9 @@ impl<'a> UpdateManager<'a> {
             // Apply update to DB
             self.db.update(update.index, update.new_value);
 
-            // Find affected hint set
-            let hint_set_id = if self.use_cache_mode && (update.index as usize) < self.index_to_hint.len() {
-                self.index_to_hint[update.index as usize]
-            } else {
-                self.iprf.forward(update.index)
-            };
-            
-            deltas.push(HintDelta {
-                hint_set_id,
-                is_backup_set: false,
+            // Output Raw Delta (Client handles IPRF/Hint mapping)
+            deltas.push(AccountDelta {
+                account_index: update.index,
                 delta: diff,
             });
         }

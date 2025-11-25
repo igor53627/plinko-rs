@@ -6,6 +6,7 @@ use crate::update_manager::DBUpdate;
 use crate::db::DB_ENTRY_U64_COUNT;
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct EthClient {
     url: String,
     client: Client,
@@ -184,4 +185,51 @@ pub fn fetch_updates_rpc(client: &EthClient, block_number: u64, manager: &crate:
     }
     
     Ok(updates)
+}
+
+pub fn fetch_touched_states(client: &EthClient, block_number: u64, address_mapping: &AddressMapping) -> Result<Vec<(u64, u128)>> {
+    // 1. Get block transactions
+    let txs = client.get_block_transactions(block_number)?;
+    
+    let mut addresses = HashSet::new();
+    for tx in txs {
+        addresses.insert(tx.from.to_lowercase());
+        if let Some(to) = tx.to {
+            addresses.insert(to.to_lowercase());
+        }
+    }
+
+    let addrs: Vec<String> = addresses.into_iter().collect();
+    
+    // Filter and Map to Indices
+    // We store (StringAddr, Index) pairs to query RPC then return Index
+    let mut tracked = Vec::with_capacity(addrs.len());
+    for a in &addrs {
+        if let Some(idx) = address_mapping.get(a) {
+            tracked.push((a.clone(), idx));
+        }
+    }
+
+    if tracked.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Batch fetch balances
+    let hex_num = format!("0x{:x}", block_number);
+    let params: Vec<serde_json::Value> = tracked.iter()
+        .map(|(a, _)| json!([a, hex_num]))
+        .collect();
+
+    let balances: Vec<Result<String>> = client.call_batch("eth_getBalance", params)?;
+
+    let mut results = Vec::with_capacity(tracked.len());
+    for (i, (_, idx)) in tracked.iter().enumerate() {
+        if let Ok(hex_balance) = &balances[i] {
+            if let Ok(balance) = u128::from_str_radix(hex_balance.trim_start_matches("0x"), 16) {
+                results.push((*idx, balance));
+            }
+        }
+    }
+    
+    Ok(results)
 }

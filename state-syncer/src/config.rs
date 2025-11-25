@@ -55,6 +55,10 @@ pub struct Config {
     /// Publish a snapshot every N processed blocks (0 disables)
     #[arg(long, env = "PLINKO_STATE_SNAPSHOT_EVERY", default_value = "0")]
     pub snapshot_every: u64,
+
+    /// Number of concurrent block fetches
+    #[arg(long, env = "PLINKO_STATE_CONCURRENCY", default_value = "10")]
+    pub concurrency: usize,
 }
 
 impl Config {
