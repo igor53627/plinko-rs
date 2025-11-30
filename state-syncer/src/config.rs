@@ -9,7 +9,7 @@ pub struct Config {
     pub database_path: PathBuf,
 
     /// Input mapping file to copy into the public artifacts volume
-    #[arg(long, env = "PLINKO_STATE_ADDRESS_MAPPING_PATH", default_value = "/data/address-mapping.bin")]
+    #[arg(long, env = "PLINKO_STATE_ADDRESS_MAPPING_PATH", default_value = "/data/account-mapping.bin")]
     pub address_mapping_path: PathBuf,
 
     /// Root directory for artifacts served by the CDN mock
@@ -67,7 +67,7 @@ impl Config {
     }
 
     pub fn public_address_mapping_path(&self) -> PathBuf {
-        self.public_root.join("address-mapping.bin")
+        self.public_root.join("account-mapping.bin")
     }
     
     pub fn poll_interval(&self) -> Duration {
