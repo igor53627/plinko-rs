@@ -144,6 +144,11 @@ fn main() -> Result<()> {
             }
 
             // --- WRITE DATABASE ENTRY ---
+            // Account layout: 3 words (96 bytes)
+            //   Word 0: Nonce (u64 in first 8 bytes, zero-padded to 32)
+            //   Word 1: Balance (u256, 32 bytes LE)
+            //   Word 2: Bytecode Hash (32 bytes)
+            // Note: Previously used 4 words with padding, removed to reduce N by ~12%
             if let Some(writer) = db_writer.as_mut() {
                 // 1. Nonce (u64 -> 32 bytes)
                 let mut nonce_bytes = [0u8; 32];
@@ -156,9 +161,6 @@ fn main() -> Result<()> {
                 // 3. Bytecode Hash (Option<B256> -> 32 bytes)
                 let code_hash = account.bytecode_hash.unwrap_or_default();
                 writer.write_all(code_hash.as_slice())?;
-                
-                // 4. Padding (Reserved / StorageRoot placeholder)
-                writer.write_all(&[0u8; 32])?;
             }
 
             // --- WRITE MAPPING ---
@@ -168,7 +170,7 @@ fn main() -> Result<()> {
                 writer.write_all(&(total_indices as u32).to_le_bytes())?;
             }
 
-            total_indices += 4;
+            total_indices += 3; // 3 words per account
             count_acc += 1;
             batch_count += 1;
             current_acc_key = Some(address);
