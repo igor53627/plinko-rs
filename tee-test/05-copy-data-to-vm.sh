@@ -15,14 +15,24 @@ echo "=== Copying data to SEV-SNP VM ==="
 echo
 
 echo "1. Waiting for VM SSH to be ready..."
+SSH_READY=false
 for i in {1..30}; do
+    # Note: StrictHostKeyChecking=no is used for automated test environments.
+    # In production, use known_hosts or SSH key pinning for MITM protection.
     if ssh -o ConnectTimeout=2 -o StrictHostKeyChecking=no -p $SSH_PORT ubuntu@$VM_HOST "echo ok" 2>/dev/null; then
         echo "   SSH ready!"
+        SSH_READY=true
         break
     fi
     echo "   Waiting... ($i/30)"
     sleep 5
 done
+
+if [[ "$SSH_READY" != "true" ]]; then
+    echo "Error: Failed to connect to VM after 30 attempts"
+    echo "Make sure the VM is running (./04-create-vm.sh)"
+    exit 1
+fi
 
 echo
 echo "2. Creating /mnt/plinko directory in VM..."

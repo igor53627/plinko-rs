@@ -13,7 +13,7 @@ echo
 
 # Check if we are in an SEV-SNP guest
 echo "1. Checking SEV-SNP guest status..."
-if [[ -f /sys/kernel/security/sev ]]; then
+if [[ -d /sys/kernel/security/sev ]]; then
     echo "   SEV info available"
     cat /sys/kernel/security/sev/* 2>/dev/null || true
 elif dmesg 2>/dev/null | grep -qi "SEV-SNP"; then

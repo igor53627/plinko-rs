@@ -7,6 +7,8 @@ cd "$SCRIPT_DIR"
 
 IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 IMAGE_FILE="ubuntu-24.04-cloudimg.qcow2"
+IMAGE_ORIG="noble-server-cloudimg-amd64.img"
+CHECKSUMS_URL="https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
 DISK_FILE="vm-disk.qcow2"
 
 echo "=== Downloading Ubuntu Cloud Image ==="
@@ -17,6 +19,23 @@ if [[ -f "$IMAGE_FILE" ]]; then
 else
     echo "Downloading from $IMAGE_URL..."
     wget -O "$IMAGE_FILE" "$IMAGE_URL"
+    
+    echo "Downloading checksums for verification..."
+    wget -q -O SHA256SUMS "$CHECKSUMS_URL"
+    
+    # Extract expected checksum for the image
+    EXPECTED_SUM=$(grep "$IMAGE_ORIG" SHA256SUMS | awk '{print $1}')
+    ACTUAL_SUM=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
+    
+    if [[ "$EXPECTED_SUM" != "$ACTUAL_SUM" ]]; then
+        echo "Error: Image checksum verification failed!"
+        echo "  Expected: $EXPECTED_SUM"
+        echo "  Actual:   $ACTUAL_SUM"
+        rm -f "$IMAGE_FILE"
+        exit 1
+    fi
+    echo "✓ Image checksum verified"
+    rm -f SHA256SUMS
 fi
 
 echo

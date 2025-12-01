@@ -38,10 +38,27 @@ echo
 if [[ ! -f /sys/module/kvm_amd/parameters/sev_snp ]] || [[ $(cat /sys/module/kvm_amd/parameters/sev_snp) != "Y" ]]; then
     echo "Warning: SEV-SNP not detected, running in regular mode for testing"
     SEV_OPTS=""
+    MACHINE_OPTS="q35"
 else
     echo "SEV-SNP detected, enabling confidential computing"
-    # SEV-SNP guest policy: 0x30000 = require SNP + minimum version
-    SEV_OPTS="-object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1 -machine memory-encryption=sev0"
+    # SEV-SNP guest configuration:
+    # - cbitpos=51: C-bit position for memory encryption (EPYC standard)
+    # - reduced-phys-bits=1: Reduce physical address bits due to C-bit encryption
+    SEV_OPTS="-object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1"
+    MACHINE_OPTS="q35,memory-encryption=sev0"
+fi
+
+# Validate prerequisites before launching
+if [[ ! -f "$DISK" ]]; then
+    echo "Error: VM disk not found: $DISK"
+    echo "Run ./03-download-image.sh first"
+    exit 1
+fi
+
+if [[ ! -f "$CLOUDINIT" ]]; then
+    echo "Error: cloud-init ISO not found: $CLOUDINIT"
+    echo "Run ./03-download-image.sh first"
+    exit 1
 fi
 
 echo "Starting QEMU..."
@@ -53,7 +70,7 @@ qemu-system-x86_64 \
     -cpu EPYC-v4 \
     -smp "$VCPUS" \
     -m "$MEMORY" \
-    -machine q35 \
+    -machine "$MACHINE_OPTS" \
     -drive if=pflash,format=raw,unit=0,file="$OVMF_CODE",readonly=on \
     -drive if=pflash,format=raw,unit=1,file=./ovmf-vars.fd \
     -drive file="$DISK",format=qcow2,if=virtio \
