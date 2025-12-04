@@ -60,7 +60,8 @@ impl CuckooTable {
             self.table[pos] = Some(current);
             current = evicted;
         }
-        // Return the element that couldn't be placed (original input, not an evicted one)
+        // Return the element that couldn't be placed. After the eviction chain,
+        // this is the single key not in the table (may be original input or displaced).
         Err(current)
     }
 
@@ -141,17 +142,17 @@ fn main() {
         let start = Instant::now();
         let mut cuckoo = CuckooTable::new(n);
         let mut failed = 0;
-        let mut displaced_elements = Vec::new();
+        let mut unplaced_elements = Vec::new();
         for (addr, idx) in &entries {
-            if let Err(displaced) = cuckoo.insert(*addr, *idx) {
-                // Collect displaced elements - in production we'd rehash with new seeds
-                displaced_elements.push(displaced);
+            if let Err(unplaced) = cuckoo.insert(*addr, *idx) {
+                // Collect elements that couldn't be placed - in production we'd rehash
+                unplaced_elements.push(unplaced);
                 failed += 1;
             }
         }
-        if !displaced_elements.is_empty() {
-            eprintln!("Warning: {} insertions failed, {} elements displaced (would trigger rehash in production)",
-                     failed, displaced_elements.len());
+        if !unplaced_elements.is_empty() {
+            eprintln!("Warning: {} insertions failed, {} elements unplaced (would trigger rehash in production)",
+                     failed, unplaced_elements.len());
         }
         let cuckoo_build_time = start.elapsed();
 
