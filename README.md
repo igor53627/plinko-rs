@@ -138,7 +138,7 @@ We maintain consistency between three sources:
 
 **Key design decision**: The paper doesn't specify the exact binomial sampling algorithm. We use a simple integer-arithmetic sampler matching the Coq formalization:
 
-```
+```text
 binomial_sample(count, num, denom, prf_output) = (count * num + (prf_output mod (denom + 1))) / denom
 ```
 

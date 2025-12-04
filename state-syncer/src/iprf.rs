@@ -25,6 +25,7 @@ pub struct SwapOrNot {
 
 impl SwapOrNot {
     pub fn new(key: PrfKey128, domain: u64) -> Self {
+        assert!(domain > 0, "SwapOrNot domain must be positive");
         let cipher = Aes128::new(&GenericArray::from(key));
         // ~6 * log2(N) rounds for full security
         let num_rounds = ((domain as f64).log2().ceil() as usize) * 6 + 6;
