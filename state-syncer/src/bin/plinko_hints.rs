@@ -15,6 +15,9 @@
 //! - **XOF mode** (`--xof`): One BLAKE3-XOF stream per block, sliced for all hints
 //!   - Significantly faster but changes the PRF structure
 //!   - Should be reviewed before production use
+//! - **AES mode** (`--aes`): AES-CTR stream cipher using AES-NI hardware acceleration
+//!   - Fastest on CPUs with AES-NI support
+//!   - Uses AES-128-CTR for PRF stream generation
 
 use std::time::Instant;
 use std::path::PathBuf;
@@ -25,6 +28,9 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use blake3::OutputReader;
+use aes::cipher::{KeyIvInit, StreamCipher};
+
+type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 
 const WORD_SIZE: usize = 32;
 const BYTES_PER_HINT: usize = 9; // 1 byte control + 8 bytes for beta
@@ -56,6 +62,11 @@ struct Args {
     /// Faster but changes PRF structure - review before production use.
     #[arg(long, default_value = "false")]
     xof: bool,
+
+    /// Use AES-CTR mode: AES-NI accelerated stream cipher instead of BLAKE3.
+    /// Fastest on CPUs with AES-NI support.
+    #[arg(long, default_value = "false")]
+    aes: bool,
 }
 
 fn block_key(master_seed: &[u8; 32], alpha: u64) -> [u8; 32] {
@@ -84,6 +95,18 @@ fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
     for i in 0..32 {
         dst[i] ^= src[i];
     }
+}
+
+/// Derive AES-128 key and IV from master seed and block index
+fn aes_block_key_iv(master_seed: &[u8; 32], alpha: u64) -> ([u8; 16], [u8; 16]) {
+    let mut hasher = blake3::Hasher::new_keyed(master_seed);
+    hasher.update(b"plinko_aes_block");
+    hasher.update(&alpha.to_le_bytes());
+    let hash = hasher.finalize();
+    let bytes = hash.as_bytes();
+    let key: [u8; 16] = bytes[0..16].try_into().unwrap();
+    let iv: [u8; 16] = bytes[16..32].try_into().unwrap();
+    (key, iv)
 }
 
 /// Find a divisor of n that is closest to target
@@ -203,6 +226,60 @@ fn process_block_xof(
     (partial_hints, xor_count)
 }
 
+/// Process a single block using AES-CTR mode - hardware accelerated via AES-NI
+fn process_block_aes(
+    alpha: usize,
+    db_bytes: &[u8],
+    block_size_bytes: usize,
+    w: usize,
+    num_hints: usize,
+    master_seed: &[u8; 32],
+) -> (Vec<[u8; 32]>, u64) {
+    let block_start = alpha * block_size_bytes;
+    let block_bytes = &db_bytes[block_start..block_start + block_size_bytes];
+
+    let mut partial_hints = vec![[0u8; 32]; num_hints];
+    let mut xor_count = 0u64;
+
+    // Derive AES key and IV for this block
+    let (key, iv) = aes_block_key_iv(master_seed, alpha as u64);
+    let mut cipher = Aes128Ctr::new(&key.into(), &iv.into());
+    
+    // Generate AES-CTR stream for all hints
+    let total_bytes = num_hints * BYTES_PER_HINT;
+    let mut aes_buf = vec![0u8; total_bytes];
+    cipher.apply_keystream(&mut aes_buf);
+
+    for j in 0..num_hints {
+        let offset = j * BYTES_PER_HINT;
+        let control = aes_buf[offset];
+        
+        // Bit 0 determines inclusion (Bernoulli 1/2)
+        let include = (control & 1) == 1;
+        if !include {
+            continue;
+        }
+
+        // Derive offset beta from next 8 bytes
+        let rand64 = u64::from_le_bytes(
+            aes_buf[offset + 1..offset + 9].try_into().unwrap()
+        );
+        let beta = (rand64 as usize) % w;
+
+        // Fetch the 32-byte entry at DB[alpha * w + beta]
+        let entry_offset = beta * WORD_SIZE;
+        let entry: [u8; 32] = block_bytes[entry_offset..entry_offset + WORD_SIZE]
+            .try_into()
+            .unwrap();
+
+        // XOR into partial hint[j]
+        xor_32(&mut partial_hints[j], &entry);
+        xor_count += 1;
+    }
+
+    (partial_hints, xor_count)
+}
+
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
@@ -215,7 +292,7 @@ fn main() -> eyre::Result<()> {
     }
     let num_threads = rayon::current_num_threads();
     
-    let mode_str = if args.xof { "XOF" } else { "Standard" };
+    let mode_str = if args.aes { "AES-CTR" } else if args.xof { "XOF" } else { "Standard" };
     println!("Plinko PIR Hint Generator (Parallel, {} mode)", mode_str);
     println!("================================================");
     println!("Database: {:?}", args.db_path);
@@ -273,15 +350,18 @@ fn main() -> eyre::Result<()> {
     }
 
     // Estimate work
-    let total_prf_calls = if args.xof {
-        c as u64 // One XOF call per block
+    let total_prf_calls = if args.xof || args.aes {
+        c as u64 // One stream per block
     } else {
         (c as u64) * (num_hints as u64) // One hash per (block, hint)
     };
     let expected_xors = ((c as u64) * (num_hints as u64)) / 2; // Bernoulli(1/2)
     
     println!("\nEstimated work:");
-    if args.xof {
+    if args.aes {
+        println!("  AES-CTR streams: {} (one per block)", c);
+        println!("  AES-CTR bytes: {:.2e}", (c * num_hints * BYTES_PER_HINT) as f64);
+    } else if args.xof {
         println!("  XOF streams: {} (one per block)", c);
         println!("  XOF bytes: {:.2e}", (c * num_hints * BYTES_PER_HINT) as f64);
     } else {
@@ -308,12 +388,22 @@ fn main() -> eyre::Result<()> {
 
     let progress_counter = AtomicU64::new(0);
     let use_xof = args.xof;
+    let use_aes = args.aes;
 
     // Parallel map-reduce over blocks
     let (hints, total_xors) = (0..c)
         .into_par_iter()
         .map(|alpha| {
-            let result = if use_xof {
+            let result = if use_aes {
+                process_block_aes(
+                    alpha,
+                    db_bytes,
+                    block_size_bytes,
+                    w,
+                    num_hints,
+                    &master_seed,
+                )
+            } else if use_xof {
                 process_block_xof(
                     alpha,
                     db_bytes,
@@ -364,7 +454,11 @@ fn main() -> eyre::Result<()> {
     println!("\n=== Results ===");
     println!("Time Taken: {:.2?}", duration);
     println!("Throughput: {:.2} MB/s (raw DB)", throughput_mb);
-    if args.xof {
+    if args.aes {
+        let aes_streams_per_sec = c as f64 / duration.as_secs_f64();
+        let aes_bytes_per_sec = (c * num_hints * BYTES_PER_HINT) as f64 / duration.as_secs_f64();
+        println!("AES-CTR streams: {:.2}/s ({:.2} GB/s output)", aes_streams_per_sec, aes_bytes_per_sec / 1e9);
+    } else if args.xof {
         let xof_streams_per_sec = c as f64 / duration.as_secs_f64();
         let xof_bytes_per_sec = (c * num_hints * BYTES_PER_HINT) as f64 / duration.as_secs_f64();
         println!("XOF streams: {:.2}/s ({:.2} GB/s output)", xof_streams_per_sec, xof_bytes_per_sec / 1e9);
