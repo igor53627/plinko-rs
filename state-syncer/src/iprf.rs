@@ -24,6 +24,16 @@ pub struct SwapOrNot {
 }
 
 impl SwapOrNot {
+    /// Creates a new SwapOrNot PRP instance for a finite domain.
+    ///
+    /// The `key` is a 16-byte AES-128 key used to initialize the internal cipher.
+    /// `domain` is the size of the finite domain (must be greater than zero); the
+    /// PRP operates over the integer set [0, domain).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `domain` is zero.
+    ///
     pub fn new(key: PrfKey128, domain: u64) -> Self {
         assert!(domain > 0, "SwapOrNot domain must be positive");
         let cipher = Aes128::new(&GenericArray::from(key));
@@ -37,7 +47,19 @@ impl SwapOrNot {
         }
     }
 
-    /// Derive round key K_i using AES
+    /// Derives the round-specific key K_i from the PRP key and domain using AES.
+    ///
+    /// The function encrypts a 16-byte block formed from `round` (big-endian u64) and `domain`
+    /// (big-endian u64), interprets the upper 64 bits of the ciphertext as a u64, and reduces
+    /// it modulo `self.domain` to produce a value in the domain range.
+    ///
+    /// # Parameters
+    ///
+    /// - `round`: Round index (0-based) for which to derive the round key.
+    ///
+    /// # Returns
+    ///
+    /// `K_i` — a `u64` in the range `0..self.domain` representing the derived round key.
     fn derive_round_key(&self, round: usize) -> u64 {
         let mut input = [0u8; 16];
         input[0..8].copy_from_slice(&(round as u64).to_be_bytes());
@@ -49,7 +71,7 @@ impl SwapOrNot {
         u64::from_be_bytes(block[0..8].try_into().unwrap()) % self.domain
     }
 
-    /// PRF for swap decision - returns a single bit
+    /// Derives the single-bit pseudorandom decision used to choose whether to swap in a Swap-or-Not round.
     fn prf_bit(&self, round: usize, canonical: u64) -> bool {
         let mut input = [0u8; 16];
         input[0..8].copy_from_slice(&(round as u64 | 0x8000000000000000).to_be_bytes());
@@ -61,7 +83,13 @@ impl SwapOrNot {
         (block[0] & 1) == 1
     }
 
-    /// Single round of Swap-or-Not (involutory - self-inverse)
+    /// Applies one round of the Swap-or-Not permutation to a value within the domain.
+    ///
+    /// The round computes a partner value K_i - x (mod N) using a round-specific key,
+    /// chooses the canonical representative between the input and its partner, and
+    /// uses a round-dependent PRF bit to decide whether to swap to the partner or
+    /// keep the input. The operation is involutory: applying the same round again
+    /// undoes the effect.
     fn round(&self, round_num: usize, x: u64) -> u64 {
         let k_i = self.derive_round_key(round_num);
         // Partner: K_i - X mod N
@@ -106,6 +134,11 @@ pub struct Iprf {
 }
 
 impl Iprf {
+    /// Creates a new iPRF instance for input domain `n` and output range `m`.
+    ///
+    /// The constructor derives an internal AES-128 cipher from `key`, computes the PMNS
+    /// tree depth as ceil(log2(m)), and derives a separate 128-bit key (SHA-256(key || "prp"))
+    /// to initialize the internal Swap-or-Not PRP over the input domain `n`.
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
         let tree_depth = (m as f64).log2().ceil() as usize;
         let cipher = Aes128::new(&GenericArray::from(key));
@@ -140,7 +173,12 @@ impl Iprf {
         self.trace_ball(permuted, self.domain, self.range)
     }
 
-    /// Inverse evaluation: returns all x such that forward(x) = y
+    /// Compute all input values `x` in the domain that map to the given output `y`.
+    ///
+    /// If `y` is outside the iPRF's output range, an empty vector is returned. The returned
+    /// vector contains every `x` in `[0, self.domain)` such that `self.forward(x) == y` (order not specified).
+    ///
+    /// Note: Multiple preimages per output are possible since this is an iPRF, not a bijection.
     pub fn inverse(&self, y: u64) -> Vec<u64> {
         if y >= self.range {
             return vec![];
@@ -169,7 +207,11 @@ impl Iprf {
         (count * num + scaled) / denom
     }
 
-    /// PMNS forward: trace which bin ball x lands in
+    /// Determines which PMNS bin a ball falls into for a given ball index.
+    ///
+    /// Given a total of `n` balls partitioned into `m` bins, performs the PMNS forward
+    /// trace for ball with index `x_prime` (0-based) and returns the 0-based bin index
+    /// that the ball is assigned to. If `m == 1`, returns `0`.
     fn trace_ball(&self, x_prime: u64, n: u64, m: u64) -> u64 {
         if m == 1 {
             return 0;
@@ -202,8 +244,23 @@ impl Iprf {
         low
     }
 
-    /// PMNS inverse: find all balls in bin y
-    /// Returns range [start, start + count) as a Vec
+    /// Returns the contiguous range of ball indices that fall into PMNS bin `y`.
+    ///
+    /// For `m == 1` this is all balls `[0..n)`. Otherwise the method walks the PMNS
+    /// binary partitioning tree deterministically (using `binomial_sample`) to
+    /// compute the starting index and count of balls assigned to bin `y`, and
+    /// returns the range `[start, start + count)` as a `Vec<u64>`.
+    ///
+    /// # Parameters
+    ///
+    /// - `y`: target bin index in `[0, m)`.
+    /// - `n`: total number of balls (domain size).
+    /// - `m`: total number of bins (range size).
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u64>` containing the ball indices that map to bin `y` (the closed-open
+    /// range `start..start+count`).
     fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Vec<u64> {
         if m == 1 {
             return (0..n).collect();
@@ -237,6 +294,11 @@ impl Iprf {
         (ball_start..ball_start + ball_count).collect()
     }
 
+    /// Produces a 64-bit pseudorandom value by AES-encrypting a 16-byte block containing `x`.
+    ///
+    /// The input block places `x` in the last 8 bytes (big-endian), encrypts the block with the
+    /// instance's AES-128 cipher, and returns the first 8 bytes of the ciphertext interpreted as a
+    /// big-endian `u64`.
     fn prf_eval(&self, x: u64) -> u64 {
         let mut input = [0u8; 16];
         input[8..16].copy_from_slice(&x.to_be_bytes());
