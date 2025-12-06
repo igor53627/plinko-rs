@@ -19,16 +19,16 @@
 //!   - Fastest on CPUs with AES-NI support
 //!   - Uses AES-128-CTR for PRF stream generation
 
-use std::time::Instant;
-use std::path::PathBuf;
-use std::fs::File;
-use std::sync::atomic::{AtomicU64, Ordering};
-use memmap2::MmapOptions;
+use aes::cipher::{KeyIvInit, StreamCipher};
+use blake3::OutputReader;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use memmap2::MmapOptions;
 use rayon::prelude::*;
-use blake3::OutputReader;
-use aes::cipher::{KeyIvInit, StreamCipher};
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 
@@ -49,7 +49,7 @@ struct Args {
     /// Override entries per block (w). Default: sqrt(N) adjusted to divide N
     #[arg(short, long)]
     entries_per_block: Option<usize>,
-    
+
     /// Allow truncation if N is not divisible by w (drops tail entries)
     #[arg(long, default_value = "false")]
     allow_truncation: bool,
@@ -119,7 +119,7 @@ fn aes_block_key_iv(master_seed: &[u8; 32], alpha: u64) -> ([u8; 16], [u8; 16]) 
 fn aes_hint_prf(block_key: &[u8; 16], hint_j: u64) -> [u8; 32] {
     let mut iv = [0u8; 16];
     iv[0..8].copy_from_slice(&hint_j.to_le_bytes());
-    
+
     let mut cipher = Aes128Ctr::new(block_key.into(), &iv.into());
     let mut output = [0u8; 32];
     cipher.apply_keystream(&mut output);
@@ -131,7 +131,7 @@ fn find_nearest_divisor(n: usize, target: usize) -> usize {
     if n % target == 0 {
         return target;
     }
-    
+
     // Search outward from target
     for delta in 1..target {
         if target >= delta && n % (target - delta) == 0 {
@@ -141,7 +141,7 @@ fn find_nearest_divisor(n: usize, target: usize) -> usize {
             return target + delta;
         }
     }
-    
+
     // Fallback: use 1 (every entry is its own block)
     1
 }
@@ -156,7 +156,7 @@ fn process_block_standard(
     master_seed: &[u8; 32],
 ) -> (Vec<[u8; 32]>, u64) {
     let k_alpha = block_key(master_seed, alpha as u64);
-    
+
     let block_start = alpha * block_size_bytes;
     let block_bytes = &db_bytes[block_start..block_start + block_size_bytes];
 
@@ -165,7 +165,7 @@ fn process_block_standard(
 
     for j in 0..num_hints {
         let r = hint_block_prf(&k_alpha, j as u64);
-        
+
         // Bit 0 of first byte determines inclusion (Bernoulli 1/2)
         let include = (r[0] & 1) == 1;
         if !include {
@@ -207,7 +207,7 @@ fn process_block_xof(
 
     // Generate XOF stream for this block
     let mut xof = block_xof(master_seed, alpha as u64);
-    
+
     // Read all random bytes needed for all hints at once
     let total_bytes = num_hints * BYTES_PER_HINT;
     let mut xof_buf = vec![0u8; total_bytes];
@@ -216,7 +216,7 @@ fn process_block_xof(
     for j in 0..num_hints {
         let offset = j * BYTES_PER_HINT;
         let control = xof_buf[offset];
-        
+
         // Bit 0 determines inclusion (Bernoulli 1/2)
         let include = (control & 1) == 1;
         if !include {
@@ -224,9 +224,7 @@ fn process_block_xof(
         }
 
         // Derive offset beta from next 8 bytes
-        let rand64 = u64::from_le_bytes(
-            xof_buf[offset + 1..offset + 9].try_into().unwrap()
-        );
+        let rand64 = u64::from_le_bytes(xof_buf[offset + 1..offset + 9].try_into().unwrap());
         let beta = (rand64 as usize) % w;
 
         // Fetch the 32-byte entry at DB[alpha * w + beta]
@@ -261,7 +259,7 @@ fn process_block_aes(
     // Derive AES key and IV for this block
     let (key, iv) = aes_block_key_iv(master_seed, alpha as u64);
     let mut cipher = Aes128Ctr::new(&key.into(), &iv.into());
-    
+
     // Generate AES-CTR stream for all hints
     let total_bytes = num_hints * BYTES_PER_HINT;
     let mut aes_buf = vec![0u8; total_bytes];
@@ -270,7 +268,7 @@ fn process_block_aes(
     for j in 0..num_hints {
         let offset = j * BYTES_PER_HINT;
         let control = aes_buf[offset];
-        
+
         // Bit 0 determines inclusion (Bernoulli 1/2)
         let include = (control & 1) == 1;
         if !include {
@@ -278,9 +276,7 @@ fn process_block_aes(
         }
 
         // Derive offset beta from next 8 bytes
-        let rand64 = u64::from_le_bytes(
-            aes_buf[offset + 1..offset + 9].try_into().unwrap()
-        );
+        let rand64 = u64::from_le_bytes(aes_buf[offset + 1..offset + 9].try_into().unwrap());
         let beta = (rand64 as usize) % w;
 
         // Fetch the 32-byte entry at DB[alpha * w + beta]
@@ -317,7 +313,7 @@ fn process_block_aes_standard(
 
     for j in 0..num_hints {
         let r = aes_hint_prf(&block_key, j as u64);
-        
+
         // Bit 0 of first byte determines inclusion (Bernoulli 1/2)
         let include = (r[0] & 1) == 1;
         if !include {
@@ -353,8 +349,16 @@ fn main() -> eyre::Result<()> {
             .unwrap();
     }
     let num_threads = rayon::current_num_threads();
-    
-    let mode_str = if args.aes { "AES-CTR" } else if args.aes_standard { "AES-Standard" } else if args.xof { "XOF" } else { "Standard" };
+
+    let mode_str = if args.aes {
+        "AES-CTR"
+    } else if args.aes_standard {
+        "AES-Standard"
+    } else if args.xof {
+        "XOF"
+    } else {
+        "Standard"
+    };
     println!("Plinko PIR Hint Generator (Parallel, {} mode)", mode_str);
     println!("================================================");
     println!("Database: {:?}", args.db_path);
@@ -363,12 +367,19 @@ fn main() -> eyre::Result<()> {
 
     let file = File::open(&args.db_path)?;
     let file_len = file.metadata()?.len() as usize;
-    println!("DB Size: {:.2} GB", file_len as f64 / 1024.0 / 1024.0 / 1024.0);
+    println!(
+        "DB Size: {:.2} GB",
+        file_len as f64 / 1024.0 / 1024.0 / 1024.0
+    );
 
     let mmap = unsafe { MmapOptions::new().map(&file)? };
     let db_bytes: &[u8] = &mmap;
 
-    assert_eq!(db_bytes.len() % WORD_SIZE, 0, "DB size must be multiple of 32 bytes");
+    assert_eq!(
+        db_bytes.len() % WORD_SIZE,
+        0,
+        "DB size must be multiple of 32 bytes"
+    );
     let n_entries = db_bytes.len() / WORD_SIZE;
     println!("Total Entries (N): {}", n_entries);
 
@@ -377,38 +388,55 @@ fn main() -> eyre::Result<()> {
         let sqrt_n = (n_entries as f64).sqrt().round() as usize;
         find_nearest_divisor(n_entries, sqrt_n)
     });
-    
+
     // Validate divisibility
     let remainder = n_entries % w;
     if remainder != 0 {
         if args.allow_truncation {
-            println!("⚠️  Warning: N ({}) not divisible by w ({}), {} tail entries will be ignored", 
-                     n_entries, w, remainder);
+            println!(
+                "⚠️  Warning: N ({}) not divisible by w ({}), {} tail entries will be ignored",
+                n_entries, w, remainder
+            );
         } else {
-            eprintln!("Error: N ({}) must be divisible by w ({}) for correct Plinko hints.", n_entries, w);
-            eprintln!("       {} entries would be dropped. Use --allow-truncation to proceed anyway.", remainder);
+            eprintln!(
+                "Error: N ({}) must be divisible by w ({}) for correct Plinko hints.",
+                n_entries, w
+            );
+            eprintln!(
+                "       {} entries would be dropped. Use --allow-truncation to proceed anyway.",
+                remainder
+            );
             eprintln!("       Or use --entries-per-block to set w to a divisor of N.");
             std::process::exit(1);
         }
     }
-    
+
     let c = n_entries / w; // number of blocks
     let block_size_bytes = w * WORD_SIZE;
-    
+
     println!("\nPlinko Parameters:");
     println!("  Entries per block (w): {}", w);
     println!("  Number of blocks (c): {}", c);
-    println!("  Block size: {:.2} MB", block_size_bytes as f64 / 1024.0 / 1024.0);
+    println!(
+        "  Block size: {:.2} MB",
+        block_size_bytes as f64 / 1024.0 / 1024.0
+    );
     println!("  Lambda: {}", args.lambda);
-    
+
     let num_hints = args.lambda * w;
     let hint_storage_bytes = num_hints * WORD_SIZE;
     println!("  Number of hints: {}", num_hints);
-    println!("  Hint storage: {:.2} MB", hint_storage_bytes as f64 / 1024.0 / 1024.0);
+    println!(
+        "  Hint storage: {:.2} MB",
+        hint_storage_bytes as f64 / 1024.0 / 1024.0
+    );
 
     // Warn if parameters are off
     if c < w / 2 || c > w * 2 {
-        println!("\n⚠️  Warning: c/w ratio is {:.2}, ideally should be ~1.0 for optimal Plinko", c as f64 / w as f64);
+        println!(
+            "\n⚠️  Warning: c/w ratio is {:.2}, ideally should be ~1.0 for optimal Plinko",
+            c as f64 / w as f64
+        );
     }
 
     // Estimate work
@@ -418,16 +446,25 @@ fn main() -> eyre::Result<()> {
         (c as u64) * (num_hints as u64) // One hash per (block, hint)
     };
     let expected_xors = ((c as u64) * (num_hints as u64)) / 2; // Bernoulli(1/2)
-    
+
     println!("\nEstimated work:");
     if args.aes {
         println!("  AES-CTR streams: {} (one per block)", c);
-        println!("  AES-CTR bytes: {:.2e}", (c * num_hints * BYTES_PER_HINT) as f64);
+        println!(
+            "  AES-CTR bytes: {:.2e}",
+            (c * num_hints * BYTES_PER_HINT) as f64
+        );
     } else if args.aes_standard {
-        println!("  AES PRF calls: {:.2e} (one per block*hint)", (c as u64 * num_hints as u64) as f64);
+        println!(
+            "  AES PRF calls: {:.2e} (one per block*hint)",
+            (c as u64 * num_hints as u64) as f64
+        );
     } else if args.xof {
         println!("  XOF streams: {} (one per block)", c);
-        println!("  XOF bytes: {:.2e}", (c * num_hints * BYTES_PER_HINT) as f64);
+        println!(
+            "  XOF bytes: {:.2e}",
+            (c * num_hints * BYTES_PER_HINT) as f64
+        );
     } else {
         println!("  PRF calls: {:.2e}", total_prf_calls as f64);
     }
@@ -435,15 +472,14 @@ fn main() -> eyre::Result<()> {
 
     // Master seed (fixed for benchmark reproducibility)
     let master_seed: [u8; 32] = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
+        0x1f, 0x20,
     ];
 
     println!("\nGenerating hints (parallel over {} blocks)...", c);
     let start = Instant::now();
-    
+
     let pb = ProgressBar::new(c as u64);
     pb.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta}) {msg}")
@@ -496,13 +532,13 @@ fn main() -> eyre::Result<()> {
                     &master_seed,
                 )
             };
-            
+
             // Update progress
             let count = progress_counter.fetch_add(1, Ordering::Relaxed);
             if count % 100 == 0 {
                 pb.set_position(count);
             }
-            
+
             result
         })
         .reduce(
@@ -517,11 +553,11 @@ fn main() -> eyre::Result<()> {
 
     pb.finish_with_message("Done");
     let duration = start.elapsed();
-    
+
     // Statistics
     let expected_xors_per_block = num_hints as f64 / 2.0;
     let actual_avg = total_xors as f64 / c as f64;
-    
+
     let throughput_mb = (file_len as f64 / 1024.0 / 1024.0) / duration.as_secs_f64();
     let xors_per_sec = total_xors as f64 / duration.as_secs_f64();
 
@@ -531,29 +567,229 @@ fn main() -> eyre::Result<()> {
     if args.aes {
         let aes_streams_per_sec = c as f64 / duration.as_secs_f64();
         let aes_bytes_per_sec = (c * num_hints * BYTES_PER_HINT) as f64 / duration.as_secs_f64();
-        println!("AES-CTR streams: {:.2}/s ({:.2} GB/s output)", aes_streams_per_sec, aes_bytes_per_sec / 1e9);
+        println!(
+            "AES-CTR streams: {:.2}/s ({:.2} GB/s output)",
+            aes_streams_per_sec,
+            aes_bytes_per_sec / 1e9
+        );
     } else if args.aes_standard {
         let prf_per_sec = ((c as u64) * (num_hints as u64)) as f64 / duration.as_secs_f64();
         println!("AES PRF calls: {:.2}M/s", prf_per_sec / 1_000_000.0);
     } else if args.xof {
         let xof_streams_per_sec = c as f64 / duration.as_secs_f64();
         let xof_bytes_per_sec = (c * num_hints * BYTES_PER_HINT) as f64 / duration.as_secs_f64();
-        println!("XOF streams: {:.2}/s ({:.2} GB/s output)", xof_streams_per_sec, xof_bytes_per_sec / 1e9);
+        println!(
+            "XOF streams: {:.2}/s ({:.2} GB/s output)",
+            xof_streams_per_sec,
+            xof_bytes_per_sec / 1e9
+        );
     } else {
         let prf_per_sec = ((c as u64) * (num_hints as u64)) as f64 / duration.as_secs_f64();
         println!("PRF calls: {:.2}M/s", prf_per_sec / 1_000_000.0);
     }
-    println!("XOR operations: {} ({:.2}M/s)", total_xors, xors_per_sec / 1_000_000.0);
+    println!(
+        "XOR operations: {} ({:.2}M/s)",
+        total_xors,
+        xors_per_sec / 1_000_000.0
+    );
     println!("\nCoverage per block:");
     println!("  Expected: {:.0} hints/block", expected_xors_per_block);
     println!("  Actual avg: {:.1} hints/block", actual_avg);
-    println!("\nHint storage: {:.2} MB", hint_storage_bytes as f64 / 1024.0 / 1024.0);
+    println!(
+        "\nHint storage: {:.2} MB",
+        hint_storage_bytes as f64 / 1024.0 / 1024.0
+    );
 
     // Sanity check: count non-zero hints
     let non_zero_hints = hints.iter().filter(|h| h.iter().any(|&b| b != 0)).count();
-    println!("\nNon-zero hints: {} / {} ({:.1}%)", 
-             non_zero_hints, num_hints, 
-             100.0 * non_zero_hints as f64 / num_hints as f64);
+    println!(
+        "\nNon-zero hints: {} / {} ({:.1}%)",
+        non_zero_hints,
+        num_hints,
+        100.0 * non_zero_hints as f64 / num_hints as f64
+    );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn xor_32_with_zero_is_noop(mut a in any::<[u8; 32]>()) {
+            let original = a;
+            let zeros = [0u8; 32];
+            xor_32(&mut a, &zeros);
+            prop_assert_eq!(a, original);
+        }
+
+        #[test]
+        fn xor_32_twice_with_same_operand_restores_original(
+            mut a in any::<[u8; 32]>(),
+            b in any::<[u8; 32]>(),
+        ) {
+            let original = a;
+            xor_32(&mut a, &b);
+            xor_32(&mut a, &b);
+            prop_assert_eq!(a, original);
+        }
+
+        #[test]
+        fn xor_32_matches_bytewise_xor(
+            mut a in any::<[u8; 32]>(),
+            b in any::<[u8; 32]>(),
+        ) {
+            let mut expected = [0u8; 32];
+            for i in 0..32 {
+                expected[i] = a[i] ^ b[i];
+            }
+
+            xor_32(&mut a, &b);
+            prop_assert_eq!(a, expected);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn block_key_is_deterministic(
+            seed in any::<[u8; 32]>(),
+            alpha in any::<u64>(),
+        ) {
+            let k1 = block_key(&seed, alpha);
+            let k2 = block_key(&seed, alpha);
+            prop_assert_eq!(k1, k2);
+        }
+
+        #[test]
+        fn block_key_changes_with_alpha(
+            seed in any::<[u8; 32]>(),
+            alpha1 in any::<u64>(),
+            alpha2 in any::<u64>(),
+        ) {
+            prop_assume!(alpha1 != alpha2);
+            let k1 = block_key(&seed, alpha1);
+            let k2 = block_key(&seed, alpha2);
+            prop_assert_ne!(k1, k2);
+        }
+
+        #[test]
+        fn hint_block_prf_is_deterministic(
+            k_alpha in any::<[u8; 32]>(),
+            hint_j in any::<u64>(),
+        ) {
+            let r1 = hint_block_prf(&k_alpha, hint_j);
+            let r2 = hint_block_prf(&k_alpha, hint_j);
+            prop_assert_eq!(r1, r2);
+        }
+
+        #[test]
+        fn hint_block_prf_changes_with_hint_index(
+            k_alpha in any::<[u8; 32]>(),
+            j1 in any::<u64>(),
+            j2 in any::<u64>(),
+        ) {
+            prop_assume!(j1 != j2);
+            let r1 = hint_block_prf(&k_alpha, j1);
+            let r2 = hint_block_prf(&k_alpha, j2);
+            prop_assert_ne!(r1, r2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn block_xof_is_deterministic(
+            seed in any::<[u8; 32]>(),
+            alpha in any::<u64>(),
+            len in 0usize..512,
+        ) {
+            let mut buf1 = vec![0u8; len];
+            let mut buf2 = vec![0u8; len];
+
+            block_xof(&seed, alpha).fill(&mut buf1);
+            block_xof(&seed, alpha).fill(&mut buf2);
+
+            prop_assert_eq!(buf1, buf2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn aes_block_key_iv_is_deterministic(
+            seed in any::<[u8; 32]>(),
+            alpha in any::<u64>(),
+        ) {
+            let (k1, iv1) = aes_block_key_iv(&seed, alpha);
+            let (k2, iv2) = aes_block_key_iv(&seed, alpha);
+            prop_assert_eq!(k1, k2);
+            prop_assert_eq!(iv1, iv2);
+        }
+
+        #[test]
+        fn aes_hint_prf_is_deterministic(
+            block_key in any::<[u8; 16]>(),
+            hint_j in any::<u64>(),
+        ) {
+            let r1 = aes_hint_prf(&block_key, hint_j);
+            let r2 = aes_hint_prf(&block_key, hint_j);
+            prop_assert_eq!(r1, r2);
+        }
+
+        #[test]
+        fn aes_hint_prf_changes_with_hint_index(
+            block_key in any::<[u8; 16]>(),
+            j1 in any::<u64>(),
+            j2 in any::<u64>(),
+        ) {
+            prop_assume!(j1 != j2);
+            let r1 = aes_hint_prf(&block_key, j1);
+            let r2 = aes_hint_prf(&block_key, j2);
+            prop_assert_ne!(r1, r2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn find_nearest_divisor_returns_valid_divisor(
+            n in 1usize..100_000,
+            target in 1usize..1000,
+        ) {
+            let divisor = find_nearest_divisor(n, target);
+            prop_assert!(divisor >= 1);
+            prop_assert_eq!(n % divisor, 0);
+        }
+
+        #[test]
+        fn find_nearest_divisor_exact_match(n in 1usize..10_000) {
+            let divisor = find_nearest_divisor(n, n);
+            prop_assert_eq!(divisor, n);
+        }
+    }
 }

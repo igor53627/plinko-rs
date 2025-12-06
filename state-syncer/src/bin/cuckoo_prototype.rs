@@ -19,7 +19,7 @@ impl CuckooTable {
         let size = (n as f64 * CUCKOO_OVERHEAD) as usize;
         let mut rng = rand::thread_rng();
         let seeds: [u64; KAPPA] = [rng.gen(), rng.gen(), rng.gen()];
-        
+
         Self {
             table: vec![None; size],
             seeds,
@@ -39,7 +39,7 @@ impl CuckooTable {
     fn insert(&mut self, addr: [u8; 20], original_idx: u32) -> Result<(), ([u8; 20], u32)> {
         let mut current = (addr, original_idx);
         let mut rng = rand::thread_rng();
-        
+
         for iteration in 0..MAX_EVICTIONS {
             // Try all hash positions
             for h in 0..KAPPA {
@@ -125,7 +125,7 @@ fn main() {
     // Test with different sizes
     for n in [10_000, 100_000, 1_000_000] {
         println!("--- Testing with N = {} addresses ---\n", n);
-        
+
         let addresses = generate_random_addresses(n);
         let entries: Vec<_> = addresses
             .iter()
@@ -158,26 +158,41 @@ fn main() {
 
         println!("BUILD TIME:");
         println!("  Sorted lookup: {:?}", sorted_build_time);
-        println!("  Cuckoo table:  {:?} (failed inserts: {})", cuckoo_build_time, failed);
+        println!(
+            "  Cuckoo table:  {:?} (failed inserts: {})",
+            cuckoo_build_time, failed
+        );
 
         // Storage comparison
         let sorted_storage = sorted.storage_size();
         let hash_seeds_storage = KAPPA * 8; // κ seeds of 8 bytes each
-        
+
         println!("\nCLIENT STORAGE:");
-        println!("  Sorted lookup: {} bytes ({:.2} MB)", 
-                 sorted_storage, sorted_storage as f64 / 1_000_000.0);
-        println!("  Cuckoo (client needs only seeds): {} bytes", hash_seeds_storage);
-        println!("  Reduction: {:.0}x smaller", sorted_storage as f64 / hash_seeds_storage as f64);
+        println!(
+            "  Sorted lookup: {} bytes ({:.2} MB)",
+            sorted_storage,
+            sorted_storage as f64 / 1_000_000.0
+        );
+        println!(
+            "  Cuckoo (client needs only seeds): {} bytes",
+            hash_seeds_storage
+        );
+        println!(
+            "  Reduction: {:.0}x smaller",
+            sorted_storage as f64 / hash_seeds_storage as f64
+        );
 
         // Query overhead comparison
         println!("\nQUERY OVERHEAD:");
         println!("  Sorted lookup: 1 PIR query per address");
-        println!("  Cuckoo hashing: {} PIR queries per address (κ={})", KAPPA, KAPPA);
+        println!(
+            "  Cuckoo hashing: {} PIR queries per address (κ={})",
+            KAPPA, KAPPA
+        );
 
         // Lookup correctness & timing
         let test_addr = addresses[n / 2];
-        
+
         let start = Instant::now();
         let sorted_result = sorted.get(&test_addr);
         let sorted_lookup_time = start.elapsed();
@@ -187,12 +202,12 @@ fn main() {
         let cuckoo_lookup_time = start.elapsed();
 
         let positions = cuckoo.lookup(&test_addr);
-        
+
         println!("\nLOOKUP (single address):");
         println!("  Sorted: {:?} -> {:?}", sorted_lookup_time, sorted_result);
         println!("  Cuckoo: {:?} -> {:?}", cuckoo_lookup_time, cuckoo_result);
         println!("  Cuckoo positions to query: {:?}", positions);
-        
+
         assert_eq!(sorted_result, cuckoo_result, "Results should match!");
         println!("  ✓ Results match!\n");
     }
@@ -202,24 +217,37 @@ fn main() {
     let mainnet_accounts = 330_000_000u64;
     let sorted_storage_mainnet = mainnet_accounts * 24;
     let cuckoo_client_storage = KAPPA * 8;
-    
+
     println!("Accounts: {}", mainnet_accounts);
     println!("\nOriginal (sorted lookup table):");
-    println!("  Client storage: {:.2} GB", sorted_storage_mainnet as f64 / 1_000_000_000.0);
+    println!(
+        "  Client storage: {:.2} GB",
+        sorted_storage_mainnet as f64 / 1_000_000_000.0
+    );
     println!("  PIR queries per lookup: 1");
-    
+
     println!("\nCuckoo hashing (Construction 1):");
-    println!("  Client storage: {} bytes (just {} hash seeds)", cuckoo_client_storage, KAPPA);
-    println!("  PIR queries per lookup: {} (one per hash function)", KAPPA);
-    println!("  Server storage: ~{:.2} GB (cuckoo table with {:.1}x overhead)", 
-             (mainnet_accounts as f64 * CUCKOO_OVERHEAD * 24.0) / 1_000_000_000.0,
-             CUCKOO_OVERHEAD);
+    println!(
+        "  Client storage: {} bytes (just {} hash seeds)",
+        cuckoo_client_storage, KAPPA
+    );
+    println!(
+        "  PIR queries per lookup: {} (one per hash function)",
+        KAPPA
+    );
+    println!(
+        "  Server storage: ~{:.2} GB (cuckoo table with {:.1}x overhead)",
+        (mainnet_accounts as f64 * CUCKOO_OVERHEAD * 24.0) / 1_000_000_000.0,
+        CUCKOO_OVERHEAD
+    );
 
     println!("\n=== Trade-off Summary ===");
-    println!("  Storage reduction: {:.0}x (from {:.1} GB to {} bytes)", 
-             sorted_storage_mainnet as f64 / cuckoo_client_storage as f64,
-             sorted_storage_mainnet as f64 / 1_000_000_000.0,
-             cuckoo_client_storage);
+    println!(
+        "  Storage reduction: {:.0}x (from {:.1} GB to {} bytes)",
+        sorted_storage_mainnet as f64 / cuckoo_client_storage as f64,
+        sorted_storage_mainnet as f64 / 1_000_000_000.0,
+        cuckoo_client_storage
+    );
     println!("  Query overhead: {}x more PIR queries", KAPPA);
     println!("\n  For Plinko hints:");
     println!("  - Client downloads {} hint sets instead of 1", KAPPA);
