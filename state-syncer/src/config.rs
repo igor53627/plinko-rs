@@ -1,15 +1,23 @@
+use clap::Parser;
 use std::path::PathBuf;
 use std::time::Duration;
-use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
 pub struct Config {
     /// Canonical database file to mutate in place
-    #[arg(long, env = "PLINKO_STATE_DB_PATH", default_value = "/data/database.bin")]
+    #[arg(
+        long,
+        env = "PLINKO_STATE_DB_PATH",
+        default_value = "/data/database.bin"
+    )]
     pub database_path: PathBuf,
 
     /// Input mapping file to copy into the public artifacts volume
-    #[arg(long, env = "PLINKO_STATE_ADDRESS_MAPPING_PATH", default_value = "/data/account-mapping.bin")]
+    #[arg(
+        long,
+        env = "PLINKO_STATE_ADDRESS_MAPPING_PATH",
+        default_value = "/data/account-mapping.bin"
+    )]
     pub address_mapping_path: PathBuf,
 
     /// Root directory for artifacts served by the CDN mock
@@ -29,11 +37,19 @@ pub struct Config {
     pub ipfs_api: Option<String>,
 
     /// Gateway base advertised inside manifest.json
-    #[arg(long, env = "PLINKO_STATE_IPFS_GATEWAY", default_value = "http://localhost:8080/ipfs")]
+    #[arg(
+        long,
+        env = "PLINKO_STATE_IPFS_GATEWAY",
+        default_value = "http://localhost:8080/ipfs"
+    )]
     pub ipfs_gateway: String,
 
     /// Ethereum RPC/Hypersync endpoint
-    #[arg(long, env = "PLINKO_STATE_RPC_URL", default_value = "http://eth-mock:8545")]
+    #[arg(
+        long,
+        env = "PLINKO_STATE_RPC_URL",
+        default_value = "http://eth-mock:8545"
+    )]
     pub rpc_url: String,
 
     /// Optional bearer token for Hypersync
@@ -69,7 +85,7 @@ impl Config {
     pub fn public_address_mapping_path(&self) -> PathBuf {
         self.public_root.join("account-mapping.bin")
     }
-    
+
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
     }
