@@ -15,40 +15,16 @@ struct CuckooTable {
 
 impl CuckooTable {
     /// Construct a new CuckooTable sized to accommodate approximately `n` entries and initialized with random hash seeds.
-    
     ///
-    
     /// The table is allocated with floor(n * CUCKOO_OVERHEAD) slots, all empty, and a set of `KAPPA` randomly generated 64-bit seeds used to derive the table's hash positions.
-    
     ///
-    
     /// # Arguments
-    
     ///
-    
     /// * `n` - Expected number of entries to store; used to size the internal table.
-    
     ///
-    
     /// # Returns
-    
     ///
-    
     /// A `CuckooTable` instance with an empty table and `KAPPA` seeds initialized.
-    
-    ///
-    
-    /// # Examples
-    
-    ///
-    
-    /// ```
-    
-    /// let table = CuckooTable::new(1_000);
-    
-    /// // table is ready to receive up to ~1_000 entries (with CUCKOO_OVERHEAD applied)
-    
-    /// ```
     fn new(n: usize) -> Self {
         // Cuckoo table needs ~1.5x space for reliable insertion with 3 hash functions
         let size = (n as f64 * CUCKOO_OVERHEAD) as usize;
