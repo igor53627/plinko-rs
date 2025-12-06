@@ -82,10 +82,16 @@ impl Config {
         self.public_root.join("snapshots")
     }
 
+    /// Returns the path to the public account mapping file inside `public_root`.
+    ///
+    /// The returned path is `<public_root>/account-mapping.bin`.
     pub fn public_address_mapping_path(&self) -> PathBuf {
         self.public_root.join("account-mapping.bin")
     }
 
+    /// Returns the configured poll interval as a `Duration`.
+    ///
+    /// Converts `poll_interval_ms` to a `std::time::Duration`.
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
     }
