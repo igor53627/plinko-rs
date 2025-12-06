@@ -14,6 +14,22 @@ pub struct Database {
 }
 
 impl Database {
+    /// Loads a database file into memory and returns a Database backed by a writable memory map.
+    ///
+    /// The file at `path` is opened for read/write, validated to have a length that is a multiple
+    /// of the database entry size, and then memory-mapped for in-place access. The number of
+    /// entries and the derived `chunk_size` and `set_size` are computed and stored in the returned
+    /// Database.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the database file to open and memory-map.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Database)` containing a writable memory-mapped view of the file and derived parameters
+    /// on success; `Err` if the file cannot be opened, its metadata read, its size is not a multiple
+    /// of the entry size, or the memory map cannot be created.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let file = OpenOptions::new().read(true).write(true).open(path)?;
@@ -40,6 +56,15 @@ impl Database {
         })
     }
 
+    /// Returns a 32-byte slice for the database entry at the given index, or `None` if the index is out of bounds.
+    ///
+    /// # Parameters
+    ///
+    /// - `index`: The zero-based entry index within the database.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&[u8])` containing exactly 32 bytes for the entry at `index`, or `None` if `index` refers to an entry beyond the mapped file.
     pub fn get(&self, index: u64) -> Option<&[u8]> {
         let idx = index as usize * DB_ENTRY_SIZE;
         if idx + DB_ENTRY_SIZE > self.mmap.len() {
@@ -48,6 +73,18 @@ impl Database {
         Some(&self.mmap[idx..idx + DB_ENTRY_SIZE])
     }
 
+    /// Overwrites the database entry at the given index with the four provided `u64` values in little-endian order.
+    ///
+    /// If `index` addresses an entry outside the mapped file, this method does nothing; otherwise it writes the four
+    /// `u64` values into the 32-byte entry (8 bytes each) in little-endian byte order.
+    ///
+    /// # Parameters
+    ///
+    /// - `index`: Entry index within the database to update.
+    /// - `new_val`: Array of four `u64` values to store into the entry (written in little-endian).
+    ///
+    ///
+    /// Note: Silently does nothing if index is out of range.
     pub fn update(&mut self, index: u64, new_val: [u64; DB_ENTRY_U64_COUNT]) {
         let idx = index as usize * DB_ENTRY_SIZE;
         if idx + DB_ENTRY_SIZE <= self.mmap.len() {
@@ -59,12 +96,27 @@ impl Database {
         }
     }
 
+    /// Flushes in-memory changes to the database file backing the memory map.
+    ///
+    /// Returns `Ok(())` on success, or propagates the underlying I/O error otherwise.
     pub fn flush(&self) -> Result<()> {
         self.mmap.flush()?;
         Ok(())
     }
 }
 
+/// Compute chunk and set sizes for partitioning a database of entries.
+///
+/// The function derives two parameters used to split `db_entries` into
+/// chunked groups:
+/// - `chunk_size`: a power-of-two chunk width chosen as the smallest power of two
+///   greater than or equal to `2 * sqrt(db_entries)` (at least 1).
+/// - `set_size`: the number of chunks per set computed as `ceil(db_entries / chunk_size)`
+///   then rounded up to the nearest multiple of 4.
+///
+/// # Returns
+///
+/// A tuple `(chunk_size, set_size)` describing the derived partition sizes.
 fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
     if db_entries == 0 {
         return (1, 1);
