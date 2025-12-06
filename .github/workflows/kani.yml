@@ -1,0 +1,42 @@
+name: Kani Formal Verification
+
+on:
+  # Only run on push to main (not PRs) for security - self-hosted runner
+  push:
+    branches: [main]
+    paths:
+      - 'state-syncer/src/iprf.rs'
+      - 'state-syncer/src/kani_proofs.rs'
+  workflow_dispatch:
+
+jobs:
+  kani:
+    runs-on: self-hosted
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Kani (if needed)
+        run: |
+          if ! command -v cargo-kani &> /dev/null; then
+            cargo install --locked kani-verifier
+            cargo kani setup
+          fi
+
+      - name: Run Kani proofs
+        working-directory: state-syncer
+        run: |
+          cargo kani --tests --output-format terse
+
+  proptest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run proptest harnesses
+        working-directory: state-syncer
+        run: |
+          cargo test --lib kani_proofs -- --nocapture
