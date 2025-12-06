@@ -38,7 +38,8 @@ mod kani_harnesses {
         kani::assume(num <= 1_000_000);
         kani::assume(denom > 0);
         kani::assume(denom <= 1_000_000);
-        kani::assume(num <= denom);
+        // In PMNS, num < denom always (num = left_bins, denom = total_bins, left_bins < total_bins)
+        kani::assume(num < denom);
 
         let result = binomial_sample(count, num, denom, prf_output);
 
