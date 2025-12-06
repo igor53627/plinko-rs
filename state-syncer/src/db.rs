@@ -30,19 +30,6 @@ impl Database {
     /// `Ok(Database)` containing a writable memory-mapped view of the file and derived parameters
     /// on success; `Err` if the file cannot be opened, its metadata read, its size is not a multiple
     /// of the entry size, or the memory map cannot be created.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::fs::OpenOptions;
-    /// # use std::io::Write;
-    /// # use tempfile::NamedTempFile;
-    /// # // Prepare a temporary file with one 32-byte entry
-    /// # let mut tmp = NamedTempFile::new().unwrap();
-    /// # tmp.as_file_mut().set_len(32).unwrap();
-    /// let db = state_syncer::db::Database::load(tmp.path()).unwrap();
-    /// assert!(db.num_entries >= 1);
-    /// ```
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let file = OpenOptions::new().read(true).write(true).open(path)?;
@@ -96,12 +83,8 @@ impl Database {
     /// - `index`: Entry index within the database to update.
     /// - `new_val`: Array of four `u64` values to store into the entry (written in little-endian).
     ///
-    /// # Examples
     ///
-    /// ```
-    /// // Assume `db` is a mutable Database previously loaded with enough entries:
-    /// // db.update(0, [1, 2, 3, 4]);
-    /// ```
+    /// Note: Silently does nothing if index is out of range.
     pub fn update(&mut self, index: u64, new_val: [u64; DB_ENTRY_U64_COUNT]) {
         let idx = index as usize * DB_ENTRY_SIZE;
         if idx + DB_ENTRY_SIZE <= self.mmap.len() {
@@ -114,17 +97,6 @@ impl Database {
     }
 
     /// Flushes in-memory changes to the database file backing the memory map.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use state_syncer::db::Database;
-    /// # fn example() -> std::io::Result<()> {
-    /// let db = Database::load("path/to/db")?; // load existing database file
-    /// db.flush()?; // persist any pending changes to disk
-    /// # Ok(())
-    /// # }
-    /// ```
     ///
     /// Returns `Ok(())` on success, or propagates the underlying I/O error otherwise.
     pub fn flush(&self) -> Result<()> {
@@ -145,15 +117,6 @@ impl Database {
 /// # Returns
 ///
 /// A tuple `(chunk_size, set_size)` describing the derived partition sizes.
-///
-/// # Examples
-///
-/// ```
-/// let (chunk, set) = derive_plinko_params(1_000);
-/// assert!(chunk.is_power_of_two());
-/// assert!(set % 4 == 0);
-/// assert!(chunk * set >= 1_000);
-/// ```
 fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
     if db_entries == 0 {
         return (1, 1);

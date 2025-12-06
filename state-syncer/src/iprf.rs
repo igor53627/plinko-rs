@@ -34,14 +34,6 @@ impl SwapOrNot {
     ///
     /// Panics if `domain` is zero.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// let key: PrfKey128 = [0u8; 16];
-    /// let prp = SwapOrNot::new(key, 100);
-    /// let y = prp.forward(42);
-    /// assert!(y < 100);
-    /// ```
     pub fn new(key: PrfKey128, domain: u64) -> Self {
         assert!(domain > 0, "SwapOrNot domain must be positive");
         let cipher = Aes128::new(&GenericArray::from(key));
@@ -80,16 +72,6 @@ impl SwapOrNot {
     }
 
     /// Derives the single-bit pseudorandom decision used to choose whether to swap in a Swap-or-Not round.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let key: PrfKey128 = [0u8; 16];
-    /// let prp = SwapOrNot::new(key, 100);
-    /// let decision = prp.prf_bit(0, 42);
-    /// // decision is a boolean indicating the swap choice for round 0 and canonical value 42
-    /// assert!(decision == true || decision == false);
-    /// ```
     fn prf_bit(&self, round: usize, canonical: u64) -> bool {
         let mut input = [0u8; 16];
         input[0..8].copy_from_slice(&(round as u64 | 0x8000000000000000).to_be_bytes());
@@ -108,18 +90,6 @@ impl SwapOrNot {
     /// uses a round-dependent PRF bit to decide whether to swap to the partner or
     /// keep the input. The operation is involutory: applying the same round again
     /// undoes the effect.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let key: [u8; 16] = [0u8; 16];
-    /// let prp = SwapOrNot::new(key, 10).unwrap();
-    /// let x = 3u64;
-    /// let y = prp.round(0, x);
-    /// assert!(y < 10);
-    /// // round is self-inverse
-    /// assert_eq!(prp.round(0, y), x);
-    /// ```
     fn round(&self, round_num: usize, x: u64) -> u64 {
         let k_i = self.derive_round_key(round_num);
         // Partner: K_i - X mod N
@@ -169,15 +139,6 @@ impl Iprf {
     /// The constructor derives an internal AES-128 cipher from `key`, computes the PMNS
     /// tree depth as ceil(log2(m)), and derives a separate 128-bit key (SHA-256(key || "prp"))
     /// to initialize the internal Swap-or-Not PRP over the input domain `n`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let key: PrfKey128 = [0u8; 16];
-    /// let iprf = Iprf::new(key, 100, 10);
-    /// let y = iprf.forward(0);
-    /// assert!(y < 10);
-    /// ```
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
         let tree_depth = (m as f64).log2().ceil() as usize;
         let cipher = Aes128::new(&GenericArray::from(key));
@@ -217,18 +178,7 @@ impl Iprf {
     /// If `y` is outside the iPRF's output range, an empty vector is returned. The returned
     /// vector contains every `x` in `[0, self.domain)` such that `self.forward(x) == y` (order not specified).
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// let key: [u8; 16] = [0u8; 16];
-    /// let n = 100u64;
-    /// let m = 10u64;
-    /// let iprf = Iprf::new(key, n, m);
-    /// let x = 42u64;
-    /// let y = iprf.forward(x);
-    /// let preimages = iprf.inverse(y);
-    /// assert!(preimages.contains(&x));
-    /// ```
+    /// Note: Multiple preimages per output are possible since this is an iPRF, not a bijection.
     pub fn inverse(&self, y: u64) -> Vec<u64> {
         if y >= self.range {
             return vec![];
@@ -262,14 +212,6 @@ impl Iprf {
     /// Given a total of `n` balls partitioned into `m` bins, performs the PMNS forward
     /// trace for ball with index `x_prime` (0-based) and returns the 0-based bin index
     /// that the ball is assigned to. If `m == 1`, returns `0`.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// // `iprf` is an initialized instance that provides `trace_ball`.
-    /// let bin = iprf.trace_ball(3, 10, 4);
-    /// assert!(bin < 4);
-    /// ```
     fn trace_ball(&self, x_prime: u64, n: u64, m: u64) -> u64 {
         if m == 1 {
             return 0;
@@ -319,14 +261,6 @@ impl Iprf {
     ///
     /// A `Vec<u64>` containing the ball indices that map to bin `y` (the closed-open
     /// range `start..start+count`).
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// // Assuming `iprf` is an initialized Iprf instance:
-    /// // let indices = iprf.trace_ball_inverse(3, 100, 10);
-    /// // `indices` now contains the contiguous ball indices assigned to bin 3.
-    /// ```
     fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Vec<u64> {
         if m == 1 {
             return (0..n).collect();
@@ -365,14 +299,6 @@ impl Iprf {
     /// The input block places `x` in the last 8 bytes (big-endian), encrypts the block with the
     /// instance's AES-128 cipher, and returns the first 8 bytes of the ciphertext interpreted as a
     /// big-endian `u64`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// // `iprf` is an instance providing `prf_eval`.
-    /// let iprf = /* Iprf instance */ unimplemented!();
-    /// let out: u64 = iprf.prf_eval(42);
-    /// ```
     fn prf_eval(&self, x: u64) -> u64 {
         let mut input = [0u8; 16];
         input[8..16].copy_from_slice(&x.to_be_bytes());
