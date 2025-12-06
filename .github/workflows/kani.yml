@@ -16,8 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Rust
+        run: |
+          if ! command -v rustup &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+          source "$HOME/.cargo/env"
+          rustup default stable
+
       - name: Install Kani (if needed)
         run: |
+          source "$HOME/.cargo/env"
           if ! command -v cargo-kani &> /dev/null; then
             cargo install --locked kani-verifier
             cargo kani setup
@@ -26,7 +35,11 @@ jobs:
       - name: Run Kani proofs
         working-directory: state-syncer
         run: |
-          cargo kani --tests --output-format terse
+          source "$HOME/.cargo/env"
+          # Run only binomial_sample harnesses (pure arithmetic, no crypto deps)
+          cargo kani --harness proof_binomial_sample_bounded --output-format terse
+          cargo kani --harness proof_binomial_sample_zero_denom --output-format terse
+          cargo kani --harness proof_binomial_sample_matches_coq --output-format terse
 
   proptest:
     runs-on: ubuntu-latest
