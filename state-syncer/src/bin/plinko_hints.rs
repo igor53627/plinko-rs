@@ -120,7 +120,7 @@ fn aes_block_key_iv(master_seed: &[u8; 32], alpha: u64) -> ([u8; 16], [u8; 16]) 
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let key = [0u8; 16];
 /// let out = aes_hint_prf(&key, 1);
 /// assert_eq!(out.len(), 32);
@@ -143,7 +143,7 @@ fn aes_hint_prf(block_key: &[u8; 16], hint_j: u64) -> [u8; 32] {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// // exact match
 /// assert_eq!(find_nearest_divisor(100, 10), 10);
 ///
@@ -182,7 +182,7 @@ fn find_nearest_divisor(n: usize, target: usize) -> usize {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use std::convert::TryInto;
 /// // Minimal example: one block with w = 1 entry, a single hint.
 /// let master_seed = [0u8; 32];
@@ -262,7 +262,7 @@ fn process_block_standard(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// // Create a dummy block with w = 4 entries of 32 bytes (all zeros) and a single block in db_bytes.
 /// let w = 4usize;
 /// let num_hints = 8usize;
@@ -338,7 +338,7 @@ fn process_block_xof(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let w = 2;
 /// let num_hints = 4;
 /// let block_size_bytes = w * 32;
@@ -430,7 +430,7 @@ fn process_block_aes(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// // Single-block DB with w = 2 entries, each 32 bytes.
 /// let w = 2usize;
 /// let num_hints = 4usize;

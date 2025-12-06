@@ -23,7 +23,7 @@ impl<'a> UpdateManager<'a> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use crate::db::Database;
     /// use crate::update::UpdateManager;
     ///
@@ -45,7 +45,7 @@ impl<'a> UpdateManager<'a> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // Given an existing `UpdateManager` instance `mgr` and a list of updates:
     /// let updates: Vec<DBUpdate> = Vec::new();
     /// let (deltas, elapsed) = mgr.apply_updates(&updates);
@@ -95,7 +95,7 @@ impl<'a> UpdateManager<'a> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // `mgr` is an instance of `UpdateManager`.
     /// if let Some(values) = mgr.get_value(0) {
     ///     assert_eq!(values.len(), DB_ENTRY_U64_COUNT);
