@@ -1,9 +1,9 @@
+use crate::db::DB_ENTRY_U64_COUNT;
+use crate::update_manager::DBUpdate;
 use eyre::Result;
 use reqwest::blocking::Client;
-use serde_json::json;
 use serde::Deserialize;
-use crate::update_manager::DBUpdate;
-use crate::db::DB_ENTRY_U64_COUNT;
+use serde_json::json;
 use std::collections::HashSet;
 
 #[derive(Clone)]
@@ -41,7 +41,11 @@ impl EthClient {
         }
     }
 
-    fn call<T: for<'de> Deserialize<'de>>(&self, method: &str, params: serde_json::Value) -> Result<T> {
+    fn call<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T> {
         let body = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -49,36 +53,39 @@ impl EthClient {
             "id": 1
         });
 
-        let resp: RpcResponse<T> = self.client.post(&self.url)
-            .json(&body)
-            .send()?
-            .json()?;
+        let resp: RpcResponse<T> = self.client.post(&self.url).json(&body).send()?.json()?;
 
         if let Some(err) = resp.error {
             return Err(eyre::eyre!("RPC Error: {:?}", err));
         }
-        
-        resp.result.ok_or_else(|| eyre::eyre!("RPC returned null result"))
+
+        resp.result
+            .ok_or_else(|| eyre::eyre!("RPC returned null result"))
     }
 
-    pub fn call_batch<T: for<'de> Deserialize<'de>>(&self, method: &str, params_list: Vec<serde_json::Value>) -> Result<Vec<Result<T>>> {
+    pub fn call_batch<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params_list: Vec<serde_json::Value>,
+    ) -> Result<Vec<Result<T>>> {
         let mut all_results = Vec::with_capacity(params_list.len());
-        
+
         // Chunk size 100 (Erigon default limit)
         for chunk in params_list.chunks(100) {
-            let batch: Vec<_> = chunk.iter().enumerate().map(|(i, params)| {
-                json!({
-                    "jsonrpc": "2.0",
-                    "method": method,
-                    "params": params,
-                    "id": i
+            let batch: Vec<_> = chunk
+                .iter()
+                .enumerate()
+                .map(|(i, params)| {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": method,
+                        "params": params,
+                        "id": i
+                    })
                 })
-            }).collect();
+                .collect();
 
-            let response_text = self.client.post(&self.url)
-                .json(&batch)
-                .send()?
-                .text()?;
+            let response_text = self.client.post(&self.url).json(&batch).send()?.text()?;
 
             // Try to parse as array
             if let Ok(resps) = serde_json::from_str::<Vec<RpcResponse<T>>>(&response_text) {
@@ -92,17 +99,20 @@ impl EthClient {
                     };
                     map.insert(id, val);
                 }
-                
+
                 for i in 0..batch.len() {
-                    all_results.push(map.remove(&i).ok_or_else(|| eyre::eyre!("Missing response for id {}", i))?);
+                    all_results.push(
+                        map.remove(&i)
+                            .ok_or_else(|| eyre::eyre!("Missing response for id {}", i))?,
+                    );
                 }
             } else if let Ok(err_obj) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                 return Err(eyre::eyre!("Batch RPC Failed: {:?}", err_obj));
+                return Err(eyre::eyre!("Batch RPC Failed: {:?}", err_obj));
             } else {
                 return Err(eyre::eyre!("Invalid JSON response: {}", response_text));
             }
         }
-        
+
         Ok(all_results)
     }
 
@@ -126,10 +136,15 @@ impl EthClient {
 
 use crate::address_mapping::AddressMapping;
 
-pub fn fetch_updates_rpc(client: &EthClient, block_number: u64, manager: &crate::update_manager::UpdateManager, address_mapping: &AddressMapping) -> Result<Vec<DBUpdate>> {
+pub fn fetch_updates_rpc(
+    client: &EthClient,
+    block_number: u64,
+    manager: &crate::update_manager::UpdateManager,
+    address_mapping: &AddressMapping,
+) -> Result<Vec<DBUpdate>> {
     // 1. Get block transactions to find touched addresses
     let txs = client.get_block_transactions(block_number)?;
-    
+
     let mut addresses = HashSet::new();
     for tx in txs {
         addresses.insert(tx.from.to_lowercase());
@@ -144,9 +159,10 @@ pub fn fetch_updates_rpc(client: &EthClient, block_number: u64, manager: &crate:
 
     let mut updates = Vec::new();
     let addrs: Vec<String> = addresses.into_iter().collect();
-    
+
     // Filter for tracked addresses
-    let tracked_addrs: Vec<&String> = addrs.iter()
+    let tracked_addrs: Vec<&String> = addrs
+        .iter()
         .filter(|a| address_mapping.get(*a).is_some())
         .collect();
 
@@ -156,9 +172,8 @@ pub fn fetch_updates_rpc(client: &EthClient, block_number: u64, manager: &crate:
 
     // Batch fetch balances
     let hex_num = format!("0x{:x}", block_number);
-    let params: Vec<serde_json::Value> = tracked_addrs.iter()
-        .map(|a| json!([a, hex_num]))
-        .collect();
+    let params: Vec<serde_json::Value> =
+        tracked_addrs.iter().map(|a| json!([a, hex_num])).collect();
 
     let balances: Vec<Result<String>> = client.call_batch("eth_getBalance", params)?;
 
@@ -166,14 +181,14 @@ pub fn fetch_updates_rpc(client: &EthClient, block_number: u64, manager: &crate:
         if let Ok(hex_balance) = &balances[i] {
             let balance = u128::from_str_radix(hex_balance.trim_start_matches("0x"), 16)?;
             let index = address_mapping.get(*addr).unwrap(); // Safe because we filtered
-            
+
             let balance_idx = index + 1;
             let old_balance_entry = manager.get_value(balance_idx).unwrap_or([0; 4]);
-            
+
             let mut new_balance_entry = [0u64; 4];
             new_balance_entry[0] = balance as u64;
             new_balance_entry[1] = (balance >> 64) as u64;
-            
+
             if old_balance_entry != new_balance_entry {
                 updates.push(DBUpdate {
                     index: balance_idx,
@@ -183,14 +198,18 @@ pub fn fetch_updates_rpc(client: &EthClient, block_number: u64, manager: &crate:
             }
         }
     }
-    
+
     Ok(updates)
 }
 
-pub fn fetch_touched_states(client: &EthClient, block_number: u64, address_mapping: &AddressMapping) -> Result<Vec<(u64, u128)>> {
+pub fn fetch_touched_states(
+    client: &EthClient,
+    block_number: u64,
+    address_mapping: &AddressMapping,
+) -> Result<Vec<(u64, u128)>> {
     // 1. Get block transactions
     let txs = client.get_block_transactions(block_number)?;
-    
+
     let mut addresses = HashSet::new();
     for tx in txs {
         addresses.insert(tx.from.to_lowercase());
@@ -200,7 +219,7 @@ pub fn fetch_touched_states(client: &EthClient, block_number: u64, address_mappi
     }
 
     let addrs: Vec<String> = addresses.into_iter().collect();
-    
+
     // Filter and Map to Indices
     // We store (StringAddr, Index) pairs to query RPC then return Index
     let mut tracked = Vec::with_capacity(addrs.len());
@@ -216,9 +235,7 @@ pub fn fetch_touched_states(client: &EthClient, block_number: u64, address_mappi
 
     // Batch fetch balances
     let hex_num = format!("0x{:x}", block_number);
-    let params: Vec<serde_json::Value> = tracked.iter()
-        .map(|(a, _)| json!([a, hex_num]))
-        .collect();
+    let params: Vec<serde_json::Value> = tracked.iter().map(|(a, _)| json!([a, hex_num])).collect();
 
     let balances: Vec<Result<String>> = client.call_batch("eth_getBalance", params)?;
 
@@ -230,6 +247,6 @@ pub fn fetch_touched_states(client: &EthClient, block_number: u64, address_mappi
             }
         }
     }
-    
+
     Ok(results)
 }
