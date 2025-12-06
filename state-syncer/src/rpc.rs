@@ -139,11 +139,16 @@ impl EthClient {
             if let Ok(resps) = serde_json::from_str::<Vec<RpcResponse<T>>>(&response_text) {
                 let mut map = std::collections::HashMap::new();
                 for r in resps {
-                    let id = r.id.as_u64().unwrap() as usize;
+                    let id = r
+                        .id
+                        .as_u64()
+                        .ok_or_else(|| eyre::eyre!("RPC response missing or invalid id"))?
+                        as usize;
                     let val = if let Some(err) = r.error {
                         Err(eyre::eyre!("RPC Error: {:?}", err))
                     } else {
-                        Ok(r.result.unwrap())
+                        r.result
+                            .ok_or_else(|| eyre::eyre!("RPC returned null result for id {}", id))
                     };
                     map.insert(id, val);
                 }
@@ -246,9 +251,10 @@ pub fn fetch_updates_rpc(
             let index = address_mapping.get(*addr).unwrap(); // Safe because we filtered
 
             let balance_idx = index + 1;
-            let old_balance_entry = manager.get_value(balance_idx).unwrap_or([0; 4]);
+            let old_balance_entry =
+                manager.get_value(balance_idx).unwrap_or([0; DB_ENTRY_U64_COUNT]);
 
-            let mut new_balance_entry = [0u64; 4];
+            let mut new_balance_entry = [0u64; DB_ENTRY_U64_COUNT];
             new_balance_entry[0] = balance as u64;
             new_balance_entry[1] = (balance >> 64) as u64;
 
