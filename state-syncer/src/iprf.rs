@@ -7,14 +7,14 @@
 //!
 //! The Swap-or-Not PRP is based on Morris-Rogaway (eprint 2013/560).
 
-use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
 use aes::Aes128;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 pub type PrfKey128 = [u8; 16];
 
 /// Swap-or-Not small-domain PRP (Morris-Rogaway 2013)
-/// 
+///
 /// Achieves full security (withstands all N queries) in O(n log n) time.
 /// Each round is an involution, so inversion just runs rounds in reverse.
 pub struct SwapOrNot {
@@ -29,7 +29,7 @@ impl SwapOrNot {
         let cipher = Aes128::new(&GenericArray::from(key));
         // ~6 * log2(N) rounds for full security
         let num_rounds = ((domain as f64).log2().ceil() as usize) * 6 + 6;
-        
+
         Self {
             cipher,
             domain,
@@ -42,10 +42,10 @@ impl SwapOrNot {
         let mut input = [0u8; 16];
         input[0..8].copy_from_slice(&(round as u64).to_be_bytes());
         input[8..16].copy_from_slice(&self.domain.to_be_bytes());
-        
+
         let mut block = GenericArray::from(input);
         self.cipher.encrypt_block(&mut block);
-        
+
         u64::from_be_bytes(block[0..8].try_into().unwrap()) % self.domain
     }
 
@@ -54,10 +54,10 @@ impl SwapOrNot {
         let mut input = [0u8; 16];
         input[0..8].copy_from_slice(&(round as u64 | 0x8000000000000000).to_be_bytes());
         input[8..16].copy_from_slice(&canonical.to_be_bytes());
-        
+
         let mut block = GenericArray::from(input);
         self.cipher.encrypt_block(&mut block);
-        
+
         (block[0] & 1) == 1
     }
 
@@ -68,7 +68,7 @@ impl SwapOrNot {
         let partner = (k_i + self.domain - (x % self.domain)) % self.domain;
         // Canonical representative: max(X, X')
         let canonical = x.max(partner);
-        
+
         if self.prf_bit(round_num, canonical) {
             partner
         } else {
@@ -109,7 +109,7 @@ impl Iprf {
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
         let tree_depth = (m as f64).log2().ceil() as usize;
         let cipher = Aes128::new(&GenericArray::from(key));
-        
+
         // Derive a separate key for PRP from main key
         let mut prp_key = [0u8; 16];
         let mut hasher = Sha256::new();
@@ -117,9 +117,9 @@ impl Iprf {
         hasher.update(b"prp");
         let hash = hasher.finalize();
         prp_key.copy_from_slice(&hash[0..16]);
-        
+
         let prp = SwapOrNot::new(prp_key, n);
-        
+
         Self {
             key,
             cipher,
@@ -154,10 +154,10 @@ impl Iprf {
     }
 
     /// Deterministic binomial sampling matching Coq formalization.
-    /// 
+    ///
     /// Given count balls and probability p = num/denom, determine how many go left.
     /// Uses PRF output as dither for deterministic sampling.
-    /// 
+    ///
     /// This matches the Coq definition:
     ///   binomial_sample(count, num, denom, prf_output) =
     ///     (count * num + (prf_output mod (denom + 1))) / denom
@@ -187,7 +187,7 @@ impl Iprf {
 
             let node_id = encode_node(low, high, n);
             let prf_output = self.prf_eval(node_id);
-            
+
             let left_count = Self::binomial_sample(ball_count, left_bins, total_bins, prf_output);
 
             if ball_index < left_count {
@@ -221,7 +221,7 @@ impl Iprf {
 
             let node_id = encode_node(low, high, n);
             let prf_output = self.prf_eval(node_id);
-            
+
             let left_count = Self::binomial_sample(ball_count, left_bins, total_bins, prf_output);
 
             if y <= mid {
@@ -233,17 +233,17 @@ impl Iprf {
                 ball_count -= left_count;
             }
         }
-        
+
         (ball_start..ball_start + ball_count).collect()
     }
 
     fn prf_eval(&self, x: u64) -> u64 {
         let mut input = [0u8; 16];
         input[8..16].copy_from_slice(&x.to_be_bytes());
-        
+
         let mut block = GenericArray::from(input);
         self.cipher.encrypt_block(&mut block);
-        
+
         u64::from_be_bytes(block[0..8].try_into().unwrap())
     }
 }
@@ -260,13 +260,14 @@ fn encode_node(low: u64, high: u64, n: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_swap_or_not_inverse() {
         let key = [0u8; 16];
         let domain = 1000u64;
         let prp = SwapOrNot::new(key, domain);
-        
+
         for x in 0..100 {
             let y = prp.forward(x);
             let x_recovered = prp.inverse(y);
@@ -279,7 +280,7 @@ mod tests {
         let key = [1u8; 16];
         let domain = 100u64;
         let prp = SwapOrNot::new(key, domain);
-        
+
         let mut outputs: Vec<u64> = (0..domain).map(|x| prp.forward(x)).collect();
         outputs.sort();
         outputs.dedup();
@@ -292,15 +293,131 @@ mod tests {
         let domain = 1000u64;
         let range = 100u64;
         let iprf = Iprf::new(key, domain, range);
-        
+
         for x in 0..50 {
             let y = iprf.forward(x);
             let preimages = iprf.inverse(y);
             assert!(
                 preimages.contains(&x),
                 "iPRF inverse for y={} does not contain original x={}",
-                y, x
+                y,
+                x
             );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn swap_or_not_inverse_roundtrip(
+            key in any::<[u8; 16]>(),
+            domain in 1u64..10_000,
+            x in any::<u64>(),
+        ) {
+            let x = x % domain;
+            let prp = SwapOrNot::new(key, domain);
+
+            let y = prp.forward(x);
+            prop_assert!(y < domain);
+
+            let x2 = prp.inverse(y);
+            prop_assert_eq!(x, x2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn swap_or_not_is_permutation_for_small_domains(
+            key in any::<[u8; 16]>(),
+            domain in 1u64..65,
+        ) {
+            let prp = SwapOrNot::new(key, domain);
+
+            let mut outputs: Vec<u64> = (0..domain).map(|x| prp.forward(x)).collect();
+            outputs.sort_unstable();
+            outputs.dedup();
+
+            prop_assert_eq!(outputs.len() as u64, domain);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn iprf_inverse_contains_preimage_and_is_consistent(
+            key in any::<[u8; 16]>(),
+            n in 1u64..1_000,
+            m_raw in 1u64..1_000,
+            x_raw in any::<u64>(),
+        ) {
+            let mut m = m_raw;
+            if m > n {
+                m = n;
+            }
+
+            let x = x_raw % n;
+
+            let iprf = Iprf::new(key, n, m);
+
+            let y = iprf.forward(x);
+            prop_assert!(y < m);
+
+            let preimages = iprf.inverse(y);
+            prop_assert!(preimages.contains(&x));
+
+            for &x2 in &preimages {
+                prop_assert!(x2 < n);
+                prop_assert_eq!(y, iprf.forward(x2));
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn iprf_inverse_partitions_domain(
+            key in any::<[u8; 16]>(),
+            n_raw in 1u64..64,
+            m_raw in 1u64..64,
+        ) {
+            let n = n_raw;
+            let mut m = m_raw;
+            if m > n {
+                m = n;
+            }
+
+            let iprf = Iprf::new(key, n, m);
+            let mut seen = vec![false; n as usize];
+
+            for y in 0..m {
+                for x in iprf.inverse(y) {
+                    prop_assert!(x < n);
+                    prop_assert!(
+                        !seen[x as usize],
+                        "element {} appears in multiple inverse bins", x
+                    );
+                    seen[x as usize] = true;
+                }
+            }
+
+            prop_assert!(seen.iter().all(|&b| b));
         }
     }
 }

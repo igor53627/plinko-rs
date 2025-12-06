@@ -9182,6 +9182,7 @@ dependencies = [
  "hex",
  "indicatif",
  "memmap2",
+ "proptest",
  "rand 0.8.5",
  "rayon",
  "reqwest 0.11.27",

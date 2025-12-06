@@ -1,8 +1,8 @@
-use eyre::{Result, ensure};
+use eyre::{ensure, Result};
+use hex;
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
-use hex;
 
 pub struct AddressMapping {
     mmap: Mmap,
@@ -15,16 +15,18 @@ impl AddressMapping {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
-        
-        ensure!(len % ENTRY_SIZE as u64 == 0, "Mapping size {} is not multiple of {}", len, ENTRY_SIZE);
-        
+
+        ensure!(
+            len % ENTRY_SIZE as u64 == 0,
+            "Mapping size {} is not multiple of {}",
+            len,
+            ENTRY_SIZE
+        );
+
         let mmap = unsafe { Mmap::map(&file)? };
         let count = len as usize / ENTRY_SIZE;
 
-        Ok(Self {
-            mmap,
-            count,
-        })
+        Ok(Self { mmap, count })
     }
 
     pub fn get(&self, address_hex: &str) -> Option<u64> {
@@ -37,7 +39,7 @@ impl AddressMapping {
         // Binary search
         // We are searching for `address_bytes` in a sorted array of 24-byte chunks
         // where the first 20 bytes are the key.
-        
+
         let mut low = 0;
         let mut high = self.count;
 
