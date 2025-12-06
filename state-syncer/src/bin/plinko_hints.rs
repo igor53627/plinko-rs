@@ -557,3 +557,185 @@ fn main() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn xor_32_with_zero_is_noop(mut a in any::<[u8; 32]>()) {
+            let original = a;
+            let zeros = [0u8; 32];
+            xor_32(&mut a, &zeros);
+            prop_assert_eq!(a, original);
+        }
+
+        #[test]
+        fn xor_32_twice_with_same_operand_restores_original(
+            mut a in any::<[u8; 32]>(),
+            b in any::<[u8; 32]>(),
+        ) {
+            let original = a;
+            xor_32(&mut a, &b);
+            xor_32(&mut a, &b);
+            prop_assert_eq!(a, original);
+        }
+
+        #[test]
+        fn xor_32_matches_bytewise_xor(
+            mut a in any::<[u8; 32]>(),
+            b in any::<[u8; 32]>(),
+        ) {
+            let mut expected = [0u8; 32];
+            for i in 0..32 {
+                expected[i] = a[i] ^ b[i];
+            }
+
+            xor_32(&mut a, &b);
+            prop_assert_eq!(a, expected);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn block_key_is_deterministic(
+            seed in any::<[u8; 32]>(),
+            alpha in any::<u64>(),
+        ) {
+            let k1 = block_key(&seed, alpha);
+            let k2 = block_key(&seed, alpha);
+            prop_assert_eq!(k1, k2);
+        }
+
+        #[test]
+        fn block_key_changes_with_alpha(
+            seed in any::<[u8; 32]>(),
+            alpha1 in any::<u64>(),
+            alpha2 in any::<u64>(),
+        ) {
+            prop_assume!(alpha1 != alpha2);
+            let k1 = block_key(&seed, alpha1);
+            let k2 = block_key(&seed, alpha2);
+            prop_assert_ne!(k1, k2);
+        }
+
+        #[test]
+        fn hint_block_prf_is_deterministic(
+            k_alpha in any::<[u8; 32]>(),
+            hint_j in any::<u64>(),
+        ) {
+            let r1 = hint_block_prf(&k_alpha, hint_j);
+            let r2 = hint_block_prf(&k_alpha, hint_j);
+            prop_assert_eq!(r1, r2);
+        }
+
+        #[test]
+        fn hint_block_prf_changes_with_hint_index(
+            k_alpha in any::<[u8; 32]>(),
+            j1 in any::<u64>(),
+            j2 in any::<u64>(),
+        ) {
+            prop_assume!(j1 != j2);
+            let r1 = hint_block_prf(&k_alpha, j1);
+            let r2 = hint_block_prf(&k_alpha, j2);
+            prop_assert_ne!(r1, r2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn block_xof_is_deterministic(
+            seed in any::<[u8; 32]>(),
+            alpha in any::<u64>(),
+            len in 0usize..512,
+        ) {
+            let mut buf1 = vec![0u8; len];
+            let mut buf2 = vec![0u8; len];
+
+            block_xof(&seed, alpha).fill(&mut buf1);
+            block_xof(&seed, alpha).fill(&mut buf2);
+
+            prop_assert_eq!(buf1, buf2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn aes_block_key_iv_is_deterministic(
+            seed in any::<[u8; 32]>(),
+            alpha in any::<u64>(),
+        ) {
+            let (k1, iv1) = aes_block_key_iv(&seed, alpha);
+            let (k2, iv2) = aes_block_key_iv(&seed, alpha);
+            prop_assert_eq!(k1, k2);
+            prop_assert_eq!(iv1, iv2);
+        }
+
+        #[test]
+        fn aes_hint_prf_is_deterministic(
+            block_key in any::<[u8; 16]>(),
+            hint_j in any::<u64>(),
+        ) {
+            let r1 = aes_hint_prf(&block_key, hint_j);
+            let r2 = aes_hint_prf(&block_key, hint_j);
+            prop_assert_eq!(r1, r2);
+        }
+
+        #[test]
+        fn aes_hint_prf_changes_with_hint_index(
+            block_key in any::<[u8; 16]>(),
+            j1 in any::<u64>(),
+            j2 in any::<u64>(),
+        ) {
+            prop_assume!(j1 != j2);
+            let r1 = aes_hint_prf(&block_key, j1);
+            let r2 = aes_hint_prf(&block_key, j2);
+            prop_assert_ne!(r1, r2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn find_nearest_divisor_returns_valid_divisor(
+            n in 1usize..100_000,
+            target in 1usize..1000,
+        ) {
+            let divisor = find_nearest_divisor(n, target);
+            prop_assert!(divisor >= 1);
+            prop_assert_eq!(n % divisor, 0);
+        }
+
+        #[test]
+        fn find_nearest_divisor_exact_match(n in 1usize..10_000) {
+            let divisor = find_nearest_divisor(n, n);
+            prop_assert_eq!(divisor, n);
+        }
+    }
+}

@@ -260,6 +260,7 @@ fn encode_node(low: u64, high: u64, n: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_swap_or_not_inverse() {
@@ -301,6 +302,121 @@ mod tests {
                 "iPRF inverse for y={} does not contain original x={}",
                 y, x
             );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn swap_or_not_inverse_roundtrip(
+            key in any::<[u8; 16]>(),
+            domain in 1u64..10_000,
+            x in any::<u64>(),
+        ) {
+            let x = x % domain;
+            let prp = SwapOrNot::new(key, domain);
+
+            let y = prp.forward(x);
+            prop_assert!(y < domain);
+
+            let x2 = prp.inverse(y);
+            prop_assert_eq!(x, x2);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn swap_or_not_is_permutation_for_small_domains(
+            key in any::<[u8; 16]>(),
+            domain in 1u64..65,
+        ) {
+            let prp = SwapOrNot::new(key, domain);
+
+            let mut outputs: Vec<u64> = (0..domain).map(|x| prp.forward(x)).collect();
+            outputs.sort_unstable();
+            outputs.dedup();
+
+            prop_assert_eq!(outputs.len() as u64, domain);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn iprf_inverse_contains_preimage_and_is_consistent(
+            key in any::<[u8; 16]>(),
+            n in 1u64..1_000,
+            m_raw in 1u64..1_000,
+            x_raw in any::<u64>(),
+        ) {
+            let mut m = m_raw;
+            if m > n {
+                m = n;
+            }
+
+            let x = x_raw % n;
+
+            let iprf = Iprf::new(key, n, m);
+
+            let y = iprf.forward(x);
+            prop_assert!(y < m);
+
+            let preimages = iprf.inverse(y);
+            prop_assert!(preimages.contains(&x));
+
+            for &x2 in &preimages {
+                prop_assert!(x2 < n);
+                prop_assert_eq!(y, iprf.forward(x2));
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn iprf_inverse_partitions_domain(
+            key in any::<[u8; 16]>(),
+            n_raw in 1u64..64,
+            m_raw in 1u64..64,
+        ) {
+            let n = n_raw;
+            let mut m = m_raw;
+            if m > n {
+                m = n;
+            }
+
+            let iprf = Iprf::new(key, n, m);
+            let mut seen = vec![false; n as usize];
+
+            for y in 0..m {
+                for x in iprf.inverse(y) {
+                    prop_assert!(x < n);
+                    prop_assert!(
+                        !seen[x as usize],
+                        "element {} appears in multiple inverse bins", x
+                    );
+                    seen[x as usize] = true;
+                }
+            }
+
+            prop_assert!(seen.iter().all(|&b| b));
         }
     }
 }

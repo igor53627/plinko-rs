@@ -74,3 +74,44 @@ fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
     set_size = (set_size + 3) / 4 * 4;
     (chunk_size, set_size)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn derive_plinko_params_zero_entries() {
+        let (chunk, set) = derive_plinko_params(0);
+        assert_eq!((chunk, set), (1, 1));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn derive_plinko_params_invariants(db_entries in 1u64..1_000_000) {
+            let (chunk_size, set_size) = derive_plinko_params(db_entries);
+
+            prop_assert!(chunk_size.is_power_of_two());
+            prop_assert!(chunk_size >= 1);
+
+            let target_chunk = (2.0 * (db_entries as f64).sqrt()) as u64;
+            prop_assert!(chunk_size >= target_chunk);
+            prop_assert!(chunk_size <= target_chunk.saturating_mul(2).max(1));
+
+            prop_assert!(set_size > 0);
+            prop_assert_eq!(set_size % 4, 0);
+
+            let base_sets = (db_entries + chunk_size - 1) / chunk_size;
+            prop_assert!(set_size >= base_sets);
+            prop_assert!(set_size <= base_sets + 4);
+
+            let capacity = chunk_size.checked_mul(set_size).expect("overflow in capacity");
+            prop_assert!(capacity >= db_entries);
+        }
+    }
+}
