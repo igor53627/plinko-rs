@@ -25,7 +25,11 @@ memmap2 = "0.9"
 futures = "0.3"
 
 [dev-dependencies]
-proptest = "1"
-# Use manual RPC for now to avoid c-kzg conflicts with reth
-# alloy-primitives = "0.8"
-# alloy-rpc-types = "0.8"
+proptest = "1.4"
+
+# Kani configuration for formal verification
+[package.metadata.kani]
+# No special flags needed
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -131,14 +131,14 @@ The Plinko PIR scheme relies on an Invertible PRF (iPRF) built from:
 
 We maintain consistency between three sources:
 
-| Component | Paper (2024-318) | Coq Formalization | Rust Implementation |
-|-----------|------------------|-------------------|---------------------|
-| iPRF structure | §4.2: `iF.F(k,x) = S(P(x))` | [Plinko.v](docs/Plinko.v) `iPRF.forward` | [iprf.rs](state-syncer/src/iprf.rs) `Iprf::forward` |
-| iPRF inverse | §4.2: `iF.F⁻¹(k,y) = {P⁻¹(z) : z ∈ S⁻¹(y)}` | `iPRF.inverse` | `Iprf::inverse` |
-| PMNS forward | Algorithm 1 | `PMNS.forward` | `Iprf::trace_ball` |
-| PMNS inverse | Algorithm 2 | `PMNS.inverse` | `Iprf::trace_ball_inverse` |
-| Binomial sampling | §4.3: "derandomized using r as randomness" | `binomial_sample` | `Iprf::binomial_sample` |
-| Swap-or-Not PRP | Referenced: Morris-Rogaway 2013 | `SwapOrNot.prp_forward/inverse` | `SwapOrNot::forward/inverse` |
+| Component | Paper (2024-318) | Coq Formalization | Rust Implementation | Verified |
+|-----------|------------------|-------------------|---------------------|----------|
+| iPRF structure | §4.2: `iF.F(k,x) = S(P(x))` | [Plinko.v](docs/Plinko.v) `iPRF.forward` | [iprf.rs](state-syncer/src/iprf.rs) `Iprf::forward` | proptest |
+| iPRF inverse | §4.2: `iF.F⁻¹(k,y) = {P⁻¹(z) : z ∈ S⁻¹(y)}` | `iPRF.inverse` | `Iprf::inverse` | proptest |
+| PMNS forward | Algorithm 1 | `PMNS.forward` | `Iprf::trace_ball` | proptest |
+| PMNS inverse | Algorithm 2 | `PMNS.inverse` | `Iprf::trace_ball_inverse` | proptest |
+| Binomial sampling | §4.3: "derandomized using r as randomness" | `binomial_sample` | `Iprf::binomial_sample` | **Kani** |
+| Swap-or-Not PRP | Referenced: Morris-Rogaway 2013 | `SwapOrNot.prp_forward/inverse` | `SwapOrNot::forward/inverse` | proptest |
 
 **Key design decision**: The paper doesn't specify the exact binomial sampling algorithm. We use a simple integer-arithmetic sampler matching the Coq formalization:
 
@@ -147,6 +147,27 @@ binomial_sample(count, num, denom, prf_output) = (count * num + (prf_output mod 
 ```
 
 This trades a slightly looser security bound for provable correctness and exact Rust-Coq parity.
+
+### Formal Verification
+
+See [kani_proofs.rs](state-syncer/src/kani_proofs.rs) for all verification harnesses.
+
+**Kani** (bit-precise model checking):
+- `binomial_sample`: Output bounded, matches Coq definition exactly
+
+**Proptest** (property-based testing with random keys):
+- `SwapOrNot`: Permutation correctness, `inverse(forward(x)) == x`
+- `Iprf`: `x ∈ inverse(forward(x))`, output ranges valid
+
+> Note: SwapOrNot/Iprf use AES which causes state explosion in Kani. These are verified via proptest with random keys instead.
+
+```bash
+# Run Kani proofs (requires Kani toolchain)
+cd state-syncer && cargo kani --tests
+
+# Run proptest harnesses
+cd state-syncer && cargo test --lib kani_proofs
+```
 
 ### Documentation
 
