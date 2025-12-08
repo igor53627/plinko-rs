@@ -43,7 +43,6 @@ struct Args {
     /// Allow truncation if N is not divisible by w (drops tail entries)
     #[arg(long, default_value = "false")]
     allow_truncation: bool,
-
 }
 
 /// Regular hint: P_j subset of c/2+1 blocks, single parity
@@ -188,7 +187,10 @@ fn main() -> eyre::Result<()> {
     }
 
     if c < 2 {
-        eprintln!("Warning: c={} is very small; backup hints will have empty subsets", c);
+        eprintln!(
+            "Warning: c={} is very small; backup hints will have empty subsets",
+            c
+        );
     }
 
     let regular_subset_size = c / 2 + 1;
