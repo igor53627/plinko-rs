@@ -360,14 +360,18 @@ fn main() -> eyre::Result<()> {
     }
 
     // Verify iPRF coverage: sum of |inverse(offset)| over all offsets should equal domain (total_hints)
-    println!("\nVerifying iPRF coverage...");
+    let blocks_to_check = c.min(10);
+    println!(
+        "\nSampling iPRF coverage (first {} blocks)...",
+        blocks_to_check
+    );
     let mut total_preimages = 0usize;
-    for block in 0..c.min(10) {
+    for block in 0..blocks_to_check {
         for offset in 0..w {
             total_preimages += block_iprfs[block].inverse(offset as u64).len();
         }
     }
-    let blocks_checked = c.min(10);
+    let blocks_checked = blocks_to_check;
     let expected_per_block = total_hints; // iPRF partitions domain [0, total_hints) into range [0, w)
     println!(
         "  First {} blocks: {} total preimages across {} offsets (expected {} per block = {})",
