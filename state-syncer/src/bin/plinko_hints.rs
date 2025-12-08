@@ -10,7 +10,7 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
-use state_syncer::constant_time::ct_lt_u64;
+use state_syncer::constant_time::{ct_lt_u64, ct_select_u64};
 use state_syncer::iprf::{Iprf, IprfTee, PrfKey128, MAX_PREIMAGES};
 use std::fs::File;
 use std::path::PathBuf;
@@ -153,7 +153,10 @@ fn process_hints_iprf_tee(
                 let mask_byte = (in_range as u8).wrapping_neg();
 
                 let offset = (db_index as usize) * WORD_SIZE;
-                let safe_offset = offset.min(db_bytes.len().saturating_sub(WORD_SIZE));
+                let max_valid_offset = db_bytes.len().saturating_sub(WORD_SIZE);
+                let is_valid = ct_lt_u64(offset as u64, (max_valid_offset + 1) as u64);
+                let safe_offset =
+                    ct_select_u64(is_valid, offset as u64, max_valid_offset as u64) as usize;
                 let entry: [u8; 32] = db_bytes[safe_offset..safe_offset + WORD_SIZE]
                     .try_into()
                     .unwrap();

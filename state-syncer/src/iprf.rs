@@ -198,7 +198,7 @@ impl SwapOrNotTee {
 }
 
 /// Maximum preimages for fixed-size array return
-pub const MAX_PREIMAGES: usize = 64;
+pub const MAX_PREIMAGES: usize = 512;
 
 /// Constant-time iPRF for TEE execution
 ///
