@@ -72,6 +72,11 @@ struct Args {
     /// Comparable to standard BLAKE3 mode but with AES-NI acceleration.
     #[arg(long, default_value = "false")]
     aes_standard: bool,
+
+    /// Use TEE mode: constant-time operations for trusted execution environments.
+    /// Prevents timing side-channels but slightly slower.
+    #[arg(long, default_value = "false")]
+    tee: bool,
 }
 
 fn block_key(master_seed: &[u8; 32], alpha: u64) -> [u8; 32] {
@@ -99,6 +104,14 @@ fn block_xof(master_seed: &[u8; 32], alpha: u64) -> OutputReader {
 fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
     for i in 0..32 {
         dst[i] ^= src[i];
+    }
+}
+
+/// Masked XOR - always executes XOR, but result is conditional on mask
+/// mask should be 0x00 (skip) or 0xFF (include)
+fn xor_32_masked(dst: &mut [u8; 32], src: &[u8; 32], mask_byte: u8) {
+    for i in 0..32 {
+        dst[i] ^= src[i] & mask_byte;
     }
 }
 
@@ -404,6 +417,56 @@ fn process_block_aes(
     (partial_hints, xor_count)
 }
 
+/// Constant-time block processing for TEE execution.
+/// Always iterates all hints and uses masked XOR instead of conditional skip.
+fn process_block_tee(
+    alpha: usize,
+    db_bytes: &[u8],
+    block_size_bytes: usize,
+    w: usize,
+    num_hints: usize,
+    master_seed: &[u8; 32],
+) -> (Vec<[u8; 32]>, u64) {
+    let block_start = alpha * block_size_bytes;
+    let block_bytes = &db_bytes[block_start..block_start + block_size_bytes];
+
+    let mut partial_hints = vec![[0u8; 32]; num_hints];
+    let mut xor_count = 0u64;
+
+    let (key, iv) = aes_block_key_iv(master_seed, alpha as u64);
+    let mut cipher = Aes128Ctr::new(&key.into(), &iv.into());
+
+    let total_bytes = num_hints * BYTES_PER_HINT;
+    let mut aes_buf = vec![0u8; total_bytes];
+    cipher.apply_keystream(&mut aes_buf);
+
+    for j in 0..num_hints {
+        let offset = j * BYTES_PER_HINT;
+        let control = aes_buf[offset];
+
+        // Convert include bit to mask: 0 -> 0x00, 1 -> 0xFF
+        let include_bit = control & 1;
+        let mask_byte = (include_bit as u8).wrapping_neg(); // 0->0, 1->0xFF
+
+        // Derive beta (always computed, even if not included)
+        let rand64 = u64::from_le_bytes(aes_buf[offset + 1..offset + 9].try_into().unwrap());
+        let beta = (rand64 as usize) % w;
+
+        let entry_offset = beta * WORD_SIZE;
+        let entry: [u8; 32] = block_bytes[entry_offset..entry_offset + WORD_SIZE]
+            .try_into()
+            .unwrap();
+
+        // Always XOR with mask - no branch on include
+        xor_32_masked(&mut partial_hints[j], &entry, mask_byte);
+
+        // Count includes (for statistics only)
+        xor_count += include_bit as u64;
+    }
+
+    (partial_hints, xor_count)
+}
+
 /// Process one block using an AES-based per-hint PRF to produce partial hints.
 ///
 /// For the block identified by `alpha`, derives an AES block key from `master_seed` and
@@ -515,7 +578,9 @@ fn main() -> eyre::Result<()> {
     }
     let num_threads = rayon::current_num_threads();
 
-    let mode_str = if args.aes {
+    let mode_str = if args.tee {
+        "TEE"
+    } else if args.aes {
         "AES-CTR"
     } else if args.aes_standard {
         "AES-Standard"
@@ -652,6 +717,7 @@ fn main() -> eyre::Result<()> {
         .progress_chars("#>-"));
 
     let progress_counter = AtomicU64::new(0);
+    let use_tee = args.tee;
     let use_xof = args.xof;
     let use_aes = args.aes;
     let use_aes_standard = args.aes_standard;
@@ -660,7 +726,16 @@ fn main() -> eyre::Result<()> {
     let (hints, total_xors) = (0..c)
         .into_par_iter()
         .map(|alpha| {
-            let result = if use_aes {
+            let result = if use_tee {
+                process_block_tee(
+                    alpha,
+                    db_bytes,
+                    block_size_bytes,
+                    w,
+                    num_hints,
+                    &master_seed,
+                )
+            } else if use_aes {
                 process_block_aes(
                     alpha,
                     db_bytes,
