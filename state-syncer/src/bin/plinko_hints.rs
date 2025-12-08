@@ -104,9 +104,7 @@ fn process_hints_iprf(
             for db_index in preimages {
                 let offset = (db_index as usize) * WORD_SIZE;
                 if offset + WORD_SIZE <= db_bytes.len() {
-                    let entry: [u8; 32] = db_bytes[offset..offset + WORD_SIZE]
-                        .try_into()
-                        .unwrap();
+                    let entry: [u8; 32] = db_bytes[offset..offset + WORD_SIZE].try_into().unwrap();
                     xor_32(&mut hint_value, &entry);
                     xor_count += 1;
                 }
@@ -369,7 +367,9 @@ fn main() -> eyre::Result<()> {
                 "\nWarning: Expected {:.1} preimages/hint exceeds safe threshold.",
                 expected_preimages
             );
-            println!("         TEE mode may truncate at MAX_PREIMAGES=64, causing incorrect hints.");
+            println!(
+                "         TEE mode may truncate at MAX_PREIMAGES=64, causing incorrect hints."
+            );
             println!("         Consider increasing num_hints (lambda) or using non-TEE iPRF mode.");
         }
     }
