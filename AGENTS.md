@@ -43,3 +43,41 @@ cd state-syncer && cargo build --release --bin plinko_hints
 ## Style
 
 - Do NOT use emojis in code, comments, or documentation
+
+## Formal Verification Compliance
+
+When modifying Rust code in `state-syncer/`, ALWAYS verify changes don't break alignment with:
+
+1. **Paper specification** (`docs/plinko_paper_*.json`)
+   - HintInit must match Fig. 7 pseudocode
+   - iPRF domain/range must be correct (domain=num_hints, range=w)
+   - Key generation: one iPRF key per block
+
+2. **Coq specification** (`docs/Plinko.v`)
+   - `RegularHint`: block subset of c/2+1, single parity
+   - `BackupHint`: block subset of c/2, dual parities (in/out)
+   - `hint_init`, `process_db_entry` logic must match
+
+3. **Rocq proofs** (`state-syncer/formal/`)
+   - `specs/*.v`: iPRF, SwapOrNot, binomial specs
+   - `proofs/*.v`: Verified properties
+   - Do NOT change Rust semantics that would invalidate proofs
+
+### Verification Checklist
+
+Before committing Rust changes to hint generation or iPRF:
+
+- [ ] iPRF instantiation: `Iprf::new(key, domain, range)` where domain=total_hints, range=w
+- [ ] Per-block keys: c keys derived from master seed
+- [ ] Regular hints: subset size c/2+1, single parity XOR'd when block in P
+- [ ] Backup hints: subset size c/2, parity_in when block in P, parity_out otherwise
+- [ ] Streaming: (block, offset) = (i/w, i mod w), use block's key for iPRF.inverse(offset)
+
+### Reference Files
+
+| Spec | Location |
+|------|----------|
+| Paper HintInit | `docs/plinko_paper_part6_algorithms.json` (algorithm_id: plinko_hintinit) |
+| Coq HintInit | `docs/Plinko.v` (hint_init, process_db_entry) |
+| iPRF Spec | `state-syncer/formal/specs/IprfSpec.v` |
+| PRP Spec | `state-syncer/formal/specs/SwapOrNotSpec.v` |
