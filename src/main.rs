@@ -5,8 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use reth_db::{
     cursor::{DbCursorRO, DbDupCursorRO},
     database::Database,
-    open_db_read_only,
-    tables,
+    open_db_read_only, tables,
     transaction::DbTx,
 };
 use std::{
@@ -47,7 +46,7 @@ fn main() -> Result<()> {
     let now = || chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
 
     println!("[{}] Opening database at {:?}", now(), args.db_path);
-    
+
     // We keep the DB open, but we will open/close TXs
     let db = open_db_read_only(&args.db_path, Default::default())?;
 
@@ -66,18 +65,23 @@ fn main() -> Result<()> {
         (
             Some(BufWriter::new(File::create(&db_file_path)?)),
             Some(BufWriter::new(File::create(&acc_map_path)?)),
-            Some(BufWriter::new(File::create(&sto_map_path)?))
+            Some(BufWriter::new(File::create(&sto_map_path)?)),
         )
     } else {
-        println!("[{}] Running in COUNT-ONLY mode. No files will be written.", now());
+        println!(
+            "[{}] Running in COUNT-ONLY mode. No files will be written.",
+            now()
+        );
         (None, None, None)
     };
 
     // Setup progress bar
     let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .template("{spinner:.green} [{elapsed_precise}] {msg}")
-        .unwrap());
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed_precise}] {msg}")
+            .unwrap(),
+    );
 
     let limit = args.limit.unwrap_or(usize::MAX);
     let batch_size = args.batch_size;
@@ -85,7 +89,8 @@ fn main() -> Result<()> {
     // --- READ CHAIN INFO ---
     println!("[{}] Reading Chain Info...", now());
     let tx = db.tx()?;
-    let last_block = tx.cursor_read::<tables::CanonicalHeaders>()?
+    let last_block = tx
+        .cursor_read::<tables::CanonicalHeaders>()?
         .last()?
         .map(|(num, _hash)| num)
         .unwrap_or(0);
@@ -105,7 +110,7 @@ fn main() -> Result<()> {
 
         let tx = db.tx()?;
         let mut cursor = tx.cursor_read::<tables::PlainAccountState>()?;
-        
+
         // Resume from last key
         let walker = if let Some(key) = last_acc_key.clone() {
             let mut w = cursor.walk(Some(key))?;
@@ -131,7 +136,7 @@ fn main() -> Result<()> {
 
         for entry in walker {
             let (address, account) = entry?;
-            
+
             // Double check skipping
             if let Some(last) = &last_acc_key {
                 if &address == last {
@@ -189,12 +194,17 @@ fn main() -> Result<()> {
         if batch_count == 0 {
             break;
         }
-        
+
         last_acc_key = current_acc_key;
         drop(tx); // Close transaction
     }
-    
-    println!("[{}] Processed {} accounts. Current Index: {}", now(), count_acc, total_indices);
+
+    println!(
+        "[{}] Processed {} accounts. Current Index: {}",
+        now(),
+        count_acc,
+        total_indices
+    );
 
     // --- PROCESS STORAGE ---
     println!("[{}] Processing Storage...", now());
@@ -208,7 +218,7 @@ fn main() -> Result<()> {
 
         let tx = db.tx()?;
         let mut cursor = tx.cursor_dup_read::<tables::PlainStorageState>()?;
-        
+
         // Resume Logic for Storage
         let walker = if let Some(addr) = last_sto_addr.clone() {
             // Try to seek to the address
@@ -247,7 +257,7 @@ fn main() -> Result<()> {
                     break;
                 }
             }
-            
+
             current_addr = Some(address);
 
             if count_sto >= limit {
@@ -285,11 +295,23 @@ fn main() -> Result<()> {
     }
 
     pb.finish_and_clear();
-    println!("[{}] Done! Acc: {}, Sto: {}, Total Indices: {}", now(), count_acc, count_sto, total_indices);
-    
-    if let Some(mut writer) = db_writer { writer.flush()?; }
-    if let Some(mut writer) = acc_map_writer { writer.flush()?; }
-    if let Some(mut writer) = sto_map_writer { writer.flush()?; }
+    println!(
+        "[{}] Done! Acc: {}, Sto: {}, Total Indices: {}",
+        now(),
+        count_acc,
+        count_sto,
+        total_indices
+    );
+
+    if let Some(mut writer) = db_writer {
+        writer.flush()?;
+    }
+    if let Some(mut writer) = acc_map_writer {
+        writer.flush()?;
+    }
+    if let Some(mut writer) = sto_map_writer {
+        writer.flush()?;
+    }
 
     // --- WRITE METADATA ---
     if !args.count_only {
@@ -302,7 +324,11 @@ fn main() -> Result<()> {
   "total_indices": {},
   "generated_at": "{}"
 }}"#,
-            last_block, count_acc, count_sto, total_indices, now()
+            last_block,
+            count_acc,
+            count_sto,
+            total_indices,
+            now()
         );
         std::fs::write(meta_path, json)?;
     }
