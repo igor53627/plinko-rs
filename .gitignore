@@ -3,3 +3,13 @@
 **/*.rs.bk
 *.swp
 .DS_Store
+
+# Coq/Rocq build artifacts
+plinko/formal/**/*.vo
+plinko/formal/**/*.vok
+plinko/formal/**/*.vos
+plinko/formal/**/*.glob
+plinko/formal/**/.*.aux
+plinko/formal/.lia.cache
+plinko/formal/.nia.cache
+plinko/formal/.depend

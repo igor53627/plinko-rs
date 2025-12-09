@@ -113,11 +113,11 @@ translate:
 
 # Clean generated files
 clean:
-	rm -f specs/*.vo specs/*.glob specs/*.vok specs/*.vos
-	rm -f sims/*.vo sims/*.glob sims/*.vok sims/*.vos
-	rm -f proofs/*.vo proofs/*.glob proofs/*.vok proofs/*.vos
-	rm -f src/*.vo src/*.glob src/*.vok src/*.vos
-	rm -f linking/*.vo linking/*.glob linking/*.vok linking/*.vos
+	rm -f specs/*.vo specs/*.glob specs/*.vok specs/*.vos specs/.*.aux
+	rm -f sims/*.vo sims/*.glob sims/*.vok sims/*.vos sims/.*.aux
+	rm -f proofs/*.vo proofs/*.glob proofs/*.vok proofs/*.vos proofs/.*.aux
+	rm -f src/*.vo src/*.glob src/*.vok src/*.vos src/.*.aux
+	rm -f linking/*.vo linking/*.glob linking/*.vok linking/*.vos linking/.*.aux
 	rm -f .depend
 
 # Check if dependencies are installed
@@ -158,7 +158,7 @@ ADMIT_THRESHOLD ?= 10
 # Check admits don't exceed threshold
 check-admits:
 	@echo "Checking admit count against threshold ($(ADMIT_THRESHOLD))..."
-	@ADMITS=$$(grep -rni '\badmitted\b' proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '); \
+	@ADMITS=$$(grep -rni '\badmitted\b' specs/ sims/ proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '); \
 	if [ "$$ADMITS" -gt "$(ADMIT_THRESHOLD)" ]; then \
 		echo "ERROR: admit count ($$ADMITS) exceeds threshold ($(ADMIT_THRESHOLD))"; \
 		exit 1; \
