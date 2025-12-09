@@ -65,8 +65,11 @@ jobs:
       - name: Build Rocq specs and proofs
         run: |
           echo "PATH=$PATH"
-          which coqc
-          coqc --version
+          echo "Contents of rocq bin:"
+          ls -la /home/runner/.opam/rocq-9/bin/ | head -20
+          which coqc || echo "coqc not in PATH"
+          which rocqc || echo "rocqc not in PATH"
+          coqc --version || rocqc --version
           cd plinko/formal
           make clean
           make all
