@@ -31,6 +31,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cache opam
+        id: cache-opam
         uses: actions/cache@v4
         with:
           path: ~/.opam
@@ -42,15 +43,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y opam
-          opam init --auto-setup --disable-sandboxing --bare
-          opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
-          eval $(opam env --switch=rocq-9)
-          opam repo add coq-released https://coq.inria.fr/opam/released || true
-          opam update
-          opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+          if [ "${{ steps.cache-opam.outputs.cache-hit }}" = "true" ] && [ -d ~/.opam/rocq-9 ]; then
+            echo "Using cached opam switch"
+            opam init --auto-setup --disable-sandboxing --bare || true
+          else
+            echo "Building fresh opam switch"
+            opam init --auto-setup --disable-sandboxing --bare
+            opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
+            eval $(opam env --switch=rocq-9)
+            opam repo add coq-released https://coq.inria.fr/opam/released || true
+            opam update
+            opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+          fi
           # Export opam paths for subsequent steps
-          eval $(opam env --switch=rocq-9)
-          echo "PATH=$PATH" >> $GITHUB_ENV
           echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
           # Create compatibility symlinks for coqc -> rocqc
           ln -sf rocqc /home/runner/.opam/rocq-9/bin/coqc
@@ -78,6 +83,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Cache opam
+        id: cache-opam-ror
         uses: actions/cache@v4
         with:
           path: ~/.opam
@@ -99,6 +105,7 @@ jobs:
             cargo-ror-${{ runner.os }}-
 
       - name: Cache rocq-of-rust
+        id: cache-ror
         uses: actions/cache@v4
         with:
           path: ~/rocq-of-rust
@@ -110,15 +117,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y opam
-          opam init --auto-setup --disable-sandboxing --bare
-          opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
-          eval $(opam env --switch=rocq-9)
-          opam repo add coq-released https://coq.inria.fr/opam/released || true
-          opam update
-          opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+          if [ "${{ steps.cache-opam-ror.outputs.cache-hit }}" = "true" ] && [ -d ~/.opam/rocq-9 ]; then
+            echo "Using cached opam switch"
+            opam init --auto-setup --disable-sandboxing --bare || true
+          else
+            echo "Building fresh opam switch"
+            opam init --auto-setup --disable-sandboxing --bare
+            opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
+            eval $(opam env --switch=rocq-9)
+            opam repo add coq-released https://coq.inria.fr/opam/released || true
+            opam update
+            opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+          fi
           # Export opam paths for subsequent steps
-          eval $(opam env --switch=rocq-9)
-          echo "PATH=$PATH" >> $GITHUB_ENV
           echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
           # Create compatibility symlinks for coqc -> rocqc
           ln -sf rocqc /home/runner/.opam/rocq-9/bin/coqc
@@ -139,12 +150,22 @@ jobs:
           cd ~/rocq-of-rust
           git fetch origin main
           git checkout origin/main
-          cargo +nightly-2024-12-07 build --release
+          if [ ! -f target/release/rocq-of-rust ]; then
+            echo "Building rocq-of-rust..."
+            cargo +nightly-2024-12-07 build --release
+          else
+            echo "Using cached rocq-of-rust binary"
+          fi
 
       - name: Build RocqOfRust library
         run: |
           cd ~/rocq-of-rust/RocqOfRust
-          make -j2 || make
+          if [ -f M.vo ]; then
+            echo "Using cached RocqOfRust library"
+          else
+            echo "Building RocqOfRust library..."
+            make -j2 || make
+          fi
 
       - name: Translate Rust to Rocq
         id: translate
