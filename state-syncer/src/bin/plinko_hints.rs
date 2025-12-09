@@ -251,7 +251,9 @@ fn main() -> eyre::Result<()> {
         if args.print_seed {
             println!(
                 "Generated random seed: 0x{}",
-                seed.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                seed.iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>()
             );
             println!("  (use --seed to reproduce this run)");
         }
@@ -468,7 +470,11 @@ mod tests {
         let mut sorted = subset.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), subset.len(), "subset should have no duplicates");
+        assert_eq!(
+            sorted.len(),
+            subset.len(),
+            "subset should have no duplicates"
+        );
     }
 
     #[test]
