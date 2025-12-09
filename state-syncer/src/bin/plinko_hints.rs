@@ -11,7 +11,7 @@
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
-use rand::SeedableRng;
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 use state_syncer::iprf::{Iprf, PrfKey128};
@@ -43,6 +43,15 @@ struct Args {
     /// Allow truncation if N is not divisible by w (drops tail entries)
     #[arg(long, default_value = "false")]
     allow_truncation: bool,
+
+    /// Master seed for reproducible hint generation (hex, 32 bytes).
+    /// If not provided, a random seed is generated from OS entropy.
+    #[arg(long)]
+    seed: Option<String>,
+
+    /// Print the master seed (for reproducibility). Use with caution in production.
+    #[arg(long)]
+    print_seed: bool,
 }
 
 /// Regular hint: P_j subset of c/2+1 blocks, single parity
@@ -215,11 +224,39 @@ fn main() -> eyre::Result<()> {
         (regular_storage + backup_storage) as f64 / 1024.0 / 1024.0
     );
 
-    let master_seed: [u8; 32] = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
-        0x1f, 0x20,
-    ];
+    // Generate or parse master seed
+    let master_seed: [u8; 32] = if let Some(ref hex_seed) = args.seed {
+        // Parse hex seed from CLI
+        let hex_clean = hex_seed.strip_prefix("0x").unwrap_or(hex_seed);
+        if hex_clean.len() != 64 {
+            eprintln!("Error: --seed must be exactly 32 bytes (64 hex chars)");
+            std::process::exit(1);
+        }
+        let mut seed = [0u8; 32];
+        for (i, chunk) in hex_clean.as_bytes().chunks(2).enumerate() {
+            let hex_str = std::str::from_utf8(chunk).unwrap();
+            seed[i] = u8::from_str_radix(hex_str, 16).unwrap_or_else(|_| {
+                eprintln!("Error: invalid hex in --seed at position {}", i * 2);
+                std::process::exit(1);
+            });
+        }
+        if args.print_seed {
+            println!("Using provided seed: 0x{}", hex_clean);
+        }
+        seed
+    } else {
+        // Generate random seed from OS entropy (CSPRNG)
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        if args.print_seed {
+            println!(
+                "Generated random seed: 0x{}",
+                seed.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            );
+            println!("  (use --seed to reproduce this run)");
+        }
+        seed
+    };
 
     let start = Instant::now();
 
@@ -422,6 +459,16 @@ mod tests {
         for &x in &subset {
             assert!(x < 100);
         }
+    }
+
+    #[test]
+    fn test_random_subset_unique() {
+        let mut rng = ChaCha20Rng::from_seed([4u8; 32]);
+        let subset = random_subset(&mut rng, 20, 100);
+        let mut sorted = subset.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), subset.len(), "subset should have no duplicates");
     }
 
     #[test]

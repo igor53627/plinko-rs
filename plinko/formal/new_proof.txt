@@ -1,0 +1,44 @@
+  rewrite <- contributing_entries_from_zero.
+  
+  assert (Hmapi_aux_length : forall {A B : Type} (f : nat -> A -> B) (l : list A) (n : nat), length (mapi_aux n f l) = length l).
+  { intros A0 B0 f0 l0. induction l0 as [|x0 xs0 IH0]; intro n0. reflexivity. simpl. f_equal. apply IH0. }
+  assert (Hmapi_length : forall {A B : Type} (f : nat -> A -> B) (l : list A), length (mapi f l) = length l).
+  { intros A0 B0 f0 l0. unfold mapi. apply Hmapi_aux_length. }
+  assert (Hnth_mapi_aux : forall {A B : Type} (f : nat -> A -> B) (l : list A) (n k : nat) (d : B) (d' : A), (k < length l)%nat -> nth k (mapi_aux n f l) d = f (n + k)%nat (nth k l d')).
+  { intros A0 B0 f0 l0. induction l0 as [|x0 xs0 IH0]; intros n0 k0 d0 d0' Hk0. simpl in Hk0. lia. destruct k0 as [|k0']. simpl. rewrite Nat.add_0_r. reflexivity. simpl in Hk0. simpl. replace (n0 + S k0')%nat with (S n0 + k0')%nat by lia. apply IH0. lia. }
+  assert (Hnth_mapi : forall {A B : Type} (f : nat -> A -> B) (l : list A) (k : nat) (d : B) (d' : A), (k < length l)%nat -> nth k (mapi f l) d = f k (nth k l d')).
+  { intros A0 B0 f0 l0 k0 d0 d0' Hk0. unfold mapi. rewrite (Hnth_mapi_aux A0 B0 f0 l0 0%nat k0 d0 d0'); [|exact Hk0]. rewrite Nat.add_0_l. reflexivity. }
+  assert (Hmapi_aux_In_local : forall {A B : Type} (f : nat -> A -> B) (l : list A) (n : nat) (y : B), In y (mapi_aux n f l) -> exists k x, (k < length l)%nat /\ nth_error l k = Some x /\ y = f (n + k)%nat x).
+  { intros A0 B0 f0 l0. induction l0 as [|a l0' IH0]; intros n0 y0 Hin. simpl in Hin. destruct Hin. simpl in Hin. destruct Hin as [Heq | Hin]. exists 0%nat, a. split; [simpl; lia|]. split; [reflexivity|]. rewrite Nat.add_0_r. symmetry. exact Heq. specialize (IH0 (S n0) y0 Hin). destruct IH0 as [k [x [Hlt [Hnth_err Heq]]]]. exists (S k), x. split; [simpl; lia|]. split; [exact Hnth_err|]. replace (n0 + S k)%nat with (S n0 + k)%nat by lia. exact Heq. }
+  assert (Hinvariant : forall (db : list Entry) (st_init : StreamingState) (start_idx : Z) (acc : Entry), (Z.to_nat j0 < length (ss_regular_parities st_init))%nat -> length acc = 32%nat -> nth (Z.to_nat j0) (ss_regular_parities st_init) zero_entry = acc -> (forall e, In e db -> length e = 32%nat) -> let final_st := fst (fold_left (fun '(st, i) entry => (process_entry_streaming st block_keys regular_seeds backup_seeds c0 w0 num_regular0 num_backup0 total_hints0 i entry, i + 1)) db (st_init, start_idx)) in nth (Z.to_nat j0) (ss_regular_parities final_st) zero_entry = xor_entry acc (xor_list (contributing_entries_from j0 seed_j subset_size c0 total_hints0 w0 start_idx db))).
+  { induction db as [|e db' IHdb]; intros st_init start_idx acc Hlen_st Hlen_acc Hnth_st Hdb_lens.
+    - simpl. unfold contributing_entries_from, mapi. simpl. unfold xor_list. simpl. rewrite xor_entry_0_r; [exact Hnth_st | exact Hlen_acc].
+    - simpl. set (st' := process_entry_streaming st_init block_keys regular_seeds backup_seeds c0 w0 num_regular0 num_backup0 total_hints0 start_idx e). set (contributes := entry_contributes_regular j0 seed_j subset_size c0 total_hints0 w0 start_idx).
+      assert (Hprocess : nth (Z.to_nat j0) (ss_regular_parities st') zero_entry = if contributes then xor_entry acc e else acc).
+      { unfold st', process_entry_streaming, contributes, entry_contributes_regular. simpl. rewrite Hnth_mapi with (d' := zero_entry); [|exact Hlen_st]. rewrite Hnth_st. replace (Z.of_nat (Z.to_nat j0)) with j0 by lia. unfold seed_j, subset_size. destruct (existsb (Z.eqb j0) (iprf_inverse_spec (start_idx mod w0) total_hints0 w0)) eqn:Hexists; destruct (block_in_subset (nth (Z.to_nat j0) regular_seeds 0) (c0 / 2 + 1) c0 (start_idx / w0)) eqn:Hblock; reflexivity. }
+      rewrite contributing_entries_from_cons.
+      assert (Hdb'_lens : forall e0, In e0 db' -> length e0 = 32%nat). { intros e0 He0. apply Hdb_lens. right. exact He0. }
+      assert (He_len : length e = 32%nat). { apply Hdb_lens. left. reflexivity. }
+      destruct contributes eqn:Hcontr.
+      + unfold contributes in Hcontr. rewrite Hcontr. simpl.
+        assert (Hlen_st'_reg : (Z.to_nat j0 < length (ss_regular_parities st'))%nat). { unfold st', process_entry_streaming. simpl. rewrite Hmapi_length. exact Hlen_st. }
+        assert (Hlen_xor : length (xor_entry acc e) = 32%nat). { unfold xor_entry. rewrite map_length, combine_length, Hlen_acc, He_len. reflexivity. }
+        specialize (IHdb st' (start_idx + 1) (xor_entry acc e) Hlen_st'_reg Hlen_xor Hprocess Hdb'_lens). rewrite IHdb.
+        assert (Hrest_lens : forall e0, In e0 (contributing_entries_from j0 seed_j subset_size c0 total_hints0 w0 (start_idx + 1) db') -> length e0 = 32%nat).
+        { intros e0 He0. unfold contributing_entries_from in He0. apply in_map_iff in He0. destruct He0 as [[idx entry] [Heq Hfilter]]. simpl in Heq. subst e0. apply filter_In in Hfilter. destruct Hfilter as [Hmapi0 _]. unfold mapi in Hmapi0. apply Hmapi_aux_In_local in Hmapi0. destruct Hmapi0 as [k [x [Hlt [Hnth_err Heq]]]]. injection Heq as _ Heq. subst entry. apply Hdb'_lens. apply nth_error_In with (n := k). exact Hnth_err. }
+        assert (Hxor_list_len : length (xor_list (contributing_entries_from j0 seed_j subset_size c0 total_hints0 w0 (start_idx + 1) db')) = 32%nat). { apply xor_list_length. exact Hrest_lens. }
+        assert (Hzero_len' : length zero_entry = 32%nat). { unfold zero_entry. apply repeat_length. }
+        assert (Hzero_e_len : length (xor_entry zero_entry e) = 32%nat). { unfold xor_entry. rewrite map_length, combine_length, Hzero_len', He_len. reflexivity. }
+        unfold xor_list at 2. simpl. rewrite fold_left_xor_acc; [|exact Hzero_e_len|exact Hrest_lens]. rewrite xor_entry_0_l; [|exact He_len].
+        rewrite <- xor_entry_assoc; [reflexivity | rewrite Hlen_acc; symmetry; exact He_len | rewrite He_len; symmetry; exact Hxor_list_len].
+      + unfold contributes in Hcontr. rewrite Hcontr. simpl.
+        assert (Hlen_st'_reg : (Z.to_nat j0 < length (ss_regular_parities st'))%nat). { unfold st', process_entry_streaming. simpl. rewrite Hmapi_length. exact Hlen_st. }
+        specialize (IHdb st' (start_idx + 1) acc Hlen_st'_reg Hlen_acc Hprocess Hdb'_lens). exact IHdb. }
+  set (init_st := init_streaming_state num_regular0 num_backup0).
+  assert (Hinit_len : (Z.to_nat j0 < length (ss_regular_parities init_st))%nat). { unfold init_st, init_streaming_state. simpl. rewrite repeat_length. lia. }
+  assert (Hinit_nth : nth (Z.to_nat j0) (ss_regular_parities init_st) zero_entry = zero_entry). { unfold init_st, init_streaming_state. simpl. apply nth_repeat. }
+  assert (Hzero_len : length zero_entry = 32%nat). { unfold zero_entry. apply repeat_length. }
+  assert (Hdb_lens : forall e, In e database -> length e = 32%nat). { admit. }
+  specialize (Hinvariant database init_st 0 zero_entry Hinit_len Hzero_len Hinit_nth Hdb_lens).
+  unfold init_st in Hinvariant. exact Hinvariant.
+Admitted.

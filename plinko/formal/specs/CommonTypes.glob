@@ -1,0 +1,104 @@
+DIGEST 592f107058a91bd79fe5667a3bf502f4
+FPlinko.Specs.CommonTypes
+R107:116 Stdlib.Lists.List <> <> lib
+R146:158 Stdlib.ZArith.ZArith <> <> lib
+R188:200 Stdlib.micromega.Lia <> <> lib
+R211:223 Stdlib.Lists.List ListNotations <> mod
+def 283:286 <> Word
+R291:291 Corelib.Numbers.BinNums <> Z ind
+def 306:311 <> Key128
+R316:319 Corelib.Init.Datatypes <> list ind
+R321:321 Corelib.Numbers.BinNums <> Z ind
+def 373:384 <> valid_domain
+R391:391 Corelib.Numbers.BinNums <> Z ind
+binder 387:387 <> n:1
+R405:407 Stdlib.ZArith.BinInt <> ::Z_scope:x_'>'_x not
+R404:404 Plinko.Specs.CommonTypes <> n:1 var
+def 423:433 <> valid_range
+R442:442 Corelib.Numbers.BinNums <> Z ind
+binder 436:436 <> m:2
+binder 438:438 <> n:3
+R461:464 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R456:459 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x not
+R460:460 Plinko.Specs.CommonTypes <> m:2 var
+R466:469 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x not
+R465:465 Plinko.Specs.CommonTypes <> m:2 var
+R470:470 Plinko.Specs.CommonTypes <> n:3 var
+def 515:533 <> is_power_of_two_nat
+R540:542 Corelib.Init.Datatypes <> nat ind
+binder 536:536 <> n:4
+R547:550 Corelib.Init.Datatypes <> bool ind
+R563:563 Plinko.Specs.CommonTypes <> n:4 var
+R574:574 Corelib.Init.Datatypes <> O constr
+R579:583 Corelib.Init.Datatypes <> false constr
+R589:589 Corelib.Init.Datatypes <> S constr
+R591:591 Corelib.Init.Datatypes <> O constr
+R596:599 Corelib.Init.Datatypes <> true constr
+R605:605 Corelib.Init.Datatypes <> S constr
+R608:608 Corelib.Init.Datatypes <> S constr
+R632:635 Corelib.Init.Datatypes <> ::bool_scope:x_'&&'_x not
+R622:629 Stdlib.Arith.PeanoNat Nat even def
+R636:654 Plinko.Specs.CommonTypes <> is_power_of_two_nat:5 def
+def 678:692 <> is_power_of_two
+R699:699 Corelib.Numbers.BinNums <> Z ind
+binder 695:695 <> n:7
+R719:722 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R715:717 Stdlib.ZArith.BinInt <> ::Z_scope:x_'>'_x not
+R714:714 Plinko.Specs.CommonTypes <> n:7 var
+R723:729 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R737:738 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R734:736 Corelib.Init.Datatypes <> nat ind
+binder 730:730 <> k:8
+R740:742 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R739:739 Plinko.Specs.CommonTypes <> n:7 var
+R743:747 Stdlib.ZArith.BinInt Z pow def
+R752:759 Stdlib.ZArith.BinInt Z of_nat def
+R761:761 Plinko.Specs.CommonTypes <> k:8 var
+prf 772:790 <> is_power_of_two_pos
+binder 801:801 <> n:9
+R821:824 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R804:818 Plinko.Specs.CommonTypes <> is_power_of_two def
+R820:820 Plinko.Specs.CommonTypes <> n:9 var
+R826:828 Stdlib.ZArith.BinInt <> ::Z_scope:x_'>'_x not
+R825:825 Plinko.Specs.CommonTypes <> n:9 var
+def 914:921 <> ceil_div
+R930:930 Corelib.Numbers.BinNums <> Z ind
+binder 924:924 <> a:10
+binder 926:926 <> b:11
+R935:935 Corelib.Numbers.BinNums <> Z ind
+R940:940 Stdlib.ZArith.BinInt <> ::Z_scope:x_'/'_x not
+R950:953 Stdlib.ZArith.BinInt <> ::Z_scope:x_'/'_x not
+R946:948 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R942:944 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
+R941:941 Plinko.Specs.CommonTypes <> a:10 var
+R945:945 Plinko.Specs.CommonTypes <> b:11 var
+R954:954 Plinko.Specs.CommonTypes <> b:11 var
+def 998:1014 <> round_up_multiple
+R1023:1023 Corelib.Numbers.BinNums <> Z ind
+binder 1017:1017 <> x:12
+binder 1019:1019 <> m:13
+R1028:1028 Corelib.Numbers.BinNums <> Z ind
+R1033:1033 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
+R1049:1052 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
+R1034:1034 Stdlib.ZArith.BinInt <> ::Z_scope:x_'/'_x not
+R1044:1047 Stdlib.ZArith.BinInt <> ::Z_scope:x_'/'_x not
+R1040:1042 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R1036:1038 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
+R1035:1035 Plinko.Specs.CommonTypes <> x:12 var
+R1039:1039 Plinko.Specs.CommonTypes <> m:13 var
+R1048:1048 Plinko.Specs.CommonTypes <> m:13 var
+R1053:1053 Plinko.Specs.CommonTypes <> m:13 var
+def 1103:1111 <> FinDomain
+R1118:1118 Corelib.Numbers.BinNums <> Z ind
+binder 1114:1114 <> N:14
+R1124:1125 Corelib.Init.Specif <> ::type_scope:'{'_x_':'_x_'|'_x_'}' not
+R1127:1129 Corelib.Init.Specif <> ::type_scope:'{'_x_':'_x_'|'_x_'}' not
+R1131:1133 Corelib.Init.Specif <> ::type_scope:'{'_x_':'_x_'|'_x_'}' not
+R1144:1145 Corelib.Init.Specif <> ::type_scope:'{'_x_':'_x_'|'_x_'}' not
+R1130:1130 Corelib.Numbers.BinNums <> Z ind
+binder 1126:1126 <> x:15
+R1135:1138 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<'_x not
+R1140:1142 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<'_x not
+R1139:1139 Plinko.Specs.CommonTypes <> x:15 var
+R1139:1139 Plinko.Specs.CommonTypes <> x:15 var
+R1143:1143 Plinko.Specs.CommonTypes <> N:14 var
