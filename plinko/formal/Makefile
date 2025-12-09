@@ -3,8 +3,8 @@
 COQC := coqc
 COQDEP := coqdep
 
-# Path to RocqOfRust library
-ROCQOFRUST_PATH := $(HOME)/pse/paradigm/rocq-of-rust/RocqOfRust
+# Path to RocqOfRust library (can be overridden via environment or command line)
+ROCQOFRUST_PATH ?= $(HOME)/rocq-of-rust/RocqOfRust
 
 # Flags for our code (specs, simulations, proofs)
 COQFLAGS := -Q specs Plinko.Specs -Q sims Plinko.Sims -Q proofs Plinko.Proofs
