@@ -40,12 +40,12 @@ struct Args {
     #[arg(short, long)]
     backup_hints: Option<usize>,
 
-    /// Override entries per block (w). Default: sqrt(N) adjusted to divide N
+    /// Override entries per block (w). Default: round(sqrt(N)); DB is padded as needed.
     #[arg(short, long)]
     entries_per_block: Option<usize>,
 
-    /// Allow truncation if N is not divisible by w (drops tail entries)
-    #[arg(long, default_value = "false")]
+    /// [DEBUG ONLY] Allow truncation instead of padding (violates security assumptions)
+    #[arg(long, default_value = "false", hide = true)]
     allow_truncation: bool,
 
     /// Master seed for reproducible hint generation (hex, 32 bytes).
@@ -202,18 +202,56 @@ fn main() -> eyre::Result<()> {
         }
     }
 
-    // Use logical_n_entries (after padding) unless truncation mode
-    let n_effective = if args.allow_truncation && remainder != 0 {
-        n_entries - remainder
+    // Use logical_n_entries (after padding) unless truncation mode (debug only)
+    let (mut n_effective, mut pad_entries) = if args.allow_truncation && remainder != 0 {
+        eprintln!("Warning: --allow-truncation is a debug flag that violates security assumptions.");
+        (n_entries - remainder, 0usize)
     } else {
-        logical_n_entries
+        (logical_n_entries, pad_entries)
     };
-    let c = n_effective / w;
+    let mut c = n_effective / w;
+
+    // Enforce c >= 2
+    if c < 2 {
+        eprintln!(
+            "Error: Number of blocks (c = {}) must be at least 2 for Plinko security.",
+            c
+        );
+        eprintln!("       Decrease --entries-per-block or increase DB size.");
+        std::process::exit(1);
+    }
+
+    // Auto-bump c to even if odd (required for security proof)
+    // Skip in truncation mode (debug only, explicitly violates security)
+    if !args.allow_truncation && c % 2 != 0 {
+        c += 1;
+        n_effective = c * w;
+        pad_entries = n_effective - n_entries;
+        println!(
+            "Info: Bumped c from {} to {} (must be even for security). Padding with {} entries.",
+            c - 1,
+            c,
+            pad_entries
+        );
+    } else if args.allow_truncation && c % 2 != 0 {
+        eprintln!(
+            "Warning: --allow-truncation mode with odd c = {} further violates security assumptions.",
+            c
+        );
+    }
 
     println!("\nPlinko Parameters:");
     println!("  Physical entries (from DB): {}", n_entries);
-    println!("  Logical entries (after padding): {}", n_effective);
-    if pad_entries > 0 && !args.allow_truncation {
+    println!(
+        "  Logical entries (after {}): {}",
+        if args.allow_truncation && n_effective < n_entries {
+            "truncation"
+        } else {
+            "padding"
+        },
+        n_effective
+    );
+    if pad_entries > 0 {
         println!("  Padded entries: {}", pad_entries);
     }
     println!("  Entries per block (w): {}", w);
@@ -233,22 +271,13 @@ fn main() -> eyre::Result<()> {
         std::process::exit(1);
     }
 
-    if c < 2 {
-        eprintln!(
-            "Error: Number of blocks (c = {}) must be at least 2 for Plinko security.",
+    // Final assertion: c must be even (should always pass after auto-bump in production mode)
+    if !args.allow_truncation {
+        assert!(
+            c % 2 == 0,
+            "Invariant violation: number of blocks (c = {}) must be even for security.",
             c
         );
-        eprintln!("       Decrease --entries-per-block or increase DB size.");
-        std::process::exit(1);
-    }
-
-    if c % 2 != 0 {
-        eprintln!(
-            "Error: Number of blocks (c = {}) must be even for Plinko security.",
-            c
-        );
-        eprintln!("       Choose a different --entries-per-block or adjust N via padding.");
-        std::process::exit(1);
     }
 
     let regular_subset_size = c / 2 + 1;
