@@ -242,31 +242,4 @@ jobs:
           make ROCQOFRUST_PATH="$HOME/rocq-of-rust/RocqOfRust" all
           make ROCQOFRUST_PATH="$HOME/rocq-of-rust/RocqOfRust" linking
 
-      - name: Comment on PR if translation/linking failed
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const body = `## [WARN] Formal Verification Issue
-            
-            The rocq-of-rust translation or linking layer failed. This means Rust changes may have broken formal verification.
-            
-            **This is non-blocking** but should be investigated before merging if formal verification is important for this change.
-            
-            <details>
-            <summary>What to check</summary>
-            
-            1. Did you change types or APIs in \`state-syncer/src/\`?
-            2. Run locally: \`cd plinko/formal && make translate && make linking\`
-            3. Check if rocq-of-rust supports the Rust constructs you added
-            
-            </details>
-            
-            See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`;
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
+
