@@ -46,6 +46,7 @@ jobs:
           if [ "${{ steps.cache-opam.outputs.cache-hit }}" = "true" ] && [ -d ~/.opam/rocq-9 ]; then
             echo "Using cached opam switch"
             opam init --auto-setup --disable-sandboxing --bare || true
+            eval $(opam env --switch=rocq-9)
           else
             echo "Building fresh opam switch"
             opam init --auto-setup --disable-sandboxing --bare
@@ -54,6 +55,13 @@ jobs:
             opam repo add coq-released https://coq.inria.fr/opam/released || true
             opam update
             opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+          fi
+          # Ensure opam env is set for this step
+          eval $(opam env --switch=rocq-9)
+          # Verify rocqc exists before creating symlinks
+          if [ ! -f /home/runner/.opam/rocq-9/bin/rocqc ]; then
+            echo "ERROR: rocqc not found, cache may be corrupted"
+            exit 1
           fi
           # Export opam paths for subsequent steps
           echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
@@ -123,6 +131,7 @@ jobs:
           if [ "${{ steps.cache-opam-ror.outputs.cache-hit }}" = "true" ] && [ -d ~/.opam/rocq-9 ]; then
             echo "Using cached opam switch"
             opam init --auto-setup --disable-sandboxing --bare || true
+            eval $(opam env --switch=rocq-9)
           else
             echo "Building fresh opam switch"
             opam init --auto-setup --disable-sandboxing --bare
@@ -131,6 +140,13 @@ jobs:
             opam repo add coq-released https://coq.inria.fr/opam/released || true
             opam update
             opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+          fi
+          # Ensure opam env is set for this step
+          eval $(opam env --switch=rocq-9)
+          # Verify rocqc exists before creating symlinks
+          if [ ! -f /home/runner/.opam/rocq-9/bin/rocqc ]; then
+            echo "ERROR: rocqc not found, cache may be corrupted"
+            exit 1
           fi
           # Export opam paths for subsequent steps
           echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
