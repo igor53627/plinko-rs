@@ -43,12 +43,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y opam
-          if [ "${{ steps.cache-opam.outputs.cache-hit }}" = "true" ] && [ -d ~/.opam/rocq-9 ]; then
+          # Check if cache is valid (has rocqc binary)
+          CACHE_VALID="false"
+          if [ "${{ steps.cache-opam.outputs.cache-hit }}" = "true" ] && [ -f ~/.opam/rocq-9/bin/rocqc ]; then
+            CACHE_VALID="true"
+          fi
+          if [ "$CACHE_VALID" = "true" ]; then
             echo "Using cached opam switch"
             opam init --auto-setup --disable-sandboxing --bare || true
             eval $(opam env --switch=rocq-9)
           else
-            echo "Building fresh opam switch"
+            echo "Building fresh opam switch (cache miss or corrupted)"
+            # Clean up corrupted cache if present
+            rm -rf ~/.opam
             opam init --auto-setup --disable-sandboxing --bare
             opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
             eval $(opam env --switch=rocq-9)
@@ -58,11 +65,6 @@ jobs:
           fi
           # Ensure opam env is set for this step
           eval $(opam env --switch=rocq-9)
-          # Verify rocqc exists before creating symlinks
-          if [ ! -f /home/runner/.opam/rocq-9/bin/rocqc ]; then
-            echo "ERROR: rocqc not found, cache may be corrupted"
-            exit 1
-          fi
           # Export opam paths for subsequent steps
           echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
           # Create compatibility symlinks (always, in case cache didn't preserve them)
@@ -128,12 +130,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y opam
-          if [ "${{ steps.cache-opam-ror.outputs.cache-hit }}" = "true" ] && [ -d ~/.opam/rocq-9 ]; then
+          # Check if cache is valid (has rocqc binary)
+          CACHE_VALID="false"
+          if [ "${{ steps.cache-opam-ror.outputs.cache-hit }}" = "true" ] && [ -f ~/.opam/rocq-9/bin/rocqc ]; then
+            CACHE_VALID="true"
+          fi
+          if [ "$CACHE_VALID" = "true" ]; then
             echo "Using cached opam switch"
             opam init --auto-setup --disable-sandboxing --bare || true
             eval $(opam env --switch=rocq-9)
           else
-            echo "Building fresh opam switch"
+            echo "Building fresh opam switch (cache miss or corrupted)"
+            # Clean up corrupted cache if present
+            rm -rf ~/.opam
             opam init --auto-setup --disable-sandboxing --bare
             opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
             eval $(opam env --switch=rocq-9)
@@ -143,11 +152,6 @@ jobs:
           fi
           # Ensure opam env is set for this step
           eval $(opam env --switch=rocq-9)
-          # Verify rocqc exists before creating symlinks
-          if [ ! -f /home/runner/.opam/rocq-9/bin/rocqc ]; then
-            echo "ERROR: rocqc not found, cache may be corrupted"
-            exit 1
-          fi
           # Export opam paths for subsequent steps
           echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
           # Create compatibility symlinks (always, in case cache didn't preserve them)
