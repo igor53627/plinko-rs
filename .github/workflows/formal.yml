@@ -195,12 +195,8 @@ jobs:
           # Debug: show available binaries
           echo "Available binaries in opam switch:"
           ls -la /home/runner/.opam/rocq-9/bin/ 2>/dev/null | grep -E "rocq|coq" | head -20 || echo "(bin dir not found)"
-          # Create compatibility symlinks (Rocq 9.x uses 'rocq' binary with subcommands)
-          ln -sf /home/runner/.opam/rocq-9/bin/rocq /home/runner/.opam/rocq-9/bin/coqc || true
-          ln -sf /home/runner/.opam/rocq-9/bin/rocq /home/runner/.opam/rocq-9/bin/rocqc || true
-          ln -sf /home/runner/.opam/rocq-9/bin/rocq /home/runner/.opam/rocq-9/bin/coqdep || true
-          ln -sf /home/runner/.opam/rocq-9/bin/rocq /home/runner/.opam/rocq-9/bin/rocqdep || true
-          ln -sf /home/runner/.opam/rocq-9/bin/rocq /home/runner/.opam/rocq-9/bin/coq_makefile || true
+          # Do NOT create symlinks - rocq-prover.9.0.0 already provides coq* binaries
+          # Symlinks would overwrite working binaries with broken rocq symlinks
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@master
