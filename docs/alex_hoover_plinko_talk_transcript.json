@@ -4,7 +4,7 @@
   "title": "Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs",
   "speaker": "Alex Hoover",
   "conference": "Crypto Seminar",
-  "coauthors": ["Server", "Giuseppe", "Kevin"],
+  "coauthors": ["Giuseppe Persiano", "Kevin Yeo"],
   "extracted_via": "Gemini 2.0 Flash API",
   "extraction_date": "2025-12-12",
   "referenced_in_issue": "https://github.com/igor53627/plinko-extractor/issues/40#issuecomment-3640449842",
