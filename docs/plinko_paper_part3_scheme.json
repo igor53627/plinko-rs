@@ -65,18 +65,24 @@
           "format": "(P_j, p_j)",
           "P_j": "subset of c/2 + 1 blocks",
           "p_j": "parity of chosen database entries",
-          "offset_selection": "For block α ∈ P_j: offset = iF.F(k_α, j)"
+          "offset_selection": "For block α ∈ P_j: offset = iF.F(k_α, j)",
+          "implementation_note": "Block subset P_j derived from 32-byte seed via SHA256(master_seed || label || j); blocks recomputed on demand rather than stored explicitly"
         },
         "backup_hint": {
           "format": "(B_j, ℓ_j, r_j)",
           "B_j": "subset of c/2 blocks",
           "ℓ_j": "parity of entries in B_j at iPRF-chosen offsets",
-          "r_j": "parity of entries outside B_j at iPRF-chosen offsets"
+          "r_j": "parity of entries outside B_j at iPRF-chosen offsets",
+          "implementation_note": "Block subset B_j derived from 32-byte seed via SHA256(master_seed || label || j); blocks recomputed on demand rather than stored explicitly"
         },
         "promoted_backup": {
           "format": "(B_j, η, x, p_j)",
           "description": "Backup hint promoted after query, includes query index x"
         }
+      },
+      "security_constraints": {
+        "c_even": "Number of blocks c must be even for security proof (auto-bumped if odd)",
+        "c_minimum": "c >= 2 required for meaningful subset sizes"
       },
       "offline_phase": {
         "steps": [
