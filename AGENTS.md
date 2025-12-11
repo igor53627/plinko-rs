@@ -1,5 +1,15 @@
 # Plinko Extractor - Agent Rules
 
+## Canonical Protocol Reference
+
+**`docs/plinko_paper_index.json`** is the canonical source of truth for Plinko protocol implementation details. It indexes:
+- Parsed paper content (`plinko_paper_part*.json`)
+- Regression test data location (Cloudflare R2)
+- Video resources
+- Agent usage notes for different tasks
+
+Always consult this file first when implementing or verifying protocol logic.
+
 ## Host: root@aya
 
 - **Reth DB location**: `/mnt/mainnet/data`
