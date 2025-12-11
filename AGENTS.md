@@ -91,3 +91,10 @@ Before committing Rust changes to hint generation or iPRF:
 | Coq HintInit | `docs/Plinko.v` (hint_init, process_db_entry) |
 | iPRF Spec | `state-syncer/formal/specs/IprfSpec.v` |
 | PRP Spec | `state-syncer/formal/specs/SwapOrNotSpec.v` |
+
+## Devin DeepWiki
+
+Update `.devin/wiki.json` when making changes worth documenting:
+- Add repo_notes for new features, data locations, or architectural changes
+- Update pages array if new components need dedicated documentation
+- DeepWiki regenerates on next Devin indexing
