@@ -71,6 +71,24 @@ These artifacts allow a PIR client to look up any account state or storage slot 
 - **Total Database Size**: 73 GB
 - **Total Mapping Size**: ~82 GB
 
+## Regression Test Data
+
+A 3.6GB subset of Ethereum state is available on Cloudflare R2 for testing:
+
+| File | Size | Description |
+|------|------|-------------|
+| `database.bin` | 3.6 GB | 120M entries (30M accounts + 30M storage slots) |
+| `account-mapping.bin` | 687 MB | Address -> index lookup |
+| `storage-mapping.bin` | 1.6 GB | (Address, Slot) -> index lookup |
+| `metadata.json` | 147 B | Block #23,889,314 extraction metadata |
+
+```bash
+# Download (requires R2 credentials or public URL)
+aws s3 cp s3://plinko-regression-data/ ./regression-data/ \
+  --endpoint-url https://c6ffe0823b48a4b7689d9b9e9045e465.r2.cloudflarestorage.com \
+  --recursive
+```
+
 ## Hint Generation
 
 The `state-syncer` crate includes a Plinko hint generator for benchmarking:
@@ -186,4 +204,8 @@ cd state-syncer && cargo test --lib kani_proofs
 - [Plinko: Single-Server PIR with Efficient Updates](https://vitalik.eth.limo/general/2025/11/25/plinko.html) - Vitalik Buterin's overview
 - [Plinko Paper (ePrint 2024/318)](https://eprint.iacr.org/2024/318.pdf) - Academic paper by Mughees, Shi, and Chen
 - [Morris-Rogaway 2013](https://eprint.iacr.org/2013/560.pdf) - Swap-or-Not small-domain PRP construction
+
+---
+
+[Alex Hoover: Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs](https://www.youtube.com/watch?v=okJaBn7ZXnc)
 
