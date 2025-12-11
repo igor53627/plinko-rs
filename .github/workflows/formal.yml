@@ -164,9 +164,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/rocq-of-rust
-          key: rocq-of-rust-${{ runner.os }}-v2
+          # v3: switched to fork with Rocq 9.x CLI support
+          key: rocq-of-rust-fork-${{ runner.os }}-v3
           restore-keys: |
-            rocq-of-rust-${{ runner.os }}-
+            rocq-of-rust-fork-${{ runner.os }}-
 
       - name: Install opam
         run: |
@@ -205,11 +206,12 @@ jobs:
       - name: Clone and build rocq-of-rust
         run: |
           if [ ! -d ~/rocq-of-rust ]; then
-            git clone https://github.com/formal-land/coq-of-rust.git ~/rocq-of-rust
+            # Use our fork with Rocq 9.x CLI support
+            git clone https://github.com/igor53627/rocq-of-rust.git ~/rocq-of-rust
           fi
           cd ~/rocq-of-rust
-          git fetch origin main
-          git checkout origin/main
+          git fetch origin fix/rocq-9x-cli-support
+          git checkout origin/fix/rocq-9x-cli-support
           if [ ! -f target/release/rocq-of-rust ]; then
             echo "Building rocq-of-rust..."
             cargo +nightly-2024-12-07 build --release
