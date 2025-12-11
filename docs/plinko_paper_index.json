@@ -93,5 +93,32 @@
     "for_understanding_theory": "Use Part 2 (technical) with Part 1 (overview)",
     "for_literature_review": "Use Part 5 (references) with Part 4 (comparisons)",
     "for_quick_summary": "Use Part 1 (metadata) only"
-  }
+  },
+  "regression_test_data": {
+    "location": "Cloudflare R2: s3://plinko-regression-data/",
+    "endpoint": "https://c6ffe0823b48a4b7689d9b9e9045e465.r2.cloudflarestorage.com",
+    "source_block": 23889314,
+    "accounts": 30000000,
+    "storage_slots": 30000000,
+    "total_entries": 120000000,
+    "files": {
+      "database.bin": "3.6 GB - flat array of 32-byte words",
+      "account-mapping.bin": "687 MB - address to index lookup",
+      "storage-mapping.bin": "1.6 GB - (address, slot) to index lookup",
+      "metadata.json": "extraction metadata"
+    },
+    "benchmark_params": {
+      "lambda": 128,
+      "entries_per_block": 49177,
+      "blocks": 2440,
+      "hints": 6294656,
+      "hint_storage_mb": 192
+    }
+  },
+  "video_resources": [
+    {
+      "title": "Alex Hoover: Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs",
+      "url": "https://www.youtube.com/watch?v=okJaBn7ZXnc"
+    }
+  ]
 }
