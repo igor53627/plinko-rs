@@ -205,13 +205,27 @@ jobs:
 
       - name: Clone and build rocq-of-rust
         run: |
-          if [ ! -d ~/rocq-of-rust ]; then
-            # Use our fork with Rocq 9.x CLI support
-            git clone https://github.com/igor53627/rocq-of-rust.git ~/rocq-of-rust
+          FORK_URL="https://github.com/igor53627/rocq-of-rust.git"
+          FORK_BRANCH="fix/rocq-9x-cli-support"
+          
+          if [ -d ~/rocq-of-rust ]; then
+            cd ~/rocq-of-rust
+            # Check if this is our fork or the old upstream
+            if ! git remote get-url origin | grep -q "igor53627"; then
+              echo "Cached repo is old upstream, removing..."
+              cd ~ && rm -rf ~/rocq-of-rust
+            fi
           fi
+          
+          if [ ! -d ~/rocq-of-rust ]; then
+            echo "Cloning fork..."
+            git clone "$FORK_URL" ~/rocq-of-rust
+          fi
+          
           cd ~/rocq-of-rust
-          git fetch origin fix/rocq-9x-cli-support
-          git checkout origin/fix/rocq-9x-cli-support
+          git fetch origin "$FORK_BRANCH"
+          git checkout "origin/$FORK_BRANCH"
+          
           if [ ! -f target/release/rocq-of-rust ]; then
             echo "Building rocq-of-rust..."
             cargo +nightly-2024-12-07 build --release
@@ -222,12 +236,9 @@ jobs:
       - name: Build RocqOfRust library
         run: |
           cd ~/rocq-of-rust/RocqOfRust
-          if [ -f M.vo ]; then
-            echo "Using cached RocqOfRust library"
-          else
-            echo "Building RocqOfRust library..."
-            make -j2 || make
-          fi
+          # Always rebuild if Makefile changed (fork has Rocq 9.x fix)
+          echo "Building RocqOfRust library..."
+          make -j2 || make
 
       - name: Translate Rust to Rocq
         id: translate
