@@ -128,8 +128,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   rocq-of-rust:
-    name: Rocq-of-Rust Translation
+    name: Rocq-of-Rust Translation (Experimental)
     runs-on: ubuntu-latest
+    # Experimental: rocq-of-rust library has Rocq 9.x universe compatibility issues.
+    # The RocqOfRust library uses Set constraints incompatible with Rocq 9.x's stricter
+    # universe handling. Fixing requires significant upstream changes.
+    # Tracked in: https://github.com/formal-land/rocq-of-rust/issues (pending)
     continue-on-error: true
     permissions:
       contents: read
@@ -164,10 +168,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/rocq-of-rust
-          # v21: comprehensive Smpl comment-out + hauto Admitted across all files
-          key: rocq-of-rust-fork-${{ runner.os }}-v21
+          # v19: smpl with cbn/simpl before reflexivity
+          key: rocq-of-rust-fork-${{ runner.os }}-v19
           restore-keys: |
-            rocq-of-rust-fork-${{ runner.os }}-v21
+            rocq-of-rust-fork-${{ runner.os }}-v19
 
       - name: Install opam
         run: |
