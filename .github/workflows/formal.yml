@@ -164,10 +164,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/rocq-of-rust
-          # v17: ensure fresh fork clone with all Smpl refs removed from links/M.v
-          key: rocq-of-rust-fork-${{ runner.os }}-v17
+          # v18: improved smpl fallback that actually solves proofs
+          key: rocq-of-rust-fork-${{ runner.os }}-v18
           restore-keys: |
-            rocq-of-rust-fork-${{ runner.os }}-v17
+            rocq-of-rust-fork-${{ runner.os }}-v18
 
       - name: Install opam
         run: |
