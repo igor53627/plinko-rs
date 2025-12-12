@@ -9,11 +9,15 @@
       "author": "maintainer"
     },
     {
-      "content": "The state-syncer/ crate contains the core Plinko implementation: iPRF (invertible PRF), Swap-or-Not PRP, binomial sampling, and hint generation. The plinko/formal/ directory contains Rocq proofs for formal verification.",
+      "content": "The state-syncer/ crate contains the core Plinko implementation: iPRF (invertible PRF), Sometimes-Recurse PRP (SwapOrNotSr), binomial sampling, and hint generation. The state-syncer/formal/ directory contains Rocq proofs for formal verification.",
       "author": "maintainer"
     },
     {
       "content": "Key video resource: Alex Hoover's talk 'Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs' at https://www.youtube.com/watch?v=okJaBn7ZXnc",
+      "author": "maintainer"
+    },
+    {
+      "content": "The PRP uses Morris-Rogaway Sometimes-Recurse (SR) wrapper for full-domain security. Round counts follow paper-faithful formula: t_N = ceil(7.23 lg N + 4.82 lambda + 4.82 lg p) from Morris-Rogaway 2013/560 Section 5. Default is 128-bit security.",
       "author": "maintainer"
     }
   ],
@@ -29,7 +33,7 @@
     },
     {
       "title": "iPRF Implementation",
-      "purpose": "Document state-syncer/src/iprf.rs: Swap-or-Not PRP, PMNS (Pseudorandom Multinomial Sampler), forward/inverse operations",
+      "purpose": "Document state-syncer/src/iprf.rs: Sometimes-Recurse PRP (SwapOrNotSr), PMNS (Pseudorandom Multinomial Sampler), forward/inverse operations with 128-bit security",
       "parent": "Plinko Protocol"
     },
     {
