@@ -30,18 +30,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - **iPRF**: `Iprf` and `IprfTee` now use `SwapOrNotSr`/`SwapOrNotSrTee` instead of plain `SwapOrNot` for full-domain security
-
-### Fixed
-
-- **SR round counts**: Implemented paper-faithful per-stage epsilon-budget schedule (Morris-Rogaway Section 5, Strategy 1) for provable 128-bit security; previous heuristic had no proven bound
-
-### Changed
-
 - **Hint storage**: Hints now store a 32-byte seed instead of explicit block lists, significantly reducing memory footprint
 - **Block count (c)**: Auto-bumped to even if odd (required for security proof); hard assertion enforced in production mode
 - **Padding**: Replace `find_nearest_divisor` with padding - DB is padded with dummy zero entries instead of truncating tail entries
 - **CLI**: `--allow-truncation` is now hidden (debug-only flag that violates security assumptions)
 - **CLI docs**: Fixed description for `--entries-per-block` to reflect padding behavior
+
+### Fixed
+
+- **SR round counts**: Implemented paper-faithful per-stage epsilon-budget schedule (Morris-Rogaway Section 5, Strategy 1) for provable 128-bit security; previous heuristic had no proven bound
 
 ### Added
 

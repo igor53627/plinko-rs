@@ -258,7 +258,8 @@ fn binomial_inverse_ct(n: u64, p: f64, u: f64) -> u64 {
 
 /// Fallback arithmetic approximation for very large counts.
 /// Uses the simplified formula from BinomialSpec.v.
-/// NOT a true binomial distribution, but O(1).
+/// NOT a true binomial distribution (produces a narrow deterministic range
+/// around n*p), but O(1). Unreachable when IprfTee enforces count <= 4096.
 #[inline]
 fn binomial_sample_tee_approx(count: u64, num: u64, denom: u64, prf_output: u64) -> u64 {
     let denom128 = denom as u128;
@@ -477,7 +478,10 @@ mod tests {
                     assert!(
                         result <= count,
                         "Range violation: count={}, num={}, denom={}, result={}",
-                        count, num, denom, result
+                        count,
+                        num,
+                        denom,
+                        result
                     );
                 }
             }
