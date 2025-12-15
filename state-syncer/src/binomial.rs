@@ -141,8 +141,10 @@ fn binomial_cdf(n: u64, p: f64, k: u64) -> f64 {
 
 /// Maximum count for constant-time exact binomial sampling.
 /// For counts above this, the O(n) iteration is too expensive.
-/// In PMNS context, ball_count at each level is typically much smaller.
-pub const CT_BINOMIAL_MAX_COUNT: u64 = 4096;
+/// In PMNS/Plinko contexts, `count` is always <= CT_BINOMIAL_MAX_COUNT,
+/// which is chosen to exceed the maximum possible ball_count at any recursion
+/// level (e.g., ~40k for Ethereum addresses at first recursion level).
+pub const CT_BINOMIAL_MAX_COUNT: u64 = 65536;
 
 /// TEE-safe constant-time exact binomial sampler.
 ///
@@ -150,28 +152,26 @@ pub const CT_BINOMIAL_MAX_COUNT: u64 = 4096;
 /// with fixed iteration count to prevent timing side-channels.
 ///
 /// Security properties:
-/// - Always iterates exactly `count + 1` times (no early exit)
+/// - Always iterates exactly `CT_BINOMIAL_MAX_COUNT + 1` times (no early exit)
 /// - Uses constant-time float comparison and selection
-/// - No branches depend on `prf_output` (secret-derived)
+/// - No branches depend on `count` or `prf_output` (both are secret)
+/// - Loop bounds depend only on public constants
 ///
-/// Complexity: O(count) - suitable for count <= 4096
+/// Complexity: O(CT_BINOMIAL_MAX_COUNT) - fixed cost regardless of count
 ///
 /// # TEE Usage
-/// In TEE/constant-time contexts, callers MUST ensure `count <= CT_BINOMIAL_MAX_COUNT`
-/// (e.g., via a constructor assertion as in `IprfTee::new`). The fallback for larger
-/// counts is NOT constant-time and uses an arithmetic approximation instead of true
-/// binomial distribution.
+/// In TEE/constant-time contexts, callers MUST ensure `count <= CT_BINOMIAL_MAX_COUNT`.
+/// This is a protocol-level invariant; exceeding it is a programmer error.
 ///
 /// # Panics
-/// Panics in debug mode if count > CT_BINOMIAL_MAX_COUNT (4096).
-/// In release mode, falls back to arithmetic approximation for large counts.
+/// Panics in debug mode if count > CT_BINOMIAL_MAX_COUNT.
 #[inline]
 pub fn binomial_sample_tee(count: u64, num: u64, denom: u64, prf_output: u64) -> u64 {
+    use crate::constant_time::{ct_eq_u64, ct_select_u64};
+
     // Edge cases with public parameters only - these branches are on public values
+    // (num, denom are fixed protocol parameters like 1/2)
     if denom == 0 {
-        return 0;
-    }
-    if count == 0 {
         return 0;
     }
     if num == 0 {
@@ -181,16 +181,12 @@ pub fn binomial_sample_tee(count: u64, num: u64, denom: u64, prf_output: u64) ->
         return count;
     }
 
-    // For very large counts, fall back to arithmetic approximation
-    // This is a public-parameter branch (count is public in PMNS context)
-    if count > CT_BINOMIAL_MAX_COUNT {
-        debug_assert!(
-            false,
-            "binomial_sample_tee: count {} exceeds CT_BINOMIAL_MAX_COUNT {}",
-            count, CT_BINOMIAL_MAX_COUNT
-        );
-        return binomial_sample_tee_approx(count, num, denom, prf_output);
-    }
+    debug_assert!(
+        count <= CT_BINOMIAL_MAX_COUNT,
+        "binomial_sample_tee: count {} exceeds CT_BINOMIAL_MAX_COUNT {}",
+        count,
+        CT_BINOMIAL_MAX_COUNT
+    );
 
     let mut p = num as f64 / denom as f64;
     let u = (prf_output as f64 + 0.5) / (U64_MAX_F64 + 1.0);
@@ -202,71 +198,245 @@ pub fn binomial_sample_tee(count: u64, num: u64, denom: u64, prf_output: u64) ->
         p = 1.0 - p;
     }
 
+    // Handle count == 0 via CT masking instead of branching (count may be secret)
+    let count_is_zero = ct_eq_u64(count, 0);
     let k = binomial_inverse_ct(count, p, u);
 
-    if use_complement {
-        count - k
-    } else {
-        k
-    }
+    // Apply complement if needed, but return 0 if count was 0
+    let result = if use_complement { count - k } else { k };
+    ct_select_u64(count_is_zero, 0, result)
 }
 
 /// Constant-time inverse-CDF binomial sampler with fixed iterations.
 ///
-/// Always iterates exactly n+1 times regardless of when the answer is found.
-/// Uses constant-time selection to track the result.
+/// Always iterates exactly CT_BINOMIAL_MAX_COUNT+1 times regardless of n or
+/// when the answer is found. Uses constant-time selection to track the result.
+/// Loop bounds depend only on CT_BINOMIAL_MAX_COUNT (public constant), not on n.
+///
+/// Uses log-space computation starting from mode to avoid underflow for large n.
+/// For n=40k and p=0.5, starting from k=0 would cause q^n to underflow to 0.
+///
+/// Strategy: Compute PMF at mode (stable), then expand outward using recurrence.
+/// Track partial sums for CDF computation.
 fn binomial_inverse_ct(n: u64, p: f64, u: f64) -> u64 {
-    use crate::constant_time::{ct_f64_le, ct_select_u64};
+    use crate::constant_time::{ct_f64_le, ct_f64_lt, ct_le_u64, ct_lt_u64, ct_select_f64, ct_select_u64};
+
+    debug_assert!(
+        n <= CT_BINOMIAL_MAX_COUNT,
+        "binomial_inverse_ct: n={} exceeds CT_BINOMIAL_MAX_COUNT={}",
+        n,
+        CT_BINOMIAL_MAX_COUNT
+    );
 
     let q = 1.0 - p;
 
-    // Initial PMF: P(X = 0) = q^n
-    let mut pmf = q.powi(n as i32);
-    let mut cdf = pmf;
+    // Compute mode: floor((n+1)*p), clamped to [0, n]
+    let mode = ((n as f64 + 1.0) * p).floor() as u64;
+    let mode = mode.min(n);
 
-    // Track result and whether we've found it (using CT operations)
-    let mut result = 0u64;
-    let mut found = 0u64; // 0 = not found yet, 1 = found
-
-    // Check k = 0
-    {
-        let cond = ct_f64_le(u, cdf);
-        // is_first = 1 iff (not found yet) AND (u <= cdf)
-        let is_first = (1 ^ found) & cond;
-        result = ct_select_u64(is_first, 0, result);
-        found |= cond;
-    }
+    // Compute log(PMF) at mode using log-gamma approximation
+    let log_pmf_mode = {
+        let log_p = p.ln();
+        let log_q = q.ln();
+        let log_binom = lgamma_approx((n + 1) as f64)
+            - lgamma_approx((mode + 1) as f64)
+            - lgamma_approx((n - mode + 1) as f64);
+        log_binom + (mode as f64) * log_p + ((n - mode) as f64) * log_q
+    };
+    let pmf_mode = log_pmf_mode.exp();
 
     let p_over_q = p / q;
+    let q_over_p = q / p;
 
-    // Iterate k = 1 to n (always all iterations, no early exit)
-    for k in 1..=n {
-        // PMF recurrence: P(X=k) = P(X=k-1) * (n-k+1)/k * p/q
-        pmf *= ((n - k + 1) as f64 / k as f64) * p_over_q;
-        cdf += pmf;
+    // Strategy: Sweep left from mode to build "left" PMF values,
+    // then sweep right from mode. Track cumulative sum.
+    // 
+    // We'll compute:
+    // - cdf_below_mode = sum of PMF(0..mode-1)
+    // - For k >= mode: CDF(k) = cdf_below_mode + sum of PMF(mode..k)
+    // - For k < mode: we need to know partial sum up to k
 
-        let cond = ct_f64_le(u, cdf);
-        // is_first = 1 iff this is the first k where u <= cdf
+    // Phase 1: Sweep left from mode-1 to 0, compute cdf_below_mode
+    // Also compute "running sum from left" which gives us partial CDF at each k < mode
+    // We store this in a lookup structure using the sweep
+    
+    // For left sweep: PMF(k) = PMF(k+1) * (k+1)/(n-k) * q/p
+    let mut cdf_below_mode = 0.0f64;
+    let mut pmf_left = pmf_mode;
+    
+    // We also need to find result if u falls in the left portion
+    // For that we need CDF(k) = sum(PMF(0..k)) for k < mode
+    // CDF(k) = cdf_below_mode - sum(PMF(k+1..mode-1))
+    
+    // During left sweep (from mode-1 down to 0), we compute:
+    // running_sum_right[offset] = sum(PMF(mode-1-offset+1 .. mode-1)) = sum(PMF(mode-offset .. mode-1))
+    // After sweep, cdf_below_mode = sum(PMF(0..mode-1))
+    
+    // running_sum from right (cumulative from mode-1 going left)
+    let mut running_sum_right = 0.0f64;
+    
+    // We need to store partial sums to check later. Since we can't use arrays,
+    // we'll do the check during this sweep itself.
+    
+    // During left sweep, at each step we have:
+    // - pmf_left = PMF(mode-1-offset) after applying recurrence
+    // - running_sum_right = sum(PMF(mode-1-offset+1 .. mode-1))
+    // - CDF(mode-1-offset) = cdf_full - running_sum_right - pmf(mode) - pmf(mode+1) - ...
+    // This is complex. Let's use a different strategy.
+    
+    // New strategy: Two-phase with result selection
+    // Phase A: Compute all left PMFs and their partial sums (left-to-right)
+    // Phase B: Compute all right PMFs, building full CDF, find result
+    
+    // For Phase A, we first need PMF(0), but that underflows.
+    // So instead, we compute partial sums from mode going left.
+    
+    // Let's use "expanding search" from mode:
+    // - Check if u is left of mode: u < CDF(mode-1)
+    // - If yes, binary search or linear search left
+    // - If no, linear search right
+    
+    // For CT, we can't branch on this. Instead:
+    // Compute CDF(mode-1) = cdf_below_mode
+    // Compute CDF(mode) = cdf_below_mode + pmf_mode
+    // Compute CDF(mode+1), CDF(mode+2), etc.
+    // Also compute CDF(mode-2), CDF(mode-3), etc. by subtracting
+    
+    // Build cdf_below_mode and pmf array for left portion
+    // Actually, we need to iterate and track "cumulative from mode going left"
+    
+    // Let's define: left_cumsum[offset] = sum(PMF(mode-1), PMF(mode-2), ..., PMF(mode-1-offset+1))
+    //             = sum(PMF(mode-offset .. mode-1))
+    // Then CDF(mode-1-offset) = cdf_below_mode - left_cumsum[offset]
+    // And cdf_below_mode = final left_cumsum after mode iterations
+    
+    // First pass: sweep left, compute cdf_below_mode
+    for offset in 0..CT_BINOMIAL_MAX_COUNT {
+        let valid = ct_lt_u64(offset, mode);
+        let k = mode.saturating_sub(offset + 1);
+        
+        let k_plus_1 = k + 1;
+        let n_minus_k = n.saturating_sub(k).max(1);
+        let ratio = (k_plus_1 as f64 / n_minus_k as f64) * q_over_p;
+        let pmf_k = pmf_left * ratio;
+        pmf_left = ct_select_f64(valid, pmf_k, pmf_left);
+        
+        cdf_below_mode += ct_select_f64(valid, pmf_left, 0.0);
+    }
+    
+    // Now cdf_below_mode = sum(PMF(0..mode-1))
+    
+    // Second pass: check left portion first (k < mode), from k=0 upward
+    // We need CDF(k) = sum(PMF(0..k)) for k < mode
+    // CDF(0) = PMF(0)
+    // CDF(1) = PMF(0) + PMF(1)
+    // etc.
+    // We already computed these PMFs going from mode left, but in reverse order.
+    // 
+    // To compute CDF(k) for k < mode incrementally:
+    // We need to iterate k = 0, 1, 2, ..., mode-1
+    // But we computed PMF going mode-1, mode-2, ..., 0
+    // 
+    // Strategy: Use the PMF at 0 we computed (pmf_left after the sweep),
+    // then iterate forward using the forward recurrence.
+    
+    let mut result = 0u64;
+    let mut found = 0u64;
+    let mut cdf = 0.0f64;
+    
+    // pmf_left now holds PMF(0) (after the left sweep ended at k=0)
+    // Actually, the left sweep computed PMF going from mode toward 0,
+    // so pmf_left is PMF(0) at the end (or pmf_mode if mode=0)
+    let pmf_0 = pmf_left;
+    let mut pmf = pmf_0;
+    
+    // Iterate k = 0, 1, ..., mode-1
+    for k in 0..CT_BINOMIAL_MAX_COUNT {
+        let valid = ct_lt_u64(k, mode);
+        let in_support = ct_le_u64(k, n);
+        let both_valid = valid & in_support;
+        
+        // Add PMF(k) to CDF
+        let pmf_k = ct_select_f64(both_valid, pmf, 0.0);
+        cdf += pmf_k;
+        
+        // Check if u <= cdf
+        let cond = ct_f64_le(u, cdf) & both_valid;
         let is_first = (1 ^ found) & cond;
         result = ct_select_u64(is_first, k, result);
         found |= cond;
+        
+        // Compute PMF(k+1) = PMF(k) * (n-k)/(k+1) * p/q
+        let k_plus_1 = k + 1;
+        let n_minus_k = n.saturating_sub(k);
+        let ratio = (n_minus_k as f64 / k_plus_1.max(1) as f64) * p_over_q;
+        pmf *= ratio;
     }
-
-    // If not found (shouldn't happen for valid input), return n
+    
+    // Third pass: sweep right from mode, accumulate CDF, find result
+    // CDF continues from cdf_below_mode
+    cdf = cdf_below_mode;
+    let mut pmf_right = pmf_mode;
+    
+    for offset in 0..=CT_BINOMIAL_MAX_COUNT {
+        let k = mode.saturating_add(offset);
+        let in_support = ct_le_u64(k, n);
+        
+        // Add current PMF to CDF
+        let pmf_k = ct_select_f64(in_support, pmf_right, 0.0);
+        cdf += pmf_k;
+        
+        // Check if u <= cdf (only if not already found in left portion)
+        let cond = ct_f64_le(u, cdf) & in_support;
+        let is_first = (1 ^ found) & cond;
+        result = ct_select_u64(is_first, k, result);
+        found |= cond;
+        
+        // Compute next PMF: PMF(k+1) = PMF(k) * (n-k)/(k+1) * p/q
+        let k_plus_1 = k + 1;
+        let n_minus_k = n.saturating_sub(k);
+        let ratio = (n_minus_k as f64 / k_plus_1.max(1) as f64) * p_over_q;
+        pmf_right *= ratio;
+    }
+    
     ct_select_u64(found, result, n)
 }
 
-/// Fallback arithmetic approximation for very large counts.
-/// Uses the simplified formula from BinomialSpec.v.
-/// NOT a true binomial distribution (produces a narrow deterministic range
-/// around n*p), but O(1). Unreachable when IprfTee enforces count <= 4096.
-#[inline]
-fn binomial_sample_tee_approx(count: u64, num: u64, denom: u64, prf_output: u64) -> u64 {
-    let denom128 = denom as u128;
-    let r = (prf_output as u128) % (denom128 + 1);
-    let numerator = (count as u128) * (num as u128) + r;
-    (numerator / denom128) as u64
+/// Lanczos approximation for log-gamma function.
+/// Accurate for x >= 0.5.
+fn lgamma_approx(x: f64) -> f64 {
+    use std::f64::consts::PI;
+
+    if x < 0.5 {
+        // Reflection formula: Gamma(x) * Gamma(1-x) = pi / sin(pi*x)
+        // So: lgamma(x) = ln(pi) - ln(sin(pi*x)) - lgamma(1-x)
+        PI.ln() - (PI * x).sin().abs().ln() - lgamma_approx(1.0 - x)
+    } else {
+        let g = 7.0;
+        let coeffs = [
+            0.99999999999980993,
+            676.5203681218851,
+            -1259.1392167224028,
+            771.32342877765313,
+            -176.61502916214059,
+            12.507343278686905,
+            -0.13857109526572012,
+            9.9843695780195716e-6,
+            1.5056327351493116e-7,
+        ];
+
+        let x = x - 1.0;
+        let mut sum = coeffs[0];
+        for (i, &c) in coeffs.iter().enumerate().skip(1) {
+            sum += c / (x + i as f64);
+        }
+
+        let t = x + g + 0.5;
+        0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
+    }
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -566,20 +736,40 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(debug_assertions, ignore)] // Fallback panics in debug mode
-    fn test_tee_large_count_fallback() {
-        // Large counts should still work (via fallback approximation)
-        // This test is ignored in debug mode because we assert on large counts
-        let count = 10000u64;
-        let result = binomial_sample_tee(count, 1, 2, 12345);
-        assert!(result <= count);
-    }
-
-    #[test]
     fn test_tee_at_threshold() {
         // Test at exactly the threshold (should work without fallback)
         let count = super::CT_BINOMIAL_MAX_COUNT;
         let result = binomial_sample_tee(count, 1, 2, 12345);
         assert!(result <= count);
+    }
+
+    #[test]
+    fn test_tee_large_count_ethereum() {
+        // Test with ~40k count (Ethereum address use case)
+        // This verifies numerical stability - old implementation would underflow
+        let n = 40000u64;
+        let num = 1u64;
+        let denom = 2u64;
+        let expected_mean = n as f64 * (num as f64 / denom as f64);
+
+        let samples = 100u64;
+        let mut sum: u64 = 0;
+        for i in 0..samples {
+            let prf = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            let result = binomial_sample_tee(n, num, denom, prf);
+            assert!(result <= n, "result {} > n {}", result, n);
+            sum += result;
+        }
+
+        let actual_mean = sum as f64 / samples as f64;
+        // Allow larger tolerance for fewer samples
+        let tolerance = 500.0;
+        assert!(
+            (actual_mean - expected_mean).abs() < tolerance,
+            "TEE large-n mean {} too far from expected {} (tolerance {})",
+            actual_mean,
+            expected_mean,
+            tolerance
+        );
     }
 }

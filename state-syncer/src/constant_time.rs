@@ -67,6 +67,15 @@ pub fn ct_f64_lt(a: f64, b: f64) -> u64 {
     ct_lt_u64(a_bits, b_bits)
 }
 
+/// Branchless select for f64: returns a if choice is 1, b if choice is 0
+/// choice must be 0 or 1
+#[inline]
+pub fn ct_select_f64(choice: u64, a: f64, b: f64) -> f64 {
+    let a_bits = a.to_bits();
+    let b_bits = b.to_bits();
+    f64::from_bits(ct_select_u64(choice, a_bits, b_bits))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -574,7 +574,7 @@ impl IprfTee {
     /// Creates a new TEE-safe iPRF instance.
     ///
     /// # Panics
-    /// Panics if `n > CT_BINOMIAL_MAX_COUNT` (4096). TEE constant-time binomial
+    /// Panics if `n > CT_BINOMIAL_MAX_COUNT` (65536). TEE constant-time binomial
     /// sampling requires O(n) iterations; larger domains would either leak timing
     /// or fall back to a non-Binomial approximation.
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
