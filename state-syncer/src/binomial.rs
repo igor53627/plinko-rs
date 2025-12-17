@@ -331,8 +331,6 @@ fn lgamma_approx(x: f64) -> f64 {
     0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
