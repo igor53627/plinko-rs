@@ -213,13 +213,18 @@ pub fn binomial_sample_tee(count: u64, num: u64, denom: u64, prf_output: u64) ->
 /// when the answer is found. Uses constant-time selection to track the result.
 /// Loop bounds depend only on CT_BINOMIAL_MAX_COUNT (public constant), not on n.
 ///
-/// Uses log-space computation starting from mode to avoid underflow for large n.
-/// For n=40k and p=0.5, starting from k=0 would cause q^n to underflow to 0.
+/// Uses log-space PMF recurrence to avoid underflow. For n=40k and p=0.5,
+/// the initial PMF(0) = q^n underflows to 0.0, but this is harmless since
+/// those probabilities are below f64 precision anyway. The recurrence
+/// log_pmf_{k+1} = log_pmf_k + ln((n-k)/(k+1)) + ln(p/q) stays in log-space
+/// and produces valid PMF values near the mode where they matter.
 ///
-/// Strategy: Compute PMF at mode (stable), then expand outward using recurrence.
-/// Track partial sums for CDF computation.
+/// Single-loop design: O(CT_BINOMIAL_MAX_COUNT) iterations instead of 3x that.
 fn binomial_inverse_ct(n: u64, p: f64, u: f64) -> u64 {
-    use crate::constant_time::{ct_f64_le, ct_f64_lt, ct_le_u64, ct_lt_u64, ct_select_f64, ct_select_u64};
+    use crate::constant_time::{
+        ct_f64_le, ct_le_u64, ct_max_u64, ct_min_u64, ct_saturating_sub_u64, ct_select_f64,
+        ct_select_u64,
+    };
 
     debug_assert!(
         n <= CT_BINOMIAL_MAX_COUNT,
@@ -228,212 +233,102 @@ fn binomial_inverse_ct(n: u64, p: f64, u: f64) -> u64 {
         CT_BINOMIAL_MAX_COUNT
     );
 
+    // CT-safe clamping: if n > CT_BINOMIAL_MAX_COUNT, clamp to max (best effort).
+    // This maintains constant-time behavior even for out-of-range inputs.
+    // In release builds, this provides graceful degradation instead of UB.
+    let n = ct_min_u64(n, CT_BINOMIAL_MAX_COUNT);
+
     let q = 1.0 - p;
+    let log_q = q.ln();
+    let log_p = p.ln();
+    let log_p_over_q = log_p - log_q;
 
-    // Compute mode: floor((n+1)*p), clamped to [0, n]
-    let mode = ((n as f64 + 1.0) * p).floor() as u64;
-    let mode = mode.min(n);
-
-    // Compute log(PMF) at mode using log-gamma approximation
-    let log_pmf_mode = {
-        let log_p = p.ln();
-        let log_q = q.ln();
-        let log_binom = lgamma_approx((n + 1) as f64)
-            - lgamma_approx((mode + 1) as f64)
-            - lgamma_approx((n - mode + 1) as f64);
-        log_binom + (mode as f64) * log_p + ((n - mode) as f64) * log_q
-    };
-    let pmf_mode = log_pmf_mode.exp();
-
-    let p_over_q = p / q;
-    let q_over_p = q / p;
-
-    // Strategy: Sweep left from mode to build "left" PMF values,
-    // then sweep right from mode. Track cumulative sum.
-    // 
-    // We'll compute:
-    // - cdf_below_mode = sum of PMF(0..mode-1)
-    // - For k >= mode: CDF(k) = cdf_below_mode + sum of PMF(mode..k)
-    // - For k < mode: we need to know partial sum up to k
-
-    // Phase 1: Sweep left from mode-1 to 0, compute cdf_below_mode
-    // Also compute "running sum from left" which gives us partial CDF at each k < mode
-    // We store this in a lookup structure using the sweep
-    
-    // For left sweep: PMF(k) = PMF(k+1) * (k+1)/(n-k) * q/p
-    let mut cdf_below_mode = 0.0f64;
-    let mut pmf_left = pmf_mode;
-    
-    // We also need to find result if u falls in the left portion
-    // For that we need CDF(k) = sum(PMF(0..k)) for k < mode
-    // CDF(k) = cdf_below_mode - sum(PMF(k+1..mode-1))
-    
-    // During left sweep (from mode-1 down to 0), we compute:
-    // running_sum_right[offset] = sum(PMF(mode-1-offset+1 .. mode-1)) = sum(PMF(mode-offset .. mode-1))
-    // After sweep, cdf_below_mode = sum(PMF(0..mode-1))
-    
-    // running_sum from right (cumulative from mode-1 going left)
-    let mut running_sum_right = 0.0f64;
-    
-    // We need to store partial sums to check later. Since we can't use arrays,
-    // we'll do the check during this sweep itself.
-    
-    // During left sweep, at each step we have:
-    // - pmf_left = PMF(mode-1-offset) after applying recurrence
-    // - running_sum_right = sum(PMF(mode-1-offset+1 .. mode-1))
-    // - CDF(mode-1-offset) = cdf_full - running_sum_right - pmf(mode) - pmf(mode+1) - ...
-    // This is complex. Let's use a different strategy.
-    
-    // New strategy: Two-phase with result selection
-    // Phase A: Compute all left PMFs and their partial sums (left-to-right)
-    // Phase B: Compute all right PMFs, building full CDF, find result
-    
-    // For Phase A, we first need PMF(0), but that underflows.
-    // So instead, we compute partial sums from mode going left.
-    
-    // Let's use "expanding search" from mode:
-    // - Check if u is left of mode: u < CDF(mode-1)
-    // - If yes, binary search or linear search left
-    // - If no, linear search right
-    
-    // For CT, we can't branch on this. Instead:
-    // Compute CDF(mode-1) = cdf_below_mode
-    // Compute CDF(mode) = cdf_below_mode + pmf_mode
-    // Compute CDF(mode+1), CDF(mode+2), etc.
-    // Also compute CDF(mode-2), CDF(mode-3), etc. by subtracting
-    
-    // Build cdf_below_mode and pmf array for left portion
-    // Actually, we need to iterate and track "cumulative from mode going left"
-    
-    // Let's define: left_cumsum[offset] = sum(PMF(mode-1), PMF(mode-2), ..., PMF(mode-1-offset+1))
-    //             = sum(PMF(mode-offset .. mode-1))
-    // Then CDF(mode-1-offset) = cdf_below_mode - left_cumsum[offset]
-    // And cdf_below_mode = final left_cumsum after mode iterations
-    
-    // First pass: sweep left, compute cdf_below_mode
-    for offset in 0..CT_BINOMIAL_MAX_COUNT {
-        let valid = ct_lt_u64(offset, mode);
-        let k = mode.saturating_sub(offset + 1);
-        
-        let k_plus_1 = k + 1;
-        let n_minus_k = n.saturating_sub(k).max(1);
-        let ratio = (k_plus_1 as f64 / n_minus_k as f64) * q_over_p;
-        let pmf_k = pmf_left * ratio;
-        pmf_left = ct_select_f64(valid, pmf_k, pmf_left);
-        
-        cdf_below_mode += ct_select_f64(valid, pmf_left, 0.0);
-    }
-    
-    // Now cdf_below_mode = sum(PMF(0..mode-1))
-    
-    // Second pass: check left portion first (k < mode), from k=0 upward
-    // We need CDF(k) = sum(PMF(0..k)) for k < mode
-    // CDF(0) = PMF(0)
-    // CDF(1) = PMF(0) + PMF(1)
-    // etc.
-    // We already computed these PMFs going from mode left, but in reverse order.
-    // 
-    // To compute CDF(k) for k < mode incrementally:
-    // We need to iterate k = 0, 1, 2, ..., mode-1
-    // But we computed PMF going mode-1, mode-2, ..., 0
-    // 
-    // Strategy: Use the PMF at 0 we computed (pmf_left after the sweep),
-    // then iterate forward using the forward recurrence.
-    
+    // Start from k = 0: log(P(X=0)) = n * log(q)
+    // For large n this may be very negative (e.g., -27726 for n=40k, p=0.5),
+    // causing exp() to underflow to 0.0, which is fine.
+    let mut log_pmf = (n as f64) * log_q;
+    let mut cdf = 0.0f64;
     let mut result = 0u64;
     let mut found = 0u64;
-    let mut cdf = 0.0f64;
-    
-    // pmf_left now holds PMF(0) (after the left sweep ended at k=0)
-    // Actually, the left sweep computed PMF going from mode toward 0,
-    // so pmf_left is PMF(0) at the end (or pmf_mode if mode=0)
-    let pmf_0 = pmf_left;
-    let mut pmf = pmf_0;
-    
-    // Iterate k = 0, 1, ..., mode-1
-    for k in 0..CT_BINOMIAL_MAX_COUNT {
-        let valid = ct_lt_u64(k, mode);
+
+    for k in 0..=CT_BINOMIAL_MAX_COUNT {
         let in_support = ct_le_u64(k, n);
-        let both_valid = valid & in_support;
-        
-        // Add PMF(k) to CDF
-        let pmf_k = ct_select_f64(both_valid, pmf, 0.0);
-        cdf += pmf_k;
-        
-        // Check if u <= cdf
-        let cond = ct_f64_le(u, cdf) & both_valid;
-        let is_first = (1 ^ found) & cond;
-        result = ct_select_u64(is_first, k, result);
-        found |= cond;
-        
-        // Compute PMF(k+1) = PMF(k) * (n-k)/(k+1) * p/q
-        let k_plus_1 = k + 1;
-        let n_minus_k = n.saturating_sub(k);
-        let ratio = (n_minus_k as f64 / k_plus_1.max(1) as f64) * p_over_q;
-        pmf *= ratio;
-    }
-    
-    // Third pass: sweep right from mode, accumulate CDF, find result
-    // CDF continues from cdf_below_mode
-    cdf = cdf_below_mode;
-    let mut pmf_right = pmf_mode;
-    
-    for offset in 0..=CT_BINOMIAL_MAX_COUNT {
-        let k = mode.saturating_add(offset);
-        let in_support = ct_le_u64(k, n);
-        
-        // Add current PMF to CDF
-        let pmf_k = ct_select_f64(in_support, pmf_right, 0.0);
-        cdf += pmf_k;
-        
-        // Check if u <= cdf (only if not already found in left portion)
+
+        // PMF in linear space; underflow to 0.0 is fine for tiny probabilities.
+        // exp() input range: log_pmf varies from n*log(q) (very negative for large n)
+        // to ~-5 near the mode. We never hit NaN/INF cases:
+        // - exp(-inf) = 0.0 (graceful underflow)
+        // - exp(small negative) = valid PMF
+        // CT note: libm exp() may have data-dependent latency, but this is
+        // acceptable per our threat model (we already use f64 arithmetic throughout).
+        let pmf = ct_select_f64(in_support, log_pmf.exp(), 0.0);
+        cdf += pmf;
+
+        // Check if u <= cdf and this is the first time we cross it
         let cond = ct_f64_le(u, cdf) & in_support;
         let is_first = (1 ^ found) & cond;
         result = ct_select_u64(is_first, k, result);
         found |= cond;
-        
-        // Compute next PMF: PMF(k+1) = PMF(k) * (n-k)/(k+1) * p/q
-        let k_plus_1 = k + 1;
-        let n_minus_k = n.saturating_sub(k);
-        let ratio = (n_minus_k as f64 / k_plus_1.max(1) as f64) * p_over_q;
-        pmf_right *= ratio;
+
+        // Update log PMF to k+1:
+        // log P(X=k+1) = log P(X=k) + ln((n-k)/(k+1)) + ln(p/q)
+        let n_minus_k = ct_saturating_sub_u64(n, k); // 0 when k >= n
+        let k_plus_1 = ct_max_u64(k + 1, 1); // avoid div by 0
+
+        // For k >= n, ratio = 0 => ln(0) = -inf, so log_pmf -> -inf; exp(-inf) = 0 as desired
+        let ratio = (n_minus_k as f64) / (k_plus_1 as f64);
+        let log_ratio = ratio.ln() + log_p_over_q;
+        log_pmf += log_ratio;
     }
-    
+
     ct_select_u64(found, result, n)
 }
 
 /// Lanczos approximation for log-gamma function.
-/// Accurate for x >= 0.5.
+///
+/// # Note
+/// This function is currently unused after the single-loop optimization in
+/// `binomial_inverse_ct`, but is kept for reference and potential future use
+/// (e.g., mode-based numerical stability approaches).
+///
+/// # Precondition
+/// x >= 1.0 (enforced by debug_assert in TEE contexts).
+///
+/// # CT Safety
+/// This function has no branches or data-dependent indexing on x.
+/// The loop iterates a fixed 8 times regardless of input.
+#[allow(dead_code)]
+#[inline]
 fn lgamma_approx(x: f64) -> f64 {
     use std::f64::consts::PI;
 
-    if x < 0.5 {
-        // Reflection formula: Gamma(x) * Gamma(1-x) = pi / sin(pi*x)
-        // So: lgamma(x) = ln(pi) - ln(sin(pi*x)) - lgamma(1-x)
-        PI.ln() - (PI * x).sin().abs().ln() - lgamma_approx(1.0 - x)
-    } else {
-        let g = 7.0;
-        let coeffs = [
-            0.99999999999980993,
-            676.5203681218851,
-            -1259.1392167224028,
-            771.32342877765313,
-            -176.61502916214059,
-            12.507343278686905,
-            -0.13857109526572012,
-            9.9843695780195716e-6,
-            1.5056327351493116e-7,
-        ];
+    debug_assert!(
+        x >= 1.0,
+        "lgamma_approx: x={} must be >= 1.0 for CT-safe execution",
+        x
+    );
 
-        let x = x - 1.0;
-        let mut sum = coeffs[0];
-        for (i, &c) in coeffs.iter().enumerate().skip(1) {
-            sum += c / (x + i as f64);
-        }
+    let g = 7.0;
+    let coeffs = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
 
-        let t = x + g + 0.5;
-        0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
+    let x = x - 1.0;
+    let mut sum = coeffs[0];
+    for (i, &c) in coeffs.iter().enumerate().skip(1) {
+        sum += c / (x + i as f64);
     }
+
+    let t = x + g + 0.5;
+    0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
 }
 
 
