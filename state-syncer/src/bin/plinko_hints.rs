@@ -13,6 +13,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use state_syncer::iprf::{Iprf, PrfKey128};
 use std::fs::File;
@@ -394,10 +395,11 @@ fn main() -> eyre::Result<()> {
 
     // Precompute all iPRF inverse mappings: block -> offset -> Vec<hint_indices>
     // This moves the expensive SR PRP computation out of the streaming loop
+    // Parallelized across blocks using Rayon
     println!("[4/5] Precomputing iPRF inverse mappings ({} blocks x {} offsets)...", c, w);
     let precompute_start = Instant::now();
     let block_inverse_maps: Vec<Vec<Vec<u64>>> = block_iprfs
-        .iter()
+        .par_iter()
         .map(|iprf| {
             (0..w).map(|offset| iprf.inverse(offset as u64)).collect()
         })
