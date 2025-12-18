@@ -1,0 +1,1894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plinko Protocol Visualization</title>
+    <!-- Matter.js Physics Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-orange: #d29922;
+            --accent-red: #f85149;
+            --accent-purple: #a371f7;
+            --border-color: #30363d;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--accent-blue);
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin: 2rem 0 1rem;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+
+        h3 {
+            font-size: 1.2rem;
+            color: var(--accent-green);
+            margin: 1.5rem 0 0.75rem;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+        }
+
+        .key-property {
+            background: var(--bg-secondary);
+            border-left: 4px solid var(--accent-green);
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .key-property strong {
+            color: var(--accent-green);
+        }
+
+        .section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border: 1px solid var(--border-color);
+        }
+
+        .visualization-container {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            min-height: 300px;
+            position: relative;
+        }
+
+        /* Plinko Board Styles */
+        .plinko-board {
+            position: relative;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .plinko-canvas-container {
+            position: relative;
+            width: 600px;
+            height: 450px;
+            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            border: 3px solid var(--accent-orange);
+            overflow: hidden;
+            margin: 0 auto;
+        }
+
+        .plinko-canvas-container canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .plinko-stats {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .stat-item {
+            background: var(--bg-secondary);
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .stat-value {
+            color: var(--accent-blue);
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .tree-decision {
+            margin-top: 15px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            min-height: 80px;
+        }
+
+        .tree-decision .step {
+            padding: 2px 0;
+        }
+
+        .tree-decision .left {
+            color: var(--accent-green);
+        }
+
+        .tree-decision .right {
+            color: var(--accent-orange);
+        }
+
+        .bin-row {
+            display: flex;
+            gap: 4px;
+            margin-top: 10px;
+            justify-content: center;
+        }
+
+        .bin {
+            width: 55px;
+            height: 50px;
+            background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
+            border: 2px solid var(--border-color);
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            transition: all 0.3s;
+        }
+
+        .bin.highlight {
+            border-color: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+
+        .bin-label {
+            position: absolute;
+            bottom: -25px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .bin-count {
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: var(--accent-blue);
+        }
+
+        /* SwapOrNot Visualization */
+        .swap-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+        }
+
+        .domain-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .domain-cell {
+            width: 40px;
+            height: 40px;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            transition: all 0.3s;
+        }
+
+        .domain-cell.current {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: var(--bg-primary);
+        }
+
+        .domain-cell.partner {
+            background: var(--accent-orange);
+            border-color: var(--accent-orange);
+            color: var(--bg-primary);
+        }
+
+        .domain-cell.swapped {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            color: var(--bg-primary);
+        }
+
+        /* iPRF Flow */
+        .iprf-flow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .flow-box {
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            text-align: center;
+            min-width: 120px;
+        }
+
+        .flow-box.input {
+            border-color: var(--accent-blue);
+        }
+
+        .flow-box.prp {
+            border-color: var(--accent-orange);
+        }
+
+        .flow-box.pmns {
+            border-color: var(--accent-purple);
+        }
+
+        .flow-box.output {
+            border-color: var(--accent-green);
+        }
+
+        .flow-arrow {
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+        }
+
+        /* Hint Init Visualization */
+        .hint-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+            gap: 8px;
+            margin: 1rem 0;
+        }
+
+        .hint-cell {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 8px;
+            text-align: center;
+            font-size: 0.75rem;
+            transition: all 0.3s;
+        }
+
+        .hint-cell.regular {
+            border-color: var(--accent-blue);
+        }
+
+        .hint-cell.backup {
+            border-color: var(--accent-orange);
+        }
+
+        .hint-cell.active {
+            background: var(--accent-green);
+            color: var(--bg-primary);
+        }
+
+        /* Database streaming */
+        .db-stream {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 1rem 0;
+            overflow-x: auto;
+            padding: 10px 0;
+        }
+
+        .db-entry {
+            min-width: 40px;
+            height: 40px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            transition: all 0.3s;
+        }
+
+        .db-entry.current {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: var(--bg-primary);
+            transform: scale(1.2);
+        }
+
+        .db-entry.processed {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            color: var(--bg-primary);
+            opacity: 0.7;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 1rem 0;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: var(--accent-blue);
+            color: var(--bg-primary);
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        /* Slider */
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 1rem 0;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            height: 6px;
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--accent-blue);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        /* Code block */
+        .code-block {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+
+        .code-line {
+            padding: 2px 0;
+        }
+
+        .code-line.highlight {
+            background: rgba(88, 166, 255, 0.2);
+            margin: 0 -1rem;
+            padding: 2px 1rem;
+        }
+
+        .keyword { color: var(--accent-purple); }
+        .function { color: var(--accent-blue); }
+        .comment { color: var(--text-secondary); }
+        .string { color: var(--accent-green); }
+        .number { color: var(--accent-orange); }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border: 1px solid var(--border-color);
+        }
+
+        th {
+            background: var(--bg-tertiary);
+            color: var(--accent-blue);
+        }
+
+        td {
+            background: var(--bg-secondary);
+        }
+
+        /* Legend */
+        .legend {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin: 1rem 0;
+            padding: 1rem;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+
+        /* Complexity badges */
+        .complexity {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .complexity.good {
+            background: rgba(63, 185, 80, 0.2);
+            color: var(--accent-green);
+        }
+
+        .complexity.ok {
+            background: rgba(210, 153, 34, 0.2);
+            color: var(--accent-orange);
+        }
+
+        /* Animation keyframes */
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .animate-bounce {
+            animation: bounce 0.5s ease-in-out;
+        }
+
+        .animate-pulse {
+            animation: pulse 1s infinite;
+        }
+
+        /* Footer */
+        footer {
+            margin-top: 3rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        footer a {
+            color: var(--accent-blue);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            .iprf-flow {
+                flex-direction: column;
+            }
+
+            .flow-arrow {
+                transform: rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Plinko Protocol Visualization</h1>
+        <p class="subtitle">Single-Server PIR with Sublinear Online Time via Invertible PRFs</p>
+
+        <div class="key-property">
+            <strong>Key Innovation:</strong> Plinko achieves O(1) hint updates after database changes using 
+            invertible PRFs (iPRFs). The client can find all affected hints in constant time without scanning.
+        </div>
+
+        <!-- Section 1: Protocol Overview -->
+        <div class="section">
+            <h2>1. Protocol Overview</h2>
+            <p>Plinko is a Private Information Retrieval (PIR) scheme that allows a client to query a database 
+               without revealing which entry they're accessing.</p>
+
+            <h3>Key Components</h3>
+            <table>
+                <tr>
+                    <th>Component</th>
+                    <th>Purpose</th>
+                    <th>Complexity</th>
+                </tr>
+                <tr>
+                    <td>HintInit</td>
+                    <td>Offline preprocessing - stream database to compute hints</td>
+                    <td><span class="complexity ok">O(n)</span></td>
+                </tr>
+                <tr>
+                    <td>Query/Answer</td>
+                    <td>Single query round trip</td>
+                    <td><span class="complexity good">O(n/w)</span></td>
+                </tr>
+                <tr>
+                    <td>UpdateHint</td>
+                    <td>Update hints after database change</td>
+                    <td><span class="complexity good">O(1)</span></td>
+                </tr>
+            </table>
+
+            <h3>Parameters</h3>
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: var(--accent-blue);"></div>
+                    <span><strong>n</strong> = database size (bits)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: var(--accent-orange);"></div>
+                    <span><strong>w</strong> = block size</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: var(--accent-green);"></div>
+                    <span><strong>c</strong> = n/w (number of blocks)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: var(--accent-purple);"></div>
+                    <span><strong>lambda</strong> = security parameter</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: PMNS (Plinko Game) -->
+        <div class="section">
+            <h2>2. PMNS: Pseudorandom Multinomial Sampler</h2>
+            <p>Named after the Plinko game! Simulates throwing n balls into m bins using a binary tree. 
+               At each peg, the ball bounces left or right based on a PRF-derived probability.</p>
+
+            <div class="key-property">
+                <strong>Key Property:</strong> Both forward (ball -> bin) and inverse (bin -> balls) 
+                operations run in O(log m) time by traversing the binary tree of pegs.
+            </div>
+
+            <div class="visualization-container" id="pmns-viz">
+                <div class="plinko-board">
+                    <div class="plinko-canvas-container" id="plinko-container">
+                        <!-- Matter.js will render here -->
+                    </div>
+                    <div class="plinko-stats">
+                        <div class="stat-item">
+                            <div class="stat-label">Balls Dropped</div>
+                            <div class="stat-value" id="balls-dropped">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Last Bin</div>
+                            <div class="stat-value" id="last-bin">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Distribution</div>
+                            <div class="stat-value" id="distribution-info">-</div>
+                        </div>
+                    </div>
+                    <div class="bin-row" id="bin-row"></div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button onclick="plinkoDropBall()">Drop Ball</button>
+                <button onclick="plinkoDropMultiple(10)" class="secondary">Drop 10</button>
+                <button onclick="plinkoDropMultiple(50)" class="secondary">Drop 50</button>
+                <button onclick="plinkoReset()" class="secondary">Reset</button>
+                <button onclick="toggleSound()" class="secondary" id="sound-toggle">[Sound: ON]</button>
+            </div>
+
+            <div class="slider-container">
+                <span>Rows: <span id="row-count-display">8</span></span>
+                <input type="range" id="row-slider" min="6" max="12" value="8" onchange="updateRowCount()">
+            </div>
+
+            <h3>Algorithm: trace_ball (Forward)</h3>
+            <div class="code-block">
+                <div class="code-line"><span class="keyword">def</span> <span class="function">trace_ball</span>(x, n, m):</div>
+                <div class="code-line">    low, high = <span class="number">0</span>, m - <span class="number">1</span>  <span class="comment"># bin range</span></div>
+                <div class="code-line">    ball_count = n</div>
+                <div class="code-line">    <span class="keyword">while</span> low < high:  <span class="comment"># descend tree</span></div>
+                <div class="code-line">        mid = (low + high) // <span class="number">2</span></div>
+                <div class="code-line">        p = (mid - low + <span class="number">1</span>) / (high - low + <span class="number">1</span>)  <span class="comment"># left probability</span></div>
+                <div class="code-line">        left_count = <span class="function">binomial_sample</span>(ball_count, p, <span class="function">PRF</span>(node))</div>
+                <div class="code-line">        <span class="keyword">if</span> x < left_count:  <span class="comment"># go LEFT</span></div>
+                <div class="code-line">            high = mid</div>
+                <div class="code-line">            ball_count = left_count</div>
+                <div class="code-line">        <span class="keyword">else</span>:  <span class="comment"># go RIGHT</span></div>
+                <div class="code-line">            x -= left_count</div>
+                <div class="code-line">            low = mid + <span class="number">1</span></div>
+                <div class="code-line">            ball_count -= left_count</div>
+                <div class="code-line">    <span class="keyword">return</span> low  <span class="comment"># final bin</span></div>
+            </div>
+        </div>
+
+        <!-- Section 3: SwapOrNot PRP -->
+        <div class="section">
+            <h2>3. SwapOrNot: Small-Domain PRP</h2>
+            <p>A pseudorandom permutation for small domains based on Morris-Rogaway 2013.</p>
+
+            <div class="key-property">
+                <strong>Key Insight:</strong> Each round is an involution (self-inverse). 
+                Inversion simply runs rounds in reverse order.
+            </div>
+
+            <div class="visualization-container">
+                <div class="swap-container">
+                    <div>
+                        <strong>Domain [0, N):</strong>
+                        <div class="domain-row" id="domain-row"></div>
+                    </div>
+                    <div id="swap-status" style="text-align: center; min-height: 60px;"></div>
+                    <div>
+                        <strong>Round <span id="round-num">0</span> / <span id="total-rounds">6</span></strong>
+                    </div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button onclick="stepSwapOrNot()">Step Round</button>
+                <button onclick="runFullPRP()">Run All Rounds</button>
+                <button onclick="resetSwapOrNot()" class="secondary">Reset</button>
+            </div>
+
+            <div class="slider-container">
+                <span>Input X: <span id="input-x-display">3</span></span>
+                <input type="range" id="input-x-slider" min="0" max="7" value="3" onchange="updateInputX()">
+            </div>
+
+            <h3>Single Round</h3>
+            <div class="code-block">
+                <div class="code-line"><span class="keyword">def</span> <span class="function">swap_or_not_round</span>(x, round_key, round):</div>
+                <div class="code-line">    partner = (round_key - x) <span class="keyword">mod</span> N</div>
+                <div class="code-line">    canonical = <span class="function">max</span>(x, partner)</div>
+                <div class="code-line">    <span class="keyword">if</span> <span class="function">PRF</span>(round, canonical) == <span class="number">1</span>:</div>
+                <div class="code-line">        <span class="keyword">return</span> partner  <span class="comment"># swap</span></div>
+                <div class="code-line">    <span class="keyword">return</span> x  <span class="comment"># no swap</span></div>
+            </div>
+        </div>
+
+        <!-- Section 4: iPRF Construction -->
+        <div class="section">
+            <h2>4. iPRF: Invertible Pseudorandom Function</h2>
+            <p>Combines SwapOrNot PRP with PMNS to create an invertible PRF.</p>
+
+            <div class="key-property">
+                <strong>Forward:</strong> iF.F(k, x) = S(k_pmns, P(k_prp, x))<br>
+                <strong>Inverse:</strong> iF.F^-1(k, y) = {P^-1(k_prp, z) : z in S^-1(k_pmns, y)}
+            </div>
+
+            <div class="visualization-container">
+                <div class="iprf-flow">
+                    <div class="flow-box input">
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Input</div>
+                        <div id="iprf-input" style="font-size: 1.5rem;">x = 5</div>
+                    </div>
+                    <div class="flow-arrow">-></div>
+                    <div class="flow-box prp">
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">SwapOrNot PRP</div>
+                        <div id="iprf-prp" style="font-size: 1.2rem;">P(x) = ?</div>
+                    </div>
+                    <div class="flow-arrow">-></div>
+                    <div class="flow-box pmns">
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">PMNS</div>
+                        <div id="iprf-pmns" style="font-size: 1.2rem;">S(P(x)) = ?</div>
+                    </div>
+                    <div class="flow-arrow">-></div>
+                    <div class="flow-box output">
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Output</div>
+                        <div id="iprf-output" style="font-size: 1.5rem;">y = ?</div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 2rem;">
+                    <h4 style="color: var(--accent-purple); margin-bottom: 1rem;">Inverse: Finding all preimages of y</h4>
+                    <div class="iprf-flow">
+                        <div class="flow-box output">
+                            <div style="font-size: 0.8rem; color: var(--text-secondary);">Input</div>
+                            <div id="iprf-inv-input">y = ?</div>
+                        </div>
+                        <div class="flow-arrow">-></div>
+                        <div class="flow-box pmns">
+                            <div style="font-size: 0.8rem; color: var(--text-secondary);">PMNS^-1</div>
+                            <div id="iprf-inv-pmns" style="font-size: 0.9rem;">S^-1(y) = {...}</div>
+                        </div>
+                        <div class="flow-arrow">-></div>
+                        <div class="flow-box prp">
+                            <div style="font-size: 0.8rem; color: var(--text-secondary);">PRP^-1</div>
+                            <div id="iprf-inv-prp" style="font-size: 0.9rem;">{P^-1(z) : z in ...}</div>
+                        </div>
+                        <div class="flow-arrow">-></div>
+                        <div class="flow-box input">
+                            <div style="font-size: 0.8rem; color: var(--text-secondary);">Preimages</div>
+                            <div id="iprf-inv-output">{...}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button onclick="runIPRFForward()">Compute Forward</button>
+                <button onclick="runIPRFInverse()" class="secondary">Compute Inverse</button>
+            </div>
+
+            <div class="slider-container">
+                <span>x: <span id="iprf-x-display">5</span></span>
+                <input type="range" id="iprf-x-slider" min="0" max="15" value="5" onchange="updateIPRFInput()">
+            </div>
+        </div>
+
+        <!-- Section 5: HintInit -->
+        <div class="section">
+            <h2>5. HintInit: Offline Hint Generation</h2>
+            <p>The client streams the entire database once to initialize hints. Each database entry 
+               is mapped to O(1) hints using iPRF inversion.</p>
+
+            <h3>Hint Types</h3>
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: var(--accent-blue);"></div>
+                    <span><strong>Regular Hints (H)</strong>: (P_j, p_j) - subset of c/2+1 blocks + parity</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: var(--accent-orange);"></div>
+                    <span><strong>Backup Hints (T)</strong>: (B_j, l_j, r_j) - subset of c/2 blocks + two parities</span>
+                </div>
+            </div>
+
+            <div class="visualization-container">
+                <div>
+                    <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">Database Stream</h4>
+                    <div class="db-stream" id="db-stream"></div>
+                </div>
+
+                <div style="margin-top: 1.5rem;">
+                    <h4 style="color: var(--accent-blue); margin-bottom: 0.5rem;">Regular Hints (lambda*w slots)</h4>
+                    <div class="hint-grid" id="regular-hints"></div>
+                </div>
+
+                <div style="margin-top: 1rem;">
+                    <h4 style="color: var(--accent-orange); margin-bottom: 0.5rem;">Backup Hints (q slots)</h4>
+                    <div class="hint-grid" id="backup-hints"></div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button onclick="stepHintInit()">Step</button>
+                <button onclick="runHintInit()">Run Full Init</button>
+                <button onclick="resetHintInit()" class="secondary">Reset</button>
+            </div>
+
+            <h3>HintInit Algorithm</h3>
+            <div class="code-block">
+                <div class="code-line" id="hint-line-0"><span class="comment"># Generate keys and initialize hints</span></div>
+                <div class="code-line" id="hint-line-1"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">1</span>..c:</div>
+                <div class="code-line" id="hint-line-2">    K[i] = <span class="function">iF.Gen</span>(<span class="number">1</span>^lambda)</div>
+                <div class="code-line" id="hint-line-3"><span class="keyword">for</span> j <span class="keyword">in</span> <span class="number">1</span>..lambda*w:</div>
+                <div class="code-line" id="hint-line-4">    H[j] = (<span class="function">random_subset</span>(c/<span class="number">2</span>+<span class="number">1</span>), <span class="number">0</span>)</div>
+                <div class="code-line" id="hint-line-5"><span class="keyword">for</span> j <span class="keyword">in</span> <span class="number">1</span>..q:</div>
+                <div class="code-line" id="hint-line-6">    T[j] = (<span class="function">random_subset</span>(c/<span class="number">2</span>), <span class="number">0</span>, <span class="number">0</span>)</div>
+                <div class="code-line" id="hint-line-7"></div>
+                <div class="code-line" id="hint-line-8"><span class="comment"># Stream database entries</span></div>
+                <div class="code-line" id="hint-line-9"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">0</span>..n:</div>
+                <div class="code-line" id="hint-line-10">    d = <span class="function">stream</span>(D[i])</div>
+                <div class="code-line" id="hint-line-11">    (block, offset) = (i / w, i <span class="keyword">mod</span> w)</div>
+                <div class="code-line" id="hint-line-12">    <span class="keyword">for</span> j <span class="keyword">in</span> <span class="function">iF.F^-1</span>(K[block], offset):  <span class="comment"># O(1) hints!</span></div>
+                <div class="code-line" id="hint-line-13">        <span class="keyword">if</span> j < lambda*w:</div>
+                <div class="code-line" id="hint-line-14">            <span class="keyword">if</span> block <span class="keyword">in</span> H[j].P:</div>
+                <div class="code-line" id="hint-line-15">                H[j].parity ^= d</div>
+                <div class="code-line" id="hint-line-16">        <span class="keyword">else</span>:</div>
+                <div class="code-line" id="hint-line-17">            <span class="keyword">if</span> block <span class="keyword">in</span> T[j].B:</div>
+                <div class="code-line" id="hint-line-18">                T[j].parity_in ^= d</div>
+                <div class="code-line" id="hint-line-19">            <span class="keyword">else</span>:</div>
+                <div class="code-line" id="hint-line-20">                T[j].parity_out ^= d</div>
+            </div>
+        </div>
+
+        <!-- Section 6: Complexity Summary -->
+        <div class="section">
+            <h2>6. Complexity Summary</h2>
+
+            <table>
+                <tr>
+                    <th>Operation</th>
+                    <th>Time</th>
+                    <th>Communication</th>
+                    <th>Notes</th>
+                </tr>
+                <tr>
+                    <td>HintInit</td>
+                    <td><span class="complexity ok">O(n)</span></td>
+                    <td>O(n)</td>
+                    <td>One-time offline, streaming</td>
+                </tr>
+                <tr>
+                    <td>Query (client)</td>
+                    <td><span class="complexity good">O(1)</span></td>
+                    <td>O(c) = O(n/w)</td>
+                    <td>Find hint via iPRF^-1</td>
+                </tr>
+                <tr>
+                    <td>Answer (server)</td>
+                    <td><span class="complexity ok">O(n/w)</span></td>
+                    <td>O(B)</td>
+                    <td>Compute parities</td>
+                </tr>
+                <tr>
+                    <td>UpdateHint</td>
+                    <td><span class="complexity good">O(1)</span></td>
+                    <td>O(log n)</td>
+                    <td>iPRF^-1 finds affected hints</td>
+                </tr>
+                <tr>
+                    <td>Client Storage</td>
+                    <td colspan="2"><span class="complexity ok">O(lambda*w + q) hints</span></td>
+                    <td>Plus c iPRF keys</td>
+                </tr>
+            </table>
+
+            <div class="key-property">
+                <strong>Why O(1) Updates Matter:</strong> Previous PIR schemes required O(n) or O(sqrt(n)) 
+                time to update hints after database changes. Plinko's iPRF inversion finds all O(1) affected 
+                hints directly, making it practical for dynamic databases like Ethereum state.
+            </div>
+        </div>
+
+        <footer>
+            Plinko: Single-Server PIR with Sublinear Online Time via Invertible PRFs | 
+            <a href="https://eprint.iacr.org/2024/318">Paper (2024/318)</a> | 
+            <a href="https://github.com/igor53627/plinko-extractor">GitHub</a>
+        </footer>
+    </div>
+
+    <script>
+        // =====================================================
+        // PLINKO PHYSICS ENGINE (based on AnsonH/plinko-game)
+        // =====================================================
+        
+        const { Engine, Render, Runner, Bodies, Body, Composite, Events } = Matter;
+        
+        // =====================================================
+        // SOUND ENGINE (Web Audio API)
+        // =====================================================
+        
+        let audioContext = null;
+        let soundEnabled = true;
+        
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            return audioContext;
+        }
+        
+        // Play a bounce sound (short ping)
+        function playBounceSound(velocity = 1) {
+            if (!soundEnabled) return;
+            try {
+                const ctx = initAudio();
+                if (ctx.state === 'suspended') ctx.resume();
+                
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                // Vary pitch based on velocity (faster = higher pitch)
+                const baseFreq = 800 + Math.random() * 400;
+                const freq = baseFreq + velocity * 100;
+                
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(freq, ctx.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(freq * 0.5, ctx.currentTime + 0.1);
+                
+                // Quick fade out
+                const volume = Math.min(0.15, 0.05 + velocity * 0.02);
+                gainNode.gain.setValueAtTime(volume, ctx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                
+                oscillator.start(ctx.currentTime);
+                oscillator.stop(ctx.currentTime + 0.1);
+            } catch (e) {
+                // Audio not available
+            }
+        }
+        
+        // Play a drop/land sound (thud)
+        function playDropSound() {
+            if (!soundEnabled) return;
+            try {
+                const ctx = initAudio();
+                if (ctx.state === 'suspended') ctx.resume();
+                
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                // Low frequency thud
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(150, ctx.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.15);
+                
+                gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                
+                oscillator.start(ctx.currentTime);
+                oscillator.stop(ctx.currentTime + 0.2);
+                
+                // Add a click layer
+                const clickOsc = ctx.createOscillator();
+                const clickGain = ctx.createGain();
+                
+                clickOsc.type = 'square';
+                clickOsc.frequency.setValueAtTime(100, ctx.currentTime);
+                
+                clickGain.gain.setValueAtTime(0.1, ctx.currentTime);
+                clickGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
+                
+                clickOsc.connect(clickGain);
+                clickGain.connect(ctx.destination);
+                
+                clickOsc.start(ctx.currentTime);
+                clickOsc.stop(ctx.currentTime + 0.05);
+            } catch (e) {
+                // Audio not available
+            }
+        }
+        
+        function toggleSound() {
+            soundEnabled = !soundEnabled;
+            document.getElementById('sound-toggle').textContent = 
+                soundEnabled ? '[Sound: ON]' : '[Sound: OFF]';
+        }
+        
+        // =====================================================
+        // MUSICAL NOTES FOR SWAPORNOT (do re mi fa sol la si)
+        // =====================================================
+        
+        // Note frequencies (C4 major scale)
+        const NOTES = {
+            do:  261.63,  // C4
+            re:  293.66,  // D4
+            mi:  329.63,  // E4
+            fa:  349.23,  // F4
+            sol: 392.00,  // G4
+            la:  440.00,  // A4
+            si:  493.88,  // B4
+            do2: 523.25,  // C5 (octave up)
+        };
+        
+        const SCALE = ['do', 're', 'mi', 'fa', 'sol', 'la', 'si', 'do2'];
+        
+        function playNote(noteName, duration = 0.2, volume = 0.3) {
+            if (!soundEnabled) return;
+            
+            try {
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                const ctx = audioContext;
+                if (ctx.state === 'suspended') ctx.resume();
+                
+                const freq = NOTES[noteName] || 440;
+                
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(freq, ctx.currentTime);
+                
+                // Smooth envelope for pleasant tone
+                gainNode.gain.setValueAtTime(0, ctx.currentTime);
+                gainNode.gain.linearRampToValueAtTime(volume, ctx.currentTime + 0.02);
+                gainNode.gain.setValueAtTime(volume, ctx.currentTime + duration * 0.6);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                
+                oscillator.start(ctx.currentTime);
+                oscillator.stop(ctx.currentTime + duration);
+            } catch (e) {
+                // Audio not available
+            }
+        }
+        
+        function playSwapSound() {
+            // Two quick ascending notes for swap
+            playNote('mi', 0.15, 0.25);
+            setTimeout(() => playNote('sol', 0.15, 0.25), 80);
+        }
+        
+        function playNoSwapSound() {
+            // Single lower note for no swap
+            playNote('re', 0.2, 0.2);
+        }
+        
+        function playRoundNote(roundNum) {
+            // Play ascending scale note based on round number
+            const noteIndex = roundNum % SCALE.length;
+            playNote(SCALE[noteIndex], 0.25, 0.3);
+        }
+        
+        function playCompletionSound() {
+            // Victory fanfare: do-mi-sol-do2
+            playNote('do', 0.2, 0.3);
+            setTimeout(() => playNote('mi', 0.2, 0.3), 150);
+            setTimeout(() => playNote('sol', 0.2, 0.3), 300);
+            setTimeout(() => playNote('do2', 0.4, 0.35), 450);
+        }
+        
+        // =====================================================
+        // PLINKO CONFIGURATION
+        // =====================================================
+        
+        // Plinko configuration
+        const PLINKO_WIDTH = 600;
+        const PLINKO_HEIGHT = 450;
+        const PADDING_X = 40;
+        const PADDING_TOP = 30;
+        const PADDING_BOTTOM = 50;
+        
+        // Collision categories
+        const PIN_CATEGORY = 0x0001;
+        const BALL_CATEGORY = 0x0002;
+        
+        // Ball friction parameters (tuned for realistic distribution)
+        const BALL_FRICTIONS = {
+            friction: 0.5,
+            frictionAirByRowCount: {
+                6: 0.035,
+                7: 0.038,
+                8: 0.0395,
+                9: 0.041,
+                10: 0.038,
+                11: 0.0355,
+                12: 0.0414,
+            }
+        };
+        
+        // Plinko state
+        let plinkoEngine, plinkoRender, plinkoRunner;
+        let plinkoPins = [];
+        let plinkoWalls = [];
+        let plinkoSensor;
+        let pinsLastRowXCoords = [];
+        let plinkoRowCount = 8;
+        let plinkoBinCounts = [];
+        let plinkoBallsDropped = 0;
+        
+        function getPinRadius() {
+            return Math.max(4, (20 - plinkoRowCount) / 2);
+        }
+        
+        function getPinDistanceX() {
+            const lastRowPinCount = 3 + plinkoRowCount - 1;
+            return (PLINKO_WIDTH - PADDING_X * 2) / (lastRowPinCount - 1);
+        }
+        
+        function placePinsAndWalls() {
+            // Remove existing pins and walls
+            plinkoPins.forEach(pin => Composite.remove(plinkoEngine.world, pin));
+            plinkoWalls.forEach(wall => Composite.remove(plinkoEngine.world, wall));
+            plinkoPins = [];
+            plinkoWalls = [];
+            pinsLastRowXCoords = [];
+            
+            const pinRadius = getPinRadius();
+            const pinDistanceX = getPinDistanceX();
+            const pinDistanceY = (PLINKO_HEIGHT - PADDING_TOP - PADDING_BOTTOM) / plinkoRowCount;
+            
+            // Create pins row by row
+            for (let row = 0; row < plinkoRowCount; row++) {
+                const rowY = PADDING_TOP + row * pinDistanceY;
+                const pinsInRow = 3 + row;
+                const rowPaddingX = PADDING_X + ((plinkoRowCount - 1 - row) * pinDistanceX) / 2;
+                
+                for (let col = 0; col < pinsInRow; col++) {
+                    const colX = rowPaddingX + ((PLINKO_WIDTH - rowPaddingX * 2) / (pinsInRow - 1)) * col;
+                    
+                    const pin = Bodies.circle(colX, rowY, pinRadius, {
+                        isStatic: true,
+                        render: {
+                            fillStyle: '#8b949e',
+                        },
+                        collisionFilter: {
+                            category: PIN_CATEGORY,
+                            mask: BALL_CATEGORY,
+                        },
+                    });
+                    plinkoPins.push(pin);
+                    
+                    if (row === plinkoRowCount - 1) {
+                        pinsLastRowXCoords.push(colX);
+                    }
+                }
+            }
+            
+            Composite.add(plinkoEngine.world, plinkoPins);
+            
+            // Create angled walls (guard rails)
+            const firstPinX = plinkoPins[0].position.x;
+            const lastRowFirstPinX = pinsLastRowXCoords[0];
+            const wallAngle = Math.atan2(
+                firstPinX - lastRowFirstPinX,
+                PLINKO_HEIGHT - PADDING_TOP - PADDING_BOTTOM
+            );
+            
+            const leftWallX = firstPinX - (firstPinX - lastRowFirstPinX) / 2 - pinDistanceX * 0.3;
+            const leftWall = Bodies.rectangle(
+                leftWallX,
+                PLINKO_HEIGHT / 2,
+                10,
+                PLINKO_HEIGHT,
+                {
+                    isStatic: true,
+                    angle: wallAngle,
+                    render: { visible: false },
+                    collisionFilter: {
+                        category: PIN_CATEGORY,
+                        mask: BALL_CATEGORY,
+                    },
+                }
+            );
+            
+            const rightWall = Bodies.rectangle(
+                PLINKO_WIDTH - leftWallX,
+                PLINKO_HEIGHT / 2,
+                10,
+                PLINKO_HEIGHT,
+                {
+                    isStatic: true,
+                    angle: -wallAngle,
+                    render: { visible: false },
+                    collisionFilter: {
+                        category: PIN_CATEGORY,
+                        mask: BALL_CATEGORY,
+                    },
+                }
+            );
+            
+            plinkoWalls.push(leftWall, rightWall);
+            Composite.add(plinkoEngine.world, plinkoWalls);
+        }
+        
+        function handleBallEnterBin(ball) {
+            const binIndex = pinsLastRowXCoords.findLastIndex(pinX => pinX < ball.position.x);
+            
+            if (binIndex !== -1 && binIndex < pinsLastRowXCoords.length - 1) {
+                plinkoBinCounts[binIndex]++;
+                document.getElementById('last-bin').textContent = binIndex;
+                
+                // Play drop sound
+                playDropSound();
+                
+                // Flash the bin
+                const binEl = document.getElementById(`plinko-bin-${binIndex}`);
+                if (binEl) {
+                    binEl.classList.add('highlight');
+                    setTimeout(() => binEl.classList.remove('highlight'), 300);
+                }
+                
+                renderPlinkoBins();
+            }
+            
+            // Remove ball after a short delay
+            setTimeout(() => {
+                Composite.remove(plinkoEngine.world, ball);
+            }, 100);
+        }
+        
+        function initPlinko() {
+            const container = document.getElementById('plinko-container');
+            container.innerHTML = '';
+            
+            // Initialize bin counts
+            const numBins = 2 + plinkoRowCount;
+            plinkoBinCounts = new Array(numBins).fill(0);
+            plinkoBallsDropped = 0;
+            
+            // Create Matter.js engine
+            plinkoEngine = Engine.create({
+                timing: { timeScale: 1 }
+            });
+            
+            // Create renderer
+            plinkoRender = Render.create({
+                element: container,
+                engine: plinkoEngine,
+                options: {
+                    width: PLINKO_WIDTH,
+                    height: PLINKO_HEIGHT,
+                    background: 'transparent',
+                    wireframes: false,
+                }
+            });
+            
+            // Create runner
+            plinkoRunner = Runner.create();
+            
+            // Place pins and walls
+            placePinsAndWalls();
+            
+            // Create bottom sensor for detecting when balls enter bins
+            plinkoSensor = Bodies.rectangle(
+                PLINKO_WIDTH / 2,
+                PLINKO_HEIGHT - 10,
+                PLINKO_WIDTH,
+                20,
+                {
+                    isSensor: true,
+                    isStatic: true,
+                    render: { visible: false },
+                }
+            );
+            Composite.add(plinkoEngine.world, plinkoSensor);
+            
+            // Listen for collisions
+            Events.on(plinkoEngine, 'collisionStart', ({ pairs }) => {
+                pairs.forEach(({ bodyA, bodyB, collision }) => {
+                    // Ball entering bin (sensor collision)
+                    if (bodyA === plinkoSensor && bodyB.collisionFilter.category === BALL_CATEGORY) {
+                        handleBallEnterBin(bodyB);
+                    } else if (bodyB === plinkoSensor && bodyA.collisionFilter.category === BALL_CATEGORY) {
+                        handleBallEnterBin(bodyA);
+                    }
+                    
+                    // Ball hitting pin (bounce sound)
+                    const isPinA = bodyA.collisionFilter.category === PIN_CATEGORY && bodyA !== plinkoSensor;
+                    const isPinB = bodyB.collisionFilter.category === PIN_CATEGORY && bodyB !== plinkoSensor;
+                    const isBallA = bodyA.collisionFilter.category === BALL_CATEGORY;
+                    const isBallB = bodyB.collisionFilter.category === BALL_CATEGORY;
+                    
+                    if ((isPinA && isBallB) || (isPinB && isBallA)) {
+                        const ball = isBallA ? bodyA : bodyB;
+                        const velocity = Math.sqrt(ball.velocity.x ** 2 + ball.velocity.y ** 2);
+                        playBounceSound(velocity);
+                    }
+                });
+            });
+            
+            // Start engine
+            Render.run(plinkoRender);
+            Runner.run(plinkoRunner, plinkoEngine);
+            
+            // Update UI
+            document.getElementById('balls-dropped').textContent = '0';
+            document.getElementById('last-bin').textContent = '-';
+            document.getElementById('distribution-info').textContent = '-';
+            document.getElementById('row-count-display').textContent = plinkoRowCount;
+            
+            renderPlinkoBins();
+        }
+        
+        function renderPlinkoBins() {
+            const binRow = document.getElementById('bin-row');
+            const numBins = 2 + plinkoRowCount;
+            const maxCount = Math.max(1, ...plinkoBinCounts);
+            const total = plinkoBinCounts.reduce((a, b) => a + b, 0);
+            
+            binRow.innerHTML = '';
+            for (let i = 0; i < numBins; i++) {
+                const pct = total > 0 ? ((plinkoBinCounts[i] / total) * 100).toFixed(0) : 0;
+                binRow.innerHTML += `
+                    <div class="bin" id="plinko-bin-${i}">
+                        <span class="bin-count">${plinkoBinCounts[i]}</span>
+                        <span class="bin-label">${i}</span>
+                    </div>
+                `;
+            }
+            
+            // Update distribution info
+            if (total > 0) {
+                const centerBin = Math.floor(numBins / 2);
+                const centerPct = ((plinkoBinCounts[centerBin] / total) * 100).toFixed(1);
+                document.getElementById('distribution-info').textContent = `Center: ${centerPct}%`;
+            }
+        }
+        
+        function plinkoDropBall() {
+            const pinDistanceX = getPinDistanceX();
+            const ballOffsetRangeX = pinDistanceX * 0.6;
+            const ballRadius = getPinRadius() * 1.8;
+            
+            const { friction, frictionAirByRowCount } = BALL_FRICTIONS;
+            const frictionAir = frictionAirByRowCount[plinkoRowCount] || 0.04;
+            
+            // Random starting position near center
+            const startX = PLINKO_WIDTH / 2 + (Math.random() - 0.5) * ballOffsetRangeX * 2;
+            
+            const ball = Bodies.circle(startX, 10, ballRadius, {
+                restitution: 0.8,
+                friction: friction,
+                frictionAir: frictionAir,
+                collisionFilter: {
+                    category: BALL_CATEGORY,
+                    mask: PIN_CATEGORY,
+                },
+                render: {
+                    fillStyle: '#58a6ff',
+                },
+            });
+            
+            Composite.add(plinkoEngine.world, ball);
+            
+            plinkoBallsDropped++;
+            document.getElementById('balls-dropped').textContent = plinkoBallsDropped;
+        }
+        
+        function plinkoDropMultiple(count) {
+            for (let i = 0; i < count; i++) {
+                setTimeout(() => plinkoDropBall(), i * 100);
+            }
+        }
+        
+        function plinkoReset() {
+            // Remove all balls
+            Composite.allBodies(plinkoEngine.world).forEach(body => {
+                if (body.collisionFilter.category === BALL_CATEGORY) {
+                    Composite.remove(plinkoEngine.world, body);
+                }
+            });
+            
+            // Reset counts
+            const numBins = 2 + plinkoRowCount;
+            plinkoBinCounts = new Array(numBins).fill(0);
+            plinkoBallsDropped = 0;
+            
+            document.getElementById('balls-dropped').textContent = '0';
+            document.getElementById('last-bin').textContent = '-';
+            document.getElementById('distribution-info').textContent = '-';
+            
+            renderPlinkoBins();
+        }
+        
+        function updateRowCount() {
+            const newRowCount = parseInt(document.getElementById('row-slider').value);
+            if (newRowCount !== plinkoRowCount) {
+                plinkoRowCount = newRowCount;
+                
+                // Stop current engine
+                if (plinkoRunner) Runner.stop(plinkoRunner);
+                if (plinkoRender) Render.stop(plinkoRender);
+                
+                // Reinitialize
+                initPlinko();
+            }
+        }
+
+        // =====================================================
+        // LEGACY PMNS FUNCTIONS (for iPRF visualization)
+        // =====================================================
+        
+        // Deterministic hash for demo
+        function hash(seed, x, y = 0) {
+            let h = seed * 2654435761 + x * 1103515245 + y * 12345;
+            return Math.abs(h) % 1000000;
+        }
+
+        // Calculate path through pegs based on binary tree decisions
+        function calculateBallPath(ballIndex, n, m, seed = 42) {
+            let low = 0, high = m - 1;
+            let ballCount = n;
+            let currentBallIndex = ballIndex;
+            let decisions = [];
+            let treeSteps = [];
+
+            while (low < high) {
+                const mid = Math.floor((low + high) / 2);
+                const leftBins = mid - low + 1;
+                const totalBins = high - low + 1;
+                const p = leftBins / totalBins;
+                
+                const prfOut = hash(seed, low, high);
+                const leftCount = Math.floor(ballCount * p + (prfOut % (totalBins + 1)) / totalBins);
+                
+                const goLeft = currentBallIndex < leftCount;
+                decisions.push(goLeft);
+                
+                treeSteps.push({
+                    range: `[${low}, ${high}]`,
+                    mid: mid,
+                    p: p.toFixed(2),
+                    leftCount: leftCount,
+                    ballIndex: currentBallIndex,
+                    decision: goLeft ? 'LEFT' : 'RIGHT'
+                });
+                
+                if (goLeft) {
+                    high = mid;
+                    ballCount = leftCount;
+                } else {
+                    currentBallIndex -= leftCount;
+                    low = mid + 1;
+                    ballCount -= leftCount;
+                }
+            }
+            
+            return { bin: low, decisions, treeSteps };
+        }
+
+        // Alias for iPRF visualization compatibility
+        function traceBall(x, n, m, seed = 42) {
+            return calculateBallPath(x, n, m, seed);
+        }
+
+        // SwapOrNot State
+        let domainSize = 8;
+        let currentX = 3;
+        let currentRound = 0;
+        let totalRounds = 6;
+        let swapHistory = [];
+
+        // HintInit State
+        let dbSize = 16;
+        let blockSize = 4;
+        let numBlocks = 4;
+        let currentDbIndex = 0;
+        let regularHints = [];
+        let backupHints = [];
+        let isRunning = false;
+
+        // Deterministic hash for demo
+        function hash(seed, x, y = 0) {
+            let h = seed * 2654435761 + x * 1103515245 + y * 12345;
+            return Math.abs(h) % 1000000;
+        }
+
+        // Calculate peg positions for the Plinko board
+        function getPegPositions() {
+            const pegs = [];
+            const numRows = Math.ceil(Math.log2(binCount)) + 2;
+            const startY = 50;
+            const endY = CANVAS_HEIGHT - 30;
+            const rowSpacing = (endY - startY) / (numRows + 1);
+            
+            for (let row = 0; row < numRows; row++) {
+                const pegsInRow = row + 1;
+                const y = startY + row * rowSpacing;
+                const totalWidth = CANVAS_WIDTH - 80;
+                const pegSpacing = totalWidth / binCount;
+                const startX = (CANVAS_WIDTH - (pegsInRow - 1) * pegSpacing) / 2;
+                
+                for (let col = 0; col < pegsInRow; col++) {
+                    pegs.push({
+                        x: startX + col * pegSpacing,
+                        y: y,
+                        row: row,
+                        col: col
+                    });
+                }
+            }
+            return pegs;
+        }
+
+        // Calculate path through pegs based on binary tree decisions
+        function calculateBallPath(ballIndex, n, m, seed = 42) {
+            let low = 0, high = m - 1;
+            let ballCount = n;
+            let currentBallIndex = ballIndex;
+            let decisions = [];
+            let treeSteps = [];
+
+            while (low < high) {
+                const mid = Math.floor((low + high) / 2);
+                const leftBins = mid - low + 1;
+                const totalBins = high - low + 1;
+                const p = leftBins / totalBins;
+                
+                const prfOut = hash(seed, low, high);
+                const leftCount = Math.floor(ballCount * p + (prfOut % (totalBins + 1)) / totalBins);
+                
+                const goLeft = currentBallIndex < leftCount;
+                decisions.push(goLeft);
+                
+                treeSteps.push({
+                    range: `[${low}, ${high}]`,
+                    mid: mid,
+                    p: p.toFixed(2),
+                    leftCount: leftCount,
+                    ballIndex: currentBallIndex,
+                    decision: goLeft ? 'LEFT' : 'RIGHT'
+                });
+                
+                if (goLeft) {
+                    high = mid;
+                    ballCount = leftCount;
+                } else {
+                    currentBallIndex -= leftCount;
+                    low = mid + 1;
+                    ballCount -= leftCount;
+                }
+            }
+            
+            return { bin: low, decisions, treeSteps };
+        }
+
+        // Alias for iPRF visualization compatibility
+        function traceBall(x, n, m, seed = 42) {
+            return calculateBallPath(x, n, m, seed);
+        }
+
+        // SwapOrNot Visualization
+        function initSwapOrNot() {
+            currentRound = 0;
+            swapHistory = [currentX];
+            renderSwapOrNot();
+        }
+
+        function renderSwapOrNot() {
+            const row = document.getElementById('domain-row');
+            row.innerHTML = '';
+            
+            const current = swapHistory[swapHistory.length - 1];
+            const roundKey = hash(42, currentRound) % domainSize;
+            const partner = (roundKey + domainSize - current) % domainSize;
+            
+            for (let i = 0; i < domainSize; i++) {
+                let className = 'domain-cell';
+                if (i === current) className += ' current';
+                if (i === partner && currentRound < totalRounds) className += ' partner';
+                row.innerHTML += `<div class="${className}">${i}</div>`;
+            }
+            
+            document.getElementById('round-num').textContent = currentRound;
+            document.getElementById('total-rounds').textContent = totalRounds;
+            
+            if (currentRound < totalRounds) {
+                const canonical = Math.max(current, partner);
+                const swapBit = hash(42, currentRound, canonical) % 2;
+                document.getElementById('swap-status').innerHTML = `
+                    <div>K_${currentRound} = ${roundKey}, partner = ${partner}</div>
+                    <div>canonical = max(${current}, ${partner}) = ${canonical}</div>
+                    <div>PRF(${currentRound}, ${canonical}) = ${swapBit} -> ${swapBit ? 'SWAP' : 'NO SWAP'}</div>
+                `;
+            } else {
+                document.getElementById('swap-status').innerHTML = `
+                    <div style="color: var(--accent-green);">Complete! P(${currentX}) = ${current}</div>
+                `;
+            }
+            
+            document.getElementById('input-x-display').textContent = currentX;
+        }
+
+        function stepSwapOrNot() {
+            if (currentRound >= totalRounds) return;
+            
+            const current = swapHistory[swapHistory.length - 1];
+            const roundKey = hash(42, currentRound) % domainSize;
+            const partner = (roundKey + domainSize - current) % domainSize;
+            const canonical = Math.max(current, partner);
+            const swapBit = hash(42, currentRound, canonical) % 2;
+            
+            const next = swapBit ? partner : current;
+            swapHistory.push(next);
+            currentRound++;
+            
+            // Play musical note based on swap/no-swap
+            if (swapBit) {
+                playSwapSound();
+            } else {
+                playNoSwapSound();
+            }
+            
+            // Play completion fanfare when done
+            if (currentRound >= totalRounds) {
+                setTimeout(() => playCompletionSound(), 200);
+            }
+            
+            renderSwapOrNot();
+        }
+
+        function runFullPRP() {
+            const interval = setInterval(() => {
+                if (currentRound >= totalRounds) {
+                    clearInterval(interval);
+                    return;
+                }
+                stepSwapOrNot();
+            }, 300);
+        }
+
+        function resetSwapOrNot() {
+            currentX = parseInt(document.getElementById('input-x-slider').value);
+            initSwapOrNot();
+        }
+
+        function updateInputX() {
+            currentX = parseInt(document.getElementById('input-x-slider').value);
+            document.getElementById('input-x-display').textContent = currentX;
+            initSwapOrNot();
+        }
+
+        // iPRF Visualization
+        let iprfX = 5;
+        
+        function updateIPRFInput() {
+            iprfX = parseInt(document.getElementById('iprf-x-slider').value);
+            document.getElementById('iprf-x-display').textContent = iprfX;
+            document.getElementById('iprf-input').textContent = `x = ${iprfX}`;
+            document.getElementById('iprf-prp').textContent = 'P(x) = ?';
+            document.getElementById('iprf-pmns').textContent = 'S(P(x)) = ?';
+            document.getElementById('iprf-output').textContent = 'y = ?';
+        }
+
+        function runIPRFForward() {
+            // Simulate PRP
+            let permuted = iprfX;
+            for (let r = 0; r < 6; r++) {
+                const roundKey = hash(42, r) % 16;
+                const partner = (roundKey + 16 - permuted) % 16;
+                const canonical = Math.max(permuted, partner);
+                const swapBit = hash(42, r, canonical) % 2;
+                permuted = swapBit ? partner : permuted;
+            }
+            
+            document.getElementById('iprf-prp').textContent = `P(${iprfX}) = ${permuted}`;
+            
+            // Simulate PMNS
+            const { bin } = traceBall(permuted, 16, 8, 42);
+            document.getElementById('iprf-pmns').textContent = `S(${permuted}) = ${bin}`;
+            document.getElementById('iprf-output').textContent = `y = ${bin}`;
+            
+            // Update inverse display
+            document.getElementById('iprf-inv-input').textContent = `y = ${bin}`;
+        }
+
+        function runIPRFInverse() {
+            const y = parseInt(document.getElementById('iprf-output').textContent.split('=')[1]) || 0;
+            
+            // Find all balls in bin y (simulate PMNS inverse)
+            const pmnsPreimages = [];
+            for (let i = 0; i < 16; i++) {
+                const { bin } = traceBall(i, 16, 8, 42);
+                if (bin === y) pmnsPreimages.push(i);
+            }
+            
+            document.getElementById('iprf-inv-pmns').textContent = `S^-1(${y}) = {${pmnsPreimages.join(', ')}}`;
+            
+            // Apply inverse PRP to each
+            const preimages = pmnsPreimages.map(z => {
+                let x = z;
+                for (let r = 5; r >= 0; r--) {
+                    const roundKey = hash(42, r) % 16;
+                    const partner = (roundKey + 16 - x) % 16;
+                    const canonical = Math.max(x, partner);
+                    const swapBit = hash(42, r, canonical) % 2;
+                    x = swapBit ? partner : x;
+                }
+                return x;
+            });
+            
+            document.getElementById('iprf-inv-prp').textContent = `{P^-1(z)...}`;
+            document.getElementById('iprf-inv-output').textContent = `{${preimages.join(', ')}}`;
+        }
+
+        // HintInit Visualization
+        function initHintInit() {
+            currentDbIndex = 0;
+            regularHints = Array(8).fill(null).map((_, i) => ({
+                blocks: generateRandomSubset(numBlocks, Math.floor(numBlocks/2) + 1, i),
+                parity: 0
+            }));
+            backupHints = Array(4).fill(null).map((_, i) => ({
+                blocks: generateRandomSubset(numBlocks, Math.floor(numBlocks/2), i + 100),
+                parityIn: 0,
+                parityOut: 0
+            }));
+            renderHintInit();
+        }
+
+        function generateRandomSubset(total, size, seed) {
+            const subset = new Set();
+            let attempts = 0;
+            while (subset.size < size && attempts < 100) {
+                subset.add(hash(seed, attempts) % total);
+                attempts++;
+            }
+            return Array.from(subset);
+        }
+
+        function renderHintInit() {
+            // Database stream
+            const stream = document.getElementById('db-stream');
+            stream.innerHTML = '';
+            for (let i = 0; i < dbSize; i++) {
+                const value = hash(123, i) % 256;
+                let className = 'db-entry';
+                if (i === currentDbIndex) className += ' current';
+                else if (i < currentDbIndex) className += ' processed';
+                stream.innerHTML += `<div class="${className}">${value}</div>`;
+            }
+            
+            // Regular hints
+            const regHints = document.getElementById('regular-hints');
+            regHints.innerHTML = '';
+            regularHints.forEach((h, i) => {
+                const active = currentDbIndex > 0 && h.blocks.includes(Math.floor((currentDbIndex - 1) / blockSize));
+                regHints.innerHTML += `
+                    <div class="hint-cell regular ${active ? 'active' : ''}">
+                        H[${i}]<br>
+                        <small>p=${h.parity}</small>
+                    </div>
+                `;
+            });
+            
+            // Backup hints
+            const bkpHints = document.getElementById('backup-hints');
+            bkpHints.innerHTML = '';
+            backupHints.forEach((h, i) => {
+                const block = Math.floor((currentDbIndex - 1) / blockSize);
+                const inBlock = currentDbIndex > 0 && h.blocks.includes(block);
+                bkpHints.innerHTML += `
+                    <div class="hint-cell backup ${currentDbIndex > 0 ? 'active' : ''}">
+                        T[${i}]<br>
+                        <small>${inBlock ? 'in' : 'out'}</small>
+                    </div>
+                `;
+            });
+            
+            // Highlight current line
+            document.querySelectorAll('.code-line').forEach(l => l.classList.remove('highlight'));
+            if (currentDbIndex === 0) {
+                document.getElementById('hint-line-0')?.classList.add('highlight');
+            } else if (currentDbIndex <= dbSize) {
+                document.getElementById('hint-line-10')?.classList.add('highlight');
+            }
+        }
+
+        function stepHintInit() {
+            if (currentDbIndex >= dbSize) return;
+            
+            const value = hash(123, currentDbIndex) % 256;
+            const block = Math.floor(currentDbIndex / blockSize);
+            const offset = currentDbIndex % blockSize;
+            
+            // Simulate iPRF inverse to find affected hints
+            regularHints.forEach((h, i) => {
+                if (h.blocks.includes(block)) {
+                    h.parity ^= value;
+                }
+            });
+            
+            backupHints.forEach((h, i) => {
+                if (h.blocks.includes(block)) {
+                    h.parityIn ^= value;
+                } else {
+                    h.parityOut ^= value;
+                }
+            });
+            
+            currentDbIndex++;
+            renderHintInit();
+        }
+
+        function runHintInit() {
+            if (isRunning) return;
+            isRunning = true;
+            
+            const interval = setInterval(() => {
+                if (currentDbIndex >= dbSize) {
+                    clearInterval(interval);
+                    isRunning = false;
+                    return;
+                }
+                stepHintInit();
+            }, 200);
+        }
+
+        function resetHintInit() {
+            isRunning = false;
+            initHintInit();
+        }
+
+        // Initialize all visualizations
+        document.addEventListener('DOMContentLoaded', () => {
+            initPlinko();
+            initSwapOrNot();
+            initHintInit();
+            updateIPRFInput();
+        });
+    </script>
+</body>
+</html>
