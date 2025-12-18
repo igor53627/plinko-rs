@@ -11,7 +11,6 @@
 
 Require Import RocqOfRust.RocqOfRust.
 Require Import RocqOfRust.links.M.
-Require Import RocqOfRust.simulations.M.
 
 Require Import Stdlib.Lists.List.
 Require Import Stdlib.ZArith.ZArith.
@@ -138,7 +137,7 @@ Module DbParamsLink.
   }.
   
   Definition of_ty : OfTy.t Rust_ty.
-  Proof. eapply OfTy.Make with (A := Z * Z); reflexivity. Defined.
+  Proof. eapply OfTy.Make with (A := (Z * Z)%type); reflexivity. Defined.
 End DbParamsLink.
 
 (** ** Option linking *)
