@@ -400,15 +400,26 @@ fn main() -> eyre::Result<()> {
         .map(|key| Iprf::with_security(*key, total_hints as u64, w as u64, args.sr_security))
         .collect();
 
-    // Precompute all iPRF inverse mappings: block -> offset -> Vec<hint_indices>
-    // This moves the expensive SR PRP computation out of the streaming loop
-    // Parallelized across blocks using Rayon
-    println!("[4/5] Precomputing iPRF inverse mappings ({} blocks x {} offsets)...", c, w);
+    // Precompute iPRF mappings using forward evaluation (much faster than inverse)
+    // For each block, we evaluate forward(j) for all j in [0, total_hints) and build
+    // the inverse mapping offset -> Vec<hint_indices>
+    // This is O(c * total_hints) forward calls vs O(c * w) inverse calls, but forward is ~1000x faster
+    println!(
+        "[4/5] Precomputing iPRF mappings ({} blocks x {} hints via forward)...",
+        c, total_hints
+    );
     let precompute_start = Instant::now();
     let block_inverse_maps: Vec<Vec<Vec<u64>>> = block_iprfs
         .par_iter()
         .map(|iprf| {
-            (0..w).map(|offset| iprf.inverse(offset as u64)).collect()
+            // Initialize empty vecs for each offset
+            let mut offset_to_hints: Vec<Vec<u64>> = vec![Vec::new(); w];
+            // Evaluate forward(j) for each hint index j
+            for j in 0..total_hints as u64 {
+                let offset = iprf.forward(j) as usize;
+                offset_to_hints[offset].push(j);
+            }
+            offset_to_hints
         })
         .collect();
     println!("  Precompute time: {:.2?}", precompute_start.elapsed());
