@@ -1,5 +1,7 @@
 # Plinko Extractor
 
+[![Visualization](https://img.shields.io/badge/Visualization-Live-brightgreen)](https://igor53627.github.io/plinko-extractor/protocol-visualization.html)
+
 A high-performance Rust tool to extract the complete Ethereum state (Accounts and Storage) directly from a Reth database and convert it into the artifacts required by the Plinko PIR server.
 
 ## Why this exists?
