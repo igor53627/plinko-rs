@@ -11,8 +11,8 @@ ROCQOFRUST_PATH ?= $(HOME)/rocq-of-rust/RocqOfRust
 # Flags for our code (specs, simulations, proofs)
 COQFLAGS := -Q specs Plinko.Specs -Q sims Plinko.Sims -Q proofs Plinko.Proofs
 
-# Flags for linking layer (needs RocqOfRust + sims + src)
-COQFLAGS_LINKING := -R $(ROCQOFRUST_PATH) RocqOfRust -Q sims Plinko.Sims -Q src src -Q linking Plinko.Linking
+# Flags for linking layer (needs RocqOfRust + specs + sims + src)
+COQFLAGS_LINKING := -R $(ROCQOFRUST_PATH) RocqOfRust -Q specs Plinko.Specs -Q sims Plinko.Sims -Q src src -Q linking Plinko.Linking
 
 # Flags for translated code (needs RocqOfRust)
 COQFLAGS_TRANS := -R $(ROCQOFRUST_PATH) RocqOfRust -Q src src
@@ -114,7 +114,7 @@ depend:
 # Translate Rust to Rocq using rocq-of-rust
 translate:
 	@echo "Translating Plinko Rust code to Rocq..."
-	cd ../.. && cargo +nightly-2024-12-07 rocq-of-rust
+	cd ../.. && cargo +nightly-2024-12-07 rocq-of-rust -- --manifest-path state-syncer/Cargo.toml
 	@echo "Translation complete. Check src/ for generated .v files."
 
 # Clean generated files
