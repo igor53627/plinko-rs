@@ -41,6 +41,63 @@ pub fn ct_ge_u64(a: u64, b: u64) -> u64 {
     1 ^ ct_lt_u64(a, b)
 }
 
+/// Constant-time minimum: returns min(a, b) without branching
+#[inline]
+pub fn ct_min_u64(a: u64, b: u64) -> u64 {
+    let a_lt_b = ct_lt_u64(a, b);
+    ct_select_u64(a_lt_b, a, b)
+}
+
+/// Constant-time maximum: returns max(a, b) without branching
+#[inline]
+pub fn ct_max_u64(a: u64, b: u64) -> u64 {
+    let a_lt_b = ct_lt_u64(a, b);
+    ct_select_u64(a_lt_b, b, a)
+}
+
+/// Constant-time saturating subtraction: returns a - b, or 0 if a < b
+#[inline]
+pub fn ct_saturating_sub_u64(a: u64, b: u64) -> u64 {
+    let a_lt_b = ct_lt_u64(a, b);
+    let diff = a.wrapping_sub(b);
+    ct_select_u64(a_lt_b, 0, diff)
+}
+
+/// Constant-time f64 comparison: returns 1 if a <= b, 0 otherwise.
+///
+/// Works correctly for positive normalized floats (including 0.0).
+/// For IEEE 754 positive floats, bit representation preserves ordering.
+///
+/// # Safety
+/// - Both a and b must be non-negative (>= 0.0)
+/// - Neither should be NaN
+/// - Works correctly for +0.0, positive normals, and +inf
+#[inline]
+pub fn ct_f64_le(a: f64, b: f64) -> u64 {
+    // For positive IEEE 754 floats, the bit representation as u64
+    // has the same ordering as the float values
+    let a_bits = a.to_bits();
+    let b_bits = b.to_bits();
+    ct_le_u64(a_bits, b_bits)
+}
+
+/// Constant-time f64 comparison: returns 1 if a < b, 0 otherwise.
+#[inline]
+pub fn ct_f64_lt(a: f64, b: f64) -> u64 {
+    let a_bits = a.to_bits();
+    let b_bits = b.to_bits();
+    ct_lt_u64(a_bits, b_bits)
+}
+
+/// Branchless select for f64: returns a if choice is 1, b if choice is 0
+/// choice must be 0 or 1
+#[inline]
+pub fn ct_select_f64(choice: u64, a: f64, b: f64) -> f64 {
+    let a_bits = a.to_bits();
+    let b_bits = b.to_bits();
+    f64::from_bits(ct_select_u64(choice, a_bits, b_bits))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +204,84 @@ mod tests {
             let result = ct_ge_u64(a, b);
             let expected = if a >= b { 1 } else { 0 };
             prop_assert_eq!(result, expected);
+        }
+
+        #[test]
+        fn prop_ct_f64_le_matches(a in 0.0f64..1.0, b in 0.0f64..1.0) {
+            let result = ct_f64_le(a, b);
+            let expected = if a <= b { 1 } else { 0 };
+            prop_assert_eq!(result, expected);
+        }
+
+        #[test]
+        fn prop_ct_f64_lt_matches(a in 0.0f64..1.0, b in 0.0f64..1.0) {
+            let result = ct_f64_lt(a, b);
+            let expected = if a < b { 1 } else { 0 };
+            prop_assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_ct_f64_le_basic() {
+        assert_eq!(ct_f64_le(0.0, 0.0), 1);
+        assert_eq!(ct_f64_le(0.0, 1.0), 1);
+        assert_eq!(ct_f64_le(1.0, 0.0), 0);
+        assert_eq!(ct_f64_le(0.5, 0.5), 1);
+        assert_eq!(ct_f64_le(0.3, 0.7), 1);
+        assert_eq!(ct_f64_le(0.7, 0.3), 0);
+        assert_eq!(ct_f64_le(0.0, 0.001), 1);
+        assert_eq!(ct_f64_le(0.999, 1.0), 1);
+    }
+
+    #[test]
+    fn test_ct_f64_lt_basic() {
+        assert_eq!(ct_f64_lt(0.0, 0.0), 0);
+        assert_eq!(ct_f64_lt(0.0, 1.0), 1);
+        assert_eq!(ct_f64_lt(1.0, 0.0), 0);
+        assert_eq!(ct_f64_lt(0.5, 0.5), 0);
+        assert_eq!(ct_f64_lt(0.3, 0.7), 1);
+        assert_eq!(ct_f64_lt(0.7, 0.3), 0);
+    }
+
+    #[test]
+    fn test_ct_min_max_basic() {
+        assert_eq!(ct_min_u64(0, 1), 0);
+        assert_eq!(ct_min_u64(1, 0), 0);
+        assert_eq!(ct_min_u64(5, 5), 5);
+        assert_eq!(ct_min_u64(u64::MAX, 0), 0);
+        assert_eq!(ct_min_u64(0, u64::MAX), 0);
+
+        assert_eq!(ct_max_u64(0, 1), 1);
+        assert_eq!(ct_max_u64(1, 0), 1);
+        assert_eq!(ct_max_u64(5, 5), 5);
+        assert_eq!(ct_max_u64(u64::MAX, 0), u64::MAX);
+        assert_eq!(ct_max_u64(0, u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn test_ct_saturating_sub_basic() {
+        assert_eq!(ct_saturating_sub_u64(5, 3), 2);
+        assert_eq!(ct_saturating_sub_u64(3, 5), 0);
+        assert_eq!(ct_saturating_sub_u64(0, 0), 0);
+        assert_eq!(ct_saturating_sub_u64(0, 1), 0);
+        assert_eq!(ct_saturating_sub_u64(u64::MAX, 1), u64::MAX - 1);
+        assert_eq!(ct_saturating_sub_u64(1, u64::MAX), 0);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_ct_min_matches_std(a: u64, b: u64) {
+            prop_assert_eq!(ct_min_u64(a, b), a.min(b));
+        }
+
+        #[test]
+        fn prop_ct_max_matches_std(a: u64, b: u64) {
+            prop_assert_eq!(ct_max_u64(a, b), a.max(b));
+        }
+
+        #[test]
+        fn prop_ct_saturating_sub_matches_std(a: u64, b: u64) {
+            prop_assert_eq!(ct_saturating_sub_u64(a, b), a.saturating_sub(b));
         }
     }
 }
