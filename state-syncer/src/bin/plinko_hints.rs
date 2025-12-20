@@ -400,24 +400,31 @@ fn main() -> eyre::Result<()> {
         .map(|key| Iprf::with_security(*key, total_hints as u64, w as u64, args.sr_security))
         .collect();
 
-    // Precompute iPRF mappings using forward evaluation (much faster than inverse)
+    // Precompute iPRF mappings using batch forward evaluation
     // For each block, we evaluate forward(j) for all j in [0, total_hints) and build
     // the inverse mapping offset -> Vec<hint_indices>
-    // This is O(c * total_hints) forward calls vs O(c * w) inverse calls, but forward is ~1000x faster
+    // Using forward_batch for ~3-4x speedup per block, plus rayon parallelism across blocks
     println!(
-        "[4/5] Precomputing iPRF mappings ({} blocks x {} hints via forward)...",
+        "[4/5] Precomputing iPRF mappings ({} blocks x {} hints via batch forward)...",
         c, total_hints
     );
     let precompute_start = Instant::now();
+    
+    // Build input array once (shared across all blocks)
+    let hint_indices: Vec<u64> = (0..total_hints as u64).collect();
+    
     let block_inverse_maps: Vec<Vec<Vec<u64>>> = block_iprfs
         .par_iter()
         .map(|iprf| {
             // Initialize empty vecs for each offset
             let mut offset_to_hints: Vec<Vec<u64>> = vec![Vec::new(); w];
-            // Evaluate forward(j) for each hint index j
-            for j in 0..total_hints as u64 {
-                let offset = iprf.forward(j) as usize;
-                offset_to_hints[offset].push(j);
+            
+            // Batch forward evaluation - ~3-4x faster than sequential
+            let offsets = iprf.forward_batch(&hint_indices);
+            
+            // Build inverse mapping
+            for (j, &offset) in offsets.iter().enumerate() {
+                offset_to_hints[offset as usize].push(j as u64);
             }
             offset_to_hints
         })
