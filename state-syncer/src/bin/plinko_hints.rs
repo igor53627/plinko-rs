@@ -2,11 +2,42 @@
 //!
 //! Implements Plinko's HintInit matching Fig. 7 of the paper and Plinko.v Coq spec.
 //!
-//! Key differences from previous implementation:
+//! # Key Design (per paper and Coq formalization)
+//!
 //! - Generates c iPRF keys (one per block), not one global key
 //! - Regular hints: block subset of size c/2+1, single parity
 //! - Backup hints: block subset of size c/2, dual parities (in/out)
 //! - iPRF domain = total hints (λw + q), range = w (block size)
+//!
+//! # Constant-Time Mode (--constant-time)
+//!
+//! For TEE execution, this generator supports a constant-time path that eliminates
+//! timing side-channels which could leak iPRF mappings. Security properties:
+//!
+//! - **Fixed-bound loops**: Always iterates `MAX_PREIMAGES` (512) times per entry,
+//!   using masks to skip invalid indices. This prevents leaking preimage counts.
+//!
+//! - **Branchless membership**: Uses `BlockBitset::contains_ct()` for O(1) bit lookup
+//!   instead of binary search, preventing timing variation based on subset contents.
+//!
+//! - **Masked XOR**: Uses `ct_xor_32_masked()` to conditionally XOR without branches,
+//!   ensuring constant-time parity updates.
+//!
+//! ## Security Model and Limitations
+//!
+//! The CT mode protects against timing side-channels but does NOT provide full
+//! memory-access obliviousness. Array indexing patterns (e.g., `regular_bitsets[j]`)
+//! may leak information to cache side-channel attackers (Prime+Probe, etc.).
+//!
+//! This is acceptable for the paper's security model, which reasons in an idealized
+//! RAM model without microarchitectural side-channels. For stronger protection,
+//! an ORAM-based approach would be needed (O(n) overhead).
+//!
+//! ## MAX_PREIMAGES Bound
+//!
+//! With default parameters (λ=128, q=λw), expected preimages per offset ≈ 2λ = 256.
+//! The bound MAX_PREIMAGES=512 (≈2μ) ensures truncation probability < 2^{-140}
+//! via Chernoff bounds. A parameter guard enforces this at runtime.
 
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -14,7 +45,8 @@ use memmap2::MmapOptions;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use state_syncer::iprf::{Iprf, PrfKey128};
+use state_syncer::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
+use state_syncer::iprf::{Iprf, IprfTee, PrfKey128, MAX_PREIMAGES};
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -56,6 +88,11 @@ struct Args {
     /// Print the master seed (for reproducibility). Use with caution in production.
     #[arg(long)]
     print_seed: bool,
+
+    /// Use constant-time implementation for TEE execution.
+    /// Slower but prevents timing side-channels that could leak iPRF mappings.
+    #[arg(long)]
+    constant_time: bool,
 }
 
 /// Regular hint: P_j subset of c/2+1 blocks, single parity
@@ -76,6 +113,62 @@ struct BackupHint {
 fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
     for i in 0..32 {
         dst[i] ^= src[i];
+    }
+}
+
+/// Bitset for constant-time block membership testing.
+///
+/// Converts sorted block lists to a compact bit array for O(1) membership queries.
+/// This is functionally equivalent to binary search on sorted `Vec<usize>`, but:
+///
+/// 1. **Constant-time**: `contains_ct()` performs fixed bit arithmetic regardless
+///    of subset contents, preventing timing leaks in TEE execution.
+///
+/// 2. **Cache-efficient**: Single u64 load + shift vs. multiple comparisons.
+///
+/// # Security Note
+///
+/// The array index `block / 64` depends on the public block index (known from
+/// the streaming loop), so `contains_ct` does not leak secret information via
+/// its memory access pattern. The secret is "which hints map to this offset",
+/// not "which block we're processing".
+struct BlockBitset {
+    bits: Vec<u64>,
+    num_blocks: usize,
+}
+
+impl BlockBitset {
+    fn new(num_blocks: usize) -> Self {
+        let num_words = (num_blocks + 63) / 64;
+        Self {
+            bits: vec![0u64; num_words],
+            num_blocks,
+        }
+    }
+
+    fn from_sorted_blocks(blocks: &[usize], num_blocks: usize) -> Self {
+        let mut bitset = Self::new(num_blocks);
+        for &block in blocks {
+            if block < num_blocks {
+                bitset.bits[block / 64] |= 1u64 << (block % 64);
+            }
+        }
+        bitset
+    }
+
+    /// Constant-time membership test: returns 1 if block is in set, 0 otherwise.
+    ///
+    /// The early return for out-of-bounds `block` is NOT a timing leak because
+    /// `block` is derived from the public streaming index `i` (block = i / w).
+    /// The secret values are the iPRF preimage indices, not the block index.
+    #[inline]
+    fn contains_ct(&self, block: usize) -> u64 {
+        if block >= self.num_blocks {
+            return 0;
+        }
+        let word_idx = block / 64;
+        let bit_idx = block % 64;
+        (self.bits[word_idx] >> bit_idx) & 1
     }
 }
 
@@ -386,14 +479,11 @@ fn main() -> eyre::Result<()> {
         backup_hint_blocks.push(blocks);
     }
 
-    // Pre-create iPRF instances for each block (avoids recreating per entry)
-    let block_iprfs: Vec<Iprf> = block_keys
-        .iter()
-        .map(|key| Iprf::new(*key, total_hints as u64, w as u64))
-        .collect();
-
     // Step 4: Stream database and update parities
     println!("[4/4] Streaming database ({} entries)...", n_effective);
+    if args.constant_time {
+        println!("  [CT MODE] Using constant-time implementation for TEE");
+    }
     let pb = ProgressBar::new(n_effective as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -402,54 +492,215 @@ fn main() -> eyre::Result<()> {
             .progress_chars("#>-"),
     );
 
-    for i in 0..n_effective {
-        let block = i / w;
-        let offset = i % w;
+    if args.constant_time {
+        // =========================================================================
+        // CONSTANT-TIME PATH FOR TEE EXECUTION
+        // =========================================================================
+        //
+        // Security goal: Eliminate timing side-channels that could leak the iPRF
+        // mapping (i.e., which hints contain which database entries).
+        //
+        // This is critical because in Plinko, the hint structure encodes which
+        // database entries a client can privately retrieve. Leaking this structure
+        // would compromise PIR privacy.
+        //
+        // Key techniques used:
+        // 1. Fixed-bound loops (MAX_PREIMAGES iterations, not data-dependent count)
+        // 2. BlockBitset for O(1) branchless membership testing
+        // 3. ct_select_usize for branchless index clamping
+        // 4. ct_xor_32_masked for conditional XOR without branches
+        //
+        // What we do NOT protect against (and why it's acceptable):
+        // - Cache side-channels from secret-dependent array indices
+        //   (would require ORAM, O(n) overhead; out of scope for paper's model)
+        // =========================================================================
 
-        // For padded entries beyond actual DB, use zero (XOR with zero is no-op)
-        let entry: [u8; 32] = if i < n_entries {
-            let entry_offset = i * WORD_SIZE;
-            db_bytes[entry_offset..entry_offset + WORD_SIZE]
-                .try_into()
-                .unwrap()
-        } else {
-            [0u8; 32]
-        };
+        // Guard: CT path requires non-empty hint arrays for safe array indexing.
+        // ct_select_usize(0, _, default) returns default, but we still index into
+        // the bitset/hint arrays, so they must have at least one element.
+        if num_regular == 0 {
+            eprintln!("Error: --constant-time mode requires num_regular > 0 (lambda >= 1)");
+            std::process::exit(1);
+        }
+        if num_backup == 0 {
+            eprintln!("Error: --constant-time mode requires num_backup > 0");
+            eprintln!("       Use --backup-hints to set q > 0");
+            std::process::exit(1);
+        }
 
-        // Find all hints j where iPRF.forward(j) == offset
-        let hint_indices = block_iprfs[block].inverse(offset as u64);
+        // Guard: Ensure MAX_PREIMAGES is sufficient for the parameter configuration.
+        //
+        // For Plinko with (λ, w, q), expected preimages per offset ≈ (λw + q) / w.
+        // With default q = λw: expected ≈ 2λ = 256 for λ=128.
+        //
+        // We require expected * 2 <= MAX_PREIMAGES to ensure truncation probability
+        // is negligible (< 2^{-100}) via Chernoff bounds.
+        let expected_preimages = (total_hints + w - 1) / w;
+        if expected_preimages * 2 > MAX_PREIMAGES {
+            eprintln!(
+                "Error: Parameter configuration too dense for constant-time mode."
+            );
+            eprintln!(
+                "       Expected preimages per offset ({}) exceeds MAX_PREIMAGES/2 ({}).",
+                expected_preimages,
+                MAX_PREIMAGES / 2
+            );
+            eprintln!("       Reduce total_hints or increase w.");
+            std::process::exit(1);
+        }
 
-        for j in hint_indices {
-            let j = j as usize;
-            if j < num_regular {
-                // Regular hint: XOR if block in P
-                if block_in_subset(&regular_hint_blocks[j], block) {
-                    xor_32(&mut regular_hints[j].parity, &entry);
-                }
+        // Pre-create CT iPRF instances
+        let block_iprfs_ct: Vec<IprfTee> = block_keys
+            .iter()
+            .map(|key| IprfTee::new(*key, total_hints as u64, w as u64))
+            .collect();
+
+        // Convert block lists to bitsets for CT membership testing
+        let regular_bitsets: Vec<BlockBitset> = regular_hint_blocks
+            .iter()
+            .map(|blocks| BlockBitset::from_sorted_blocks(blocks, c))
+            .collect();
+        let backup_bitsets: Vec<BlockBitset> = backup_hint_blocks
+            .iter()
+            .map(|blocks| BlockBitset::from_sorted_blocks(blocks, c))
+            .collect();
+
+        // Drop the Vec<Vec<usize>> now that we have bitsets
+        drop(regular_hint_blocks);
+        drop(backup_hint_blocks);
+
+        for i in 0..n_effective {
+            let block = i / w;
+            let offset = i % w;
+
+            let entry: [u8; 32] = if i < n_entries {
+                let entry_offset = i * WORD_SIZE;
+                db_bytes[entry_offset..entry_offset + WORD_SIZE]
+                    .try_into()
+                    .unwrap()
             } else {
-                // Backup hint: XOR to parity_in if in P, else parity_out
-                let backup_idx = j - num_regular;
-                if backup_idx < num_backup {
-                    if block_in_subset(&backup_hint_blocks[backup_idx], block) {
-                        xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
-                    } else {
-                        xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
+                [0u8; 32]
+            };
+
+            // CT inverse returns fixed-size array + count
+            let (indices, count) = block_iprfs_ct[block].inverse_ct(offset as u64);
+
+            // Fixed-bound loop: always iterates MAX_PREIMAGES times regardless of
+            // actual preimage count. This prevents timing leaks from variable iteration.
+            //
+            // The in_range mask filters out invalid indices (t >= count), ensuring
+            // the XOR operation has no effect for padding iterations.
+            for t in 0..MAX_PREIMAGES {
+                // in_range = 1 if this is a valid preimage (t < count), 0 otherwise.
+                // All operations below are masked by this value.
+                let in_range = ct_lt_u64(t as u64, count as u64);
+
+                let j = indices[t] as usize;
+
+                // Branchless classification: is j a regular hint index or backup?
+                // Paper Fig. 7: regular hints are j < λw, backup hints are j >= λw.
+                let is_regular = ct_lt_u64(j as u64, num_regular as u64);
+                let backup_idx = j.wrapping_sub(num_regular);
+                let is_valid_backup = ct_lt_u64(backup_idx as u64, num_backup as u64);
+                let is_backup = (1 - is_regular) & is_valid_backup;
+
+                // Branchless index clamping for array access:
+                //
+                // Problem: We need to access regular_bitsets[j] or backup_bitsets[backup_idx],
+                // but if j is invalid for that array, we'd get out-of-bounds.
+                //
+                // Solution: ct_select_usize returns j if valid, 0 (dummy) otherwise.
+                // The dummy access still happens (cache side-channel), but:
+                // - The XOR mask will be 0, so no actual parity update occurs
+                // - The timing is constant (same instructions execute either way)
+                let regular_idx = ct_select_usize(is_regular, j, 0);
+                let in_regular_subset = regular_bitsets[regular_idx].contains_ct(block);
+
+                let backup_idx_clamped = ct_select_usize(is_valid_backup, backup_idx, 0);
+                let in_backup_subset = backup_bitsets[backup_idx_clamped].contains_ct(block);
+
+                // Final update masks: all conditions must be true (in_range AND correct type AND in subset)
+                // These correspond exactly to the paper's HintInit update rules:
+                // - Regular: j < λw AND α ∈ P_j  =>  H[j].parity ^= d
+                // - Backup in: j >= λw AND α ∈ B_j  =>  T[j].p1 ^= d
+                // - Backup out: j >= λw AND α ∉ B_j  =>  T[j].p2 ^= d
+                let update_regular = in_range & is_regular & in_regular_subset;
+                let update_backup_in = in_range & is_backup & in_backup_subset;
+                let update_backup_out = in_range & is_backup & (1 - in_backup_subset);
+
+                // Masked XOR: if mask == 1, dst ^= src; if mask == 0, no-op.
+                // Both paths execute the same instructions (constant time).
+                ct_xor_32_masked(&mut regular_hints[regular_idx].parity, &entry, update_regular);
+                ct_xor_32_masked(
+                    &mut backup_hints[backup_idx_clamped].parity_in,
+                    &entry,
+                    update_backup_in,
+                );
+                ct_xor_32_masked(
+                    &mut backup_hints[backup_idx_clamped].parity_out,
+                    &entry,
+                    update_backup_out,
+                );
+            }
+
+            if i % 10000 == 0 {
+                pb.set_position(i as u64);
+            }
+        }
+    } else {
+        // Fast path (non-constant-time) for client-side execution
+        let block_iprfs: Vec<Iprf> = block_keys
+            .iter()
+            .map(|key| Iprf::new(*key, total_hints as u64, w as u64))
+            .collect();
+
+        for i in 0..n_effective {
+            let block = i / w;
+            let offset = i % w;
+
+            let entry: [u8; 32] = if i < n_entries {
+                let entry_offset = i * WORD_SIZE;
+                db_bytes[entry_offset..entry_offset + WORD_SIZE]
+                    .try_into()
+                    .unwrap()
+            } else {
+                [0u8; 32]
+            };
+
+            // Find all hints j where iPRF.forward(j) == offset
+            let hint_indices = block_iprfs[block].inverse(offset as u64);
+
+            for j in hint_indices {
+                let j = j as usize;
+                if j < num_regular {
+                    // Regular hint: XOR if block in P
+                    if block_in_subset(&regular_hint_blocks[j], block) {
+                        xor_32(&mut regular_hints[j].parity, &entry);
+                    }
+                } else {
+                    // Backup hint: XOR to parity_in if in P, else parity_out
+                    let backup_idx = j - num_regular;
+                    if backup_idx < num_backup {
+                        if block_in_subset(&backup_hint_blocks[backup_idx], block) {
+                            xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
+                        } else {
+                            xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
+                        }
                     }
                 }
             }
+
+            if i % 10000 == 0 {
+                pb.set_position(i as u64);
+            }
         }
 
-        if i % 10000 == 0 {
-            pb.set_position(i as u64);
-        }
+        // Drop in-memory block lists now that streaming is complete
+        drop(regular_hint_blocks);
+        drop(backup_hint_blocks);
     }
 
     pb.finish_with_message("Done");
-
-    // Drop in-memory block lists now that streaming is complete
-    // Only seeds + parities are retained in hint structs
-    drop(regular_hint_blocks);
-    drop(backup_hint_blocks);
 
     let duration = start.elapsed();
     let throughput_mb = (file_len as f64 / 1024.0 / 1024.0) / duration.as_secs_f64();
@@ -500,12 +751,13 @@ fn main() -> eyre::Result<()> {
     );
     let mut total_preimages = 0usize;
     for block in 0..blocks_to_check {
+        let verify_iprf = Iprf::new(block_keys[block], total_hints as u64, w as u64);
         for offset in 0..w {
-            total_preimages += block_iprfs[block].inverse(offset as u64).len();
+            total_preimages += verify_iprf.inverse(offset as u64).len();
         }
     }
     let blocks_checked = blocks_to_check;
-    let expected_per_block = total_hints; // iPRF partitions domain [0, total_hints) into range [0, w)
+    let expected_per_block = total_hints;
     println!(
         "  First {} blocks: {} total preimages across {} offsets (expected {} per block = {})",
         blocks_checked,
@@ -646,5 +898,144 @@ mod tests {
         let blocks1 = compute_regular_blocks(&seed, c);
         let blocks2 = compute_regular_blocks(&seed, c);
         assert_eq!(blocks1, blocks2);
+    }
+
+    #[test]
+    fn test_bitset_membership() {
+        let blocks = vec![1, 3, 5, 7, 9];
+        let bitset = BlockBitset::from_sorted_blocks(&blocks, 10);
+        assert_eq!(bitset.contains_ct(0), 0);
+        assert_eq!(bitset.contains_ct(1), 1);
+        assert_eq!(bitset.contains_ct(2), 0);
+        assert_eq!(bitset.contains_ct(3), 1);
+        assert_eq!(bitset.contains_ct(5), 1);
+        assert_eq!(bitset.contains_ct(9), 1);
+        assert_eq!(bitset.contains_ct(10), 0);
+    }
+
+    #[test]
+    fn test_ct_and_fast_produce_same_results() {
+        use state_syncer::iprf::{IprfTee, MAX_PREIMAGES};
+
+        let master_seed = [42u8; 32];
+        let c = 4;
+        let w = 8;
+        let lambda = 2;
+        let num_regular = lambda * w;
+        let num_backup = num_regular;
+        let total_hints = num_regular + num_backup;
+
+        let block_keys = derive_block_keys(&master_seed, c);
+
+        let mut regular_blocks_list: Vec<Vec<usize>> = Vec::new();
+        let mut backup_blocks_list: Vec<Vec<usize>> = Vec::new();
+
+        for j in 0..num_regular {
+            let subset_seed = derive_subset_seed(&master_seed, SEED_LABEL_REGULAR, j as u64);
+            regular_blocks_list.push(compute_regular_blocks(&subset_seed, c));
+        }
+        for j in 0..num_backup {
+            let subset_seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j as u64);
+            backup_blocks_list.push(compute_backup_blocks(&subset_seed, c));
+        }
+
+        let regular_bitsets: Vec<BlockBitset> = regular_blocks_list
+            .iter()
+            .map(|b| BlockBitset::from_sorted_blocks(b, c))
+            .collect();
+        let backup_bitsets: Vec<BlockBitset> = backup_blocks_list
+            .iter()
+            .map(|b| BlockBitset::from_sorted_blocks(b, c))
+            .collect();
+
+        let db: Vec<[u8; 32]> = (0..(c * w))
+            .map(|i| {
+                let mut entry = [0u8; 32];
+                entry[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                entry
+            })
+            .collect();
+
+        let mut fast_regular: Vec<[u8; 32]> = vec![[0u8; 32]; num_regular];
+        let mut fast_backup_in: Vec<[u8; 32]> = vec![[0u8; 32]; num_backup];
+        let mut fast_backup_out: Vec<[u8; 32]> = vec![[0u8; 32]; num_backup];
+
+        let block_iprfs: Vec<Iprf> = block_keys
+            .iter()
+            .map(|key| Iprf::new(*key, total_hints as u64, w as u64))
+            .collect();
+
+        for i in 0..(c * w) {
+            let block = i / w;
+            let offset = i % w;
+            let entry = &db[i];
+
+            let hint_indices = block_iprfs[block].inverse(offset as u64);
+
+            for j in hint_indices {
+                let j = j as usize;
+                if j < num_regular {
+                    if block_in_subset(&regular_blocks_list[j], block) {
+                        xor_32(&mut fast_regular[j], entry);
+                    }
+                } else {
+                    let backup_idx = j - num_regular;
+                    if backup_idx < num_backup {
+                        if block_in_subset(&backup_blocks_list[backup_idx], block) {
+                            xor_32(&mut fast_backup_in[backup_idx], entry);
+                        } else {
+                            xor_32(&mut fast_backup_out[backup_idx], entry);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut ct_regular: Vec<[u8; 32]> = vec![[0u8; 32]; num_regular];
+        let mut ct_backup_in: Vec<[u8; 32]> = vec![[0u8; 32]; num_backup];
+        let mut ct_backup_out: Vec<[u8; 32]> = vec![[0u8; 32]; num_backup];
+
+        let block_iprfs_ct: Vec<IprfTee> = block_keys
+            .iter()
+            .map(|key| IprfTee::new(*key, total_hints as u64, w as u64))
+            .collect();
+
+        for i in 0..(c * w) {
+            let block = i / w;
+            let offset = i % w;
+            let entry = &db[i];
+
+            let (indices, count) = block_iprfs_ct[block].inverse_ct(offset as u64);
+
+            for t in 0..MAX_PREIMAGES {
+                let in_range = ct_lt_u64(t as u64, count as u64);
+
+                let j = indices[t] as usize;
+
+                let is_regular = ct_lt_u64(j as u64, num_regular as u64);
+                let backup_idx = j.wrapping_sub(num_regular);
+                let is_valid_backup = ct_lt_u64(backup_idx as u64, num_backup as u64);
+                let is_backup = (1 - is_regular) & is_valid_backup;
+
+                // Branchless index selection (matches main CT path)
+                let regular_idx = ct_select_usize(is_regular, j, 0);
+                let in_regular_subset = regular_bitsets[regular_idx].contains_ct(block);
+
+                let backup_idx_clamped = ct_select_usize(is_valid_backup, backup_idx, 0);
+                let in_backup_subset = backup_bitsets[backup_idx_clamped].contains_ct(block);
+
+                let update_regular = in_range & is_regular & in_regular_subset;
+                let update_backup_in = in_range & is_backup & in_backup_subset;
+                let update_backup_out = in_range & is_backup & (1 - in_backup_subset);
+
+                ct_xor_32_masked(&mut ct_regular[regular_idx], entry, update_regular);
+                ct_xor_32_masked(&mut ct_backup_in[backup_idx_clamped], entry, update_backup_in);
+                ct_xor_32_masked(&mut ct_backup_out[backup_idx_clamped], entry, update_backup_out);
+            }
+        }
+
+        assert_eq!(fast_regular, ct_regular, "Regular parities mismatch");
+        assert_eq!(fast_backup_in, ct_backup_in, "Backup in-parities mismatch");
+        assert_eq!(fast_backup_out, ct_backup_out, "Backup out-parities mismatch");
     }
 }
