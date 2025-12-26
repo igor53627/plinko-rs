@@ -92,6 +92,13 @@ Before committing Rust changes to hint generation or iPRF:
 | iPRF Spec | `plinko/formal/specs/IprfSpec.v` |
 | PRP Spec | `plinko/formal/specs/SwapOrNotSpec.v` |
 
+## Documentation Sync Rules
+
+When modifying `state-syncer/src/bin/hint_gen/`:
+- Update `docs/hint_generation.md` if module structure or API changes
+- Update `docs/constant_time_mode.md` if CT security model changes
+- Keep the module table in `docs/hint_generation.md` current with file sizes
+
 ## Devin DeepWiki
 
 Update `.devin/wiki.json` when making changes worth documenting:
