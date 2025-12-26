@@ -9,7 +9,7 @@
       "author": "maintainer"
     },
     {
-      "content": "The state-syncer/ crate contains the core Plinko implementation: iPRF (invertible PRF), TEE-safe iPRF (IprfTee), Sometimes-Recurse PRP (SwapOrNotSr), true Binomial(n,p) sampling (binomial_sample / binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), and hint generation. The state-syncer/formal/ directory contains Rocq proofs and specs.",
+      "content": "The state-syncer/ crate contains the core Plinko implementation: iPRF (invertible PRF), IprfTee, Sometimes-Recurse PRP (SwapOrNotSr), true Binomial(n,p) sampling (binomial_sample / binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), and hint generation. The canonical Rocq specs/proofs and linking layer live in plinko/formal/ (see .github/workflows/formal.yml).",
       "author": "maintainer"
     },
     {

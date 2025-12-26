@@ -2,8 +2,16 @@
 
 # Rocq 9.x uses 'rocq compile' instead of 'coqc'
 # Fall back to coqc/coqdep for compatibility with older versions
-COQC ?= $(shell command -v rocq >/dev/null 2>&1 && echo "rocq compile" || echo "coqc")
-COQDEP ?= $(shell command -v rocq >/dev/null 2>&1 && echo "rocq dep" || echo "coqdep")
+ROCQ_AVAILABLE := $(shell command -v rocq >/dev/null 2>&1 && echo yes || echo no)
+ifeq ($(ROCQ_AVAILABLE),yes)
+  COQC ?= rocq compile
+  COQDEP ?= rocq dep
+  COQC_BIN := rocq
+else
+  COQC ?= coqc
+  COQDEP ?= coqdep
+  COQC_BIN := coqc
+endif
 
 # Path to RocqOfRust library (can be overridden via environment or command line)
 ROCQOFRUST_PATH ?= $(HOME)/rocq-of-rust/RocqOfRust
@@ -18,7 +26,7 @@ COQFLAGS_LINKING := -R $(ROCQOFRUST_PATH) RocqOfRust -Q specs Plinko.Specs -Q si
 COQFLAGS_TRANS := -R $(ROCQOFRUST_PATH) RocqOfRust -Q src src
 
 # Source files
-SPEC_FILES := specs/CommonTypes.v specs/DbSpec.v specs/BinomialSpec.v specs/TrueBinomialSpec.v specs/SwapOrNotSpec.v specs/IprfSpec.v
+SPEC_FILES := specs/CommonTypes.v specs/DbSpec.v specs/BinomialSpec.v specs/TrueBinomialSpec.v specs/SwapOrNotSpec.v specs/SwapOrNotSrSpec.v specs/IprfSpec.v
 SIM_FILES := $(wildcard sims/*.v)
 PROOF_FILES := $(wildcard proofs/*.v)
 TRANS_FILES := $(wildcard src/*.v)
@@ -128,7 +136,7 @@ clean:
 
 # Check if dependencies are installed
 check-deps:
-	@which $(COQC) > /dev/null || (echo "Error: coqc not found. Install Rocq first." && exit 1)
+	@which $(COQC_BIN) > /dev/null || (echo "Error: coqc/rocq not found. Install Rocq first." && exit 1)
 	@echo "Rocq version: $$($(COQC) --version)"
 	@if [ -d "$(ROCQOFRUST_PATH)" ]; then \
 		echo "RocqOfRust: $(ROCQOFRUST_PATH)"; \
@@ -165,7 +173,7 @@ audit:
 		grep -rn '^Parameter' specs/ sims/ proofs/ linking/ 2>/dev/null || echo "  (none)"; \
 		echo ""; \
 		echo "Admits:"; \
-		grep -rni '\badmitted\b' specs/ sims/ proofs/ linking/ 2>/dev/null || echo "  (none)"; \
+		grep -RnhE '^[[:space:]]*Admitted\.' specs/ sims/ proofs/ linking/ 2>/dev/null || echo "  (none)"; \
 	} | tee $(ARTIFACTS_DIR)/audit.txt
 
 # Threshold for allowed admits
@@ -174,7 +182,7 @@ ADMIT_THRESHOLD ?= 10
 # Check admits don't exceed threshold
 check-admits:
 	@echo "Checking admit count against threshold ($(ADMIT_THRESHOLD))..."
-	@ADMITS=$$(grep -rni '\badmitted\b' specs/ sims/ proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '); \
+	@ADMITS=$$(grep -RnhE '^[[:space:]]*Admitted\.' specs/ sims/ proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '); \
 	if [ "$$ADMITS" -gt "$(ADMIT_THRESHOLD)" ]; then \
 		echo "ERROR: admit count ($$ADMITS) exceeds threshold ($(ADMIT_THRESHOLD))"; \
 		exit 1; \
@@ -184,7 +192,7 @@ check-admits:
 
 # Get admit count (for CI summary)
 admit-count:
-	@grep -rni '\badmitted\b' specs/ sims/ proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '
+	@grep -RnhE '^[[:space:]]*Admitted\.' specs/ sims/ proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '
 
 # Verify no unexpected axioms/parameters
 AXIOM_ALLOWLIST ?= axioms_allowlist.txt
