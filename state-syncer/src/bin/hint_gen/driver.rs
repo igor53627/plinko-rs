@@ -5,7 +5,7 @@ use crate::hint_gen::{
     SEED_LABEL_BACKUP, SEED_LABEL_REGULAR, WORD_SIZE,
 };
 use rand::RngCore;
-use state_syncer::iprf::PrfKey128;
+use state_syncer::iprf::{PrfKey128, MAX_PREIMAGES};
 use std::time::Duration;
 
 use super::Args;
@@ -48,8 +48,20 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     if args.entries_per_block == Some(0) {
         eyre::bail!("entries_per_block (w) must be > 0");
     }
-    if args.constant_time && args.backup_hints == Some(0) {
-        eyre::bail!("--constant-time mode requires num_backup > 0 (CT indexing needs at least one backup element)");
+    if args.backup_hints == Some(0) {
+        eyre::bail!("num_backup must be > 0 (backup hints are required for correctness)");
+    }
+    Ok(())
+}
+
+/// Validate that hint parameters are within bounds for CT mode.
+pub fn validate_hint_params(params: &HintParams) -> eyre::Result<()> {
+    if params.total_hints > MAX_PREIMAGES {
+        eyre::bail!(
+            "total_hints ({}) exceeds MAX_PREIMAGES ({}); reduce lambda or backup_hints",
+            params.total_hints,
+            MAX_PREIMAGES
+        );
     }
     Ok(())
 }

@@ -106,18 +106,11 @@ cd state-syncer && cargo build --release --bin plinko_hints
   --db-path ./database.bin \
   --lambda 128
 
-# Generate hints (XOF mode - faster at low λ)
-./target/release/plinko_hints \
-  --db-path ./database.bin \
-  --lambda 128 --xof
-
 # Generate hints (constant-time mode for TEE)
 ./target/release/plinko_hints \
   --db-path ./database.bin \
   --lambda 128 --constant-time
 ```
-
-See [docs/xof-optimization.md](docs/xof-optimization.md) for details on the XOF optimization.
 
 ### Constant-Time Mode
 

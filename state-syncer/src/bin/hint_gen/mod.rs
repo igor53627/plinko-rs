@@ -8,7 +8,8 @@ pub mod types;
 
 pub use bitset::BlockBitset;
 pub use driver::{
-    compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args, HintParams,
+    compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args,
+    validate_hint_params, HintParams,
 };
 pub use keys::{derive_block_keys, derive_subset_seed};
 pub use subsets::{compute_backup_blocks, compute_regular_blocks};

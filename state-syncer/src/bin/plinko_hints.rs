@@ -38,6 +38,9 @@ fn main() -> eyre::Result<()> {
     println!("  Lambda: {}", args.lambda);
 
     let params = HintParams::from_args(&args, geom.w);
+    if args.constant_time {
+        validate_hint_params(&params)?;
+    }
     println!("\nHint Structure:");
     println!("  Regular hints: {}", params.num_regular);
     println!("  Backup hints: {}", params.num_backup);

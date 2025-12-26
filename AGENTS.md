@@ -39,10 +39,10 @@ cd state-syncer && cargo build --release --bin plinko_hints
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128
 
-# Generate hints (XOF mode - faster)
+# Generate hints (constant-time mode for TEE)
 ./state-syncer/target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
-  --lambda 128 --xof
+  --lambda 128 --constant-time
 ```
 
 ## Data Format
