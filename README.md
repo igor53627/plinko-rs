@@ -162,7 +162,7 @@ We maintain consistency between three sources:
 | Binomial sampling | §4.3: "derandomized using r as randomness" | `binomial_sample`, `binomial_sample_tee` | [binomial.rs](state-syncer/src/binomial.rs), `Iprf`/`IprfTee` | **Kani** + tests |
 | Swap-or-Not PRP | Referenced: Morris-Rogaway 2013 | `SwapOrNot.prp_forward/inverse` | `SwapOrNot::forward/inverse` | proptest |
 | HintInit | Fig. 7: c keys, subset sizes c/2+1 and c/2 | `hint_init`, `process_db_entry` | [plinko_hints.rs](state-syncer/src/bin/plinko_hints.rs) | proptest |
-| Plinko params | §3: w=√N block size | [DbSpec.v](state-syncer/formal/specs/DbSpec.v) | [db.rs](state-syncer/src/db.rs) `derive_plinko_params` | proptest |
+| Plinko params | §3: w=√N block size | [DbSpec.v](plinko/formal/specs/DbSpec.v) | [db.rs](state-syncer/src/db.rs) `derive_plinko_params` | proptest |
 
 **Key design decision (binomial sampling)**: The paper specifies a derandomized Binomial(n, p; r) but not a concrete sampler. We implement:
 
@@ -211,4 +211,3 @@ cd state-syncer && cargo test --lib kani_proofs
 ---
 
 [Alex Hoover: Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs](https://www.youtube.com/watch?v=okJaBn7ZXnc)
-

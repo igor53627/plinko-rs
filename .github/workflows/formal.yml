@@ -337,4 +337,3 @@ jobs:
           make clean
           make ROCQOFRUST_PATH="$HOME/rocq-of-rust/RocqOfRust" all
           make ROCQOFRUST_PATH="$HOME/rocq-of-rust/RocqOfRust" linking
-
