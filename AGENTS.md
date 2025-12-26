@@ -4,6 +4,28 @@
 
 - **Codex Code Env ID**: `694e8588110c8191945f9b9dfbf0b7d1`
 
+## Codex Cloud Tasks
+
+For complex or long-running tasks (formal proofs, large refactors), use Codex Cloud:
+
+```bash
+# Submit a task to Codex Cloud (runs remotely with gpt-5.2-codex + xhigh reasoning)
+codex cloud exec --env 694e8588110c8191945f9b9dfbf0b7d1 --attempts 3 "Your task description"
+
+# Check task status
+codex cloud status <task_id>
+
+# View diff from completed task
+codex cloud diff <task_id>
+
+# Apply changes locally
+codex cloud apply <task_id>
+```
+
+Options:
+- `--attempts N`: Run N parallel attempts (best-of-N), use 3 for complex proofs
+- `--branch <branch>`: Target a specific git branch
+
 ## Canonical Protocol Reference
 
 **`docs/plinko_paper_index.json`** is the canonical source of truth for Plinko protocol implementation details. It indexes:
