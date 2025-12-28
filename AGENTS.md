@@ -26,6 +26,40 @@ Options:
 - `--attempts N`: Run N parallel attempts (best-of-N), use 3 for complex proofs
 - `--branch <branch>`: Target a specific git branch
 
+## Codex Cloud + Remote Rocq Verification
+
+For Coq/Rocq proof synthesis with verification, use the remote build server.
+See [docs/codex-cloud-verification.md](docs/codex-cloud-verification.md) for full details.
+
+### Quick Start
+
+```bash
+# Submit proof task with verification
+codex cloud exec --env 694e8588110c8191945f9b9dfbf0b7d1 --attempts 3 "
+Prove \`lemma_name\` in plinko/formal/specs/SomeSpec.v
+
+Verify using:
+curl -s -X POST http://108.61.166.134/verify-project \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"files\": {...}, \"main\": \"Plinko/Specs/SomeSpec.v\", \"timeout\": 120}'
+
+Read .v files from plinko/formal/specs/, key as Plinko/Specs/<name>.v.
+"
+```
+
+### Verification Server
+
+- **Host**: `108.61.166.134:80`
+- **Endpoints**: `GET /health`, `POST /verify`, `POST /verify-project`
+- **Service**: `rocq-verify.service` (Python API + Rocq 9.1.0)
+
+### Check Server Status
+
+```bash
+ssh root@108.61.166.134 "systemctl status rocq-verify nginx"
+ssh root@108.61.166.134 "tail -f /var/log/nginx/access.log"
+```
+
 ## Canonical Protocol Reference
 
 **`docs/plinko_paper_index.json`** is the canonical source of truth for Plinko protocol implementation details. It indexes:
