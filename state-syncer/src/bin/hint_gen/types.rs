@@ -34,13 +34,11 @@ pub struct Args {
     pub constant_time: bool,
 }
 
-#[allow(dead_code)]
 pub struct RegularHint {
     pub subset_seed: [u8; 32],
     pub parity: [u8; 32],
 }
 
-#[allow(dead_code)]
 pub struct BackupHint {
     pub subset_seed: [u8; 32],
     pub parity_in: [u8; 32],

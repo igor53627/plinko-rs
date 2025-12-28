@@ -5,7 +5,7 @@ pub struct BlockBitset {
 
 impl BlockBitset {
     pub fn new(num_blocks: usize) -> Self {
-        let num_words = (num_blocks + 63) / 64;
+        let num_words = num_blocks.div_ceil(64);
         Self {
             bits: vec![0u64; num_words],
             num_blocks,

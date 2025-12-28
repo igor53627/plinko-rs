@@ -125,15 +125,16 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
         eyre::bail!("Number of blocks (c = {}) must be at least 2.", c);
     }
 
+    let mut pad_entries = final_pad;
     if !args.allow_truncation && c % 2 != 0 {
         c += 1;
         n_effective = c * w;
-        let new_pad = n_effective - n_entries;
+        pad_entries = n_effective - n_entries;
         println!(
             "Info: Bumped c from {} to {} (must be even). Padding with {} entries.",
             c - 1,
             c,
-            new_pad
+            pad_entries
         );
     }
 
@@ -142,7 +143,7 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
         n_effective,
         w,
         c,
-        pad_entries: final_pad,
+        pad_entries,
     })
 }
 
