@@ -14,6 +14,7 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import Bool.
 Require Import Plinko.Specs.CommonTypes.
 Require Import Plinko.Specs.BinomialSpec.
+Require Import Plinko.Specs.SwapOrNotSrSpec.
 
 Import ListNotations.
 Open Scope Z_scope.
@@ -28,28 +29,48 @@ Parameter prf_eval : Z -> Z.
 (** Node ID encoding: (low, high, n) -> node_id *)
 Parameter encode_node : Z -> Z -> Z -> Z.
 
-(** PRP forward permutation *)
-Parameter prp_forward : Z -> Z -> Z.
+(** PRP forward permutation - instantiated via SwapOrNot SR *)
+Definition prp_forward (n x : Z) : Z := sr_forward n x.
 
-(** PRP inverse permutation *)
-Parameter prp_inverse : Z -> Z -> Z.
+(** PRP inverse permutation - instantiated via SwapOrNot SR *)
+Definition prp_inverse (n y : Z) : Z := sr_inverse n y.
 
-(** PRP axioms: we assume PRP is a valid permutation on [0, n) *)
-Axiom prp_forward_in_range : forall n x,
+(** PRP lemmas: PRP is a valid permutation on [0, n) - proved via SR *)
+Lemma prp_forward_in_range : forall n x,
   0 <= x < n ->
   0 <= prp_forward n x < n.
+Proof.
+  intros n x Hx.
+  unfold prp_forward.
+  apply sr_forward_range; lia.
+Qed.
 
-Axiom prp_inverse_in_range : forall n x,
+Lemma prp_inverse_in_range : forall n x,
   0 <= x < n ->
   0 <= prp_inverse n x < n.
+Proof.
+  intros n x Hx.
+  unfold prp_inverse.
+  apply sr_inverse_range; lia.
+Qed.
 
-Axiom prp_forward_inverse : forall n x,
+Lemma prp_forward_inverse : forall n x,
   0 <= x < n ->
   prp_inverse n (prp_forward n x) = x.
+Proof.
+  intros n x Hx.
+  unfold prp_forward, prp_inverse.
+  apply sr_forward_inverse_id; lia.
+Qed.
 
-Axiom prp_inverse_forward : forall n x,
+Lemma prp_inverse_forward : forall n x,
   0 <= x < n ->
   prp_forward n (prp_inverse n x) = x.
+Proof.
+  intros n x Hx.
+  unfold prp_forward, prp_inverse.
+  apply sr_inverse_forward_id; lia.
+Qed.
 
 (** ** PMNS: Pseudorandom Multinomial Sampler *)
 
@@ -360,6 +381,11 @@ Qed.
     1. Add 0 < count precondition, or
     2. Use case analysis with binomial_sample_range_zero for count = 0
     This requires significant proof restructuring (estimated 1-2 days).
+
+    NOTE: Cannot link to TrueBinomialSpec.true_binomial_range because:
+    - binomial_sample_spec (BinomialSpec): fast approximation using modular arithmetic
+    - true_binomial_sample_spec (TrueBinomialSpec): exact inverse-CDF binomial sampler
+    These are fundamentally different functions with different statistical properties.
 
     See also: binomial_sample_range (proven, for count > 0) in BinomialSpec.v *)
 Axiom binomial_sample_range_aux :
