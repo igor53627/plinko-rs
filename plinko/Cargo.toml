@@ -2,6 +2,11 @@
 name = "plinko"
 version = "0.1.0"
 edition = "2021"
+description = "Plinko PIR cryptographic primitives - invertible PRF, binomial sampling, constant-time operations"
+license = "MIT"
+repository = "https://github.com/igor53627/plinko-rs"
+keywords = ["pir", "cryptography", "privacy", "ethereum"]
+categories = ["cryptography", "algorithms"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
