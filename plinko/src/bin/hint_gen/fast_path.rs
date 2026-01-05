@@ -1,4 +1,4 @@
-use state_syncer::iprf::Iprf;
+use plinko::iprf::Iprf;
 
 use crate::hint_gen::subsets::{block_in_subset, xor_32};
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
