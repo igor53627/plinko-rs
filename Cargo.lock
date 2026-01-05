@@ -4974,6 +4974,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
+name = "plinko"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "blake3",
+ "clap",
+ "ctr",
+ "eyre",
+ "indicatif",
+ "memmap2",
+ "proptest",
+ "puruspe",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "plinko-extractor"
 version = "0.1.0"
 dependencies = [
@@ -8880,25 +8899,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "state-syncer"
-version = "0.1.0"
-dependencies = [
- "aes",
- "blake3",
- "clap",
- "ctr",
- "eyre",
- "indicatif",
- "memmap2",
- "proptest",
- "puruspe",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
- "sha2 0.10.9",
-]
 
 [[package]]
 name = "static_assertions"
