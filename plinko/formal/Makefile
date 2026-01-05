@@ -122,7 +122,7 @@ depend:
 # Translate Rust to Rocq using rocq-of-rust
 translate:
 	@echo "Translating Plinko Rust code to Rocq..."
-	cd ../.. && cargo +nightly-2024-12-07 rocq-of-rust -- --manifest-path state-syncer/Cargo.toml
+	cd ../.. && cargo +nightly-2024-12-07 rocq-of-rust -- --manifest-path plinko/Cargo.toml
 	@echo "Translation complete. Check src/ for generated .v files."
 
 # Clean generated files
