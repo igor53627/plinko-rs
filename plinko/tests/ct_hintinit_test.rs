@@ -4,11 +4,11 @@
 //! to the non-constant-time path, ensuring correctness while providing
 //! timing side-channel protection.
 
+use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
+use plinko::iprf::{Iprf, IprfTee, PrfKey128, MAX_PREIMAGES};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use state_syncer::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
-use state_syncer::iprf::{Iprf, IprfTee, PrfKey128, MAX_PREIMAGES};
 
 const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
 const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";

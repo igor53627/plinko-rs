@@ -1,6 +1,6 @@
+use plinko::iprf::PrfKey128;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use state_syncer::iprf::PrfKey128;
 
 pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     let mut keys = Vec::with_capacity(c);
