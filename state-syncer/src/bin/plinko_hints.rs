@@ -6,10 +6,28 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use state_syncer::iprf::{Iprf, IprfTee};
+use std::cell::Cell;
 use std::fs::File;
 use std::time::Instant;
 
 use hint_gen::*;
+
+fn format_eta(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "unknown".to_string();
+    }
+    let secs = seconds.round() as u64;
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    let secs = secs % 60;
+    if hours > 0 {
+        format!("{hours}h{mins:02}m{secs:02}s")
+    } else if mins > 0 {
+        format!("{mins}m{secs:02}s")
+    } else {
+        format!("{secs}s")
+    }
+}
 
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
@@ -70,6 +88,40 @@ fn main() -> eyre::Result<()> {
             .unwrap()
             .progress_chars("#>-"),
     );
+    let total_entries = geom.n_effective;
+    let log_step = (total_entries / 100).max(1);
+    let last_log = Cell::new(0usize);
+    let progress = |i: usize| {
+        pb.set_position(i as u64);
+        if total_entries == 0 {
+            return;
+        }
+        let processed = i.min(total_entries);
+        let should_log = processed >= last_log.get().saturating_add(log_step)
+            || processed == total_entries;
+        if !should_log {
+            return;
+        }
+        last_log.set(processed);
+        let elapsed = start.elapsed().as_secs_f64();
+        if elapsed <= 0.0 {
+            return;
+        }
+        let pct = (processed as f64 / total_entries as f64) * 100.0;
+        let entries_per_sec = processed as f64 / elapsed;
+        let mib_per_sec =
+            (processed as f64 * WORD_SIZE as f64) / (1024.0 * 1024.0) / elapsed;
+        let remaining = total_entries.saturating_sub(processed);
+        let eta = if entries_per_sec > 0.0 {
+            remaining as f64 / entries_per_sec
+        } else {
+            0.0
+        };
+        println!(
+            "  progress: {pct:.1}% ({processed}/{total_entries}) | {entries_per_sec:.0} entries/s | {mib_per_sec:.1} MiB/s | eta {}",
+            format_eta(eta)
+        );
+    };
 
     if args.constant_time {
         let block_iprfs_ct: Vec<IprfTee> = block_keys
@@ -98,7 +150,7 @@ fn main() -> eyre::Result<()> {
             &backup_bitsets,
             &mut regular_hints,
             &mut backup_hints,
-            |i| pb.set_position(i as u64),
+            progress,
         );
     } else {
         let block_iprfs: Vec<Iprf> = block_keys
@@ -119,10 +171,11 @@ fn main() -> eyre::Result<()> {
             &backup_hint_blocks,
             &mut regular_hints,
             &mut backup_hints,
-            |i| pb.set_position(i as u64),
+            progress,
         );
     }
 
+    pb.set_position(total_entries as u64);
     pb.finish_with_message("Done");
 
     let duration = start.elapsed();
