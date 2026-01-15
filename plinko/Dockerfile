@@ -12,25 +12,25 @@ COPY Cargo.toml Cargo.lock ./
 # Create dummy crates to build dependencies first (caching layer)
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
-    mkdir -p state-syncer/src && \
-    echo "fn main() {}" > state-syncer/src/main.rs && \
-    touch state-syncer/Cargo.toml
+    mkdir -p plinko/src && \
+    echo "fn main() {}" > plinko/src/main.rs && \
+    touch plinko/Cargo.toml
 
 # Copy the actual Cargo.toml files
-COPY state-syncer/Cargo.toml state-syncer/
-# (If plinko-extractor is part of workspace, copy its toml too, but we focus on state-syncer)
+COPY plinko/Cargo.toml plinko/
+# (If plinko-extractor is part of workspace, copy its toml too, but we focus on plinko)
 
 # Build dependencies
-RUN cargo build --release -p state-syncer --jobs 2 || true
+RUN cargo build --release -p plinko --jobs 2 || true
 
 # Now copy the real source code
-COPY state-syncer/src state-syncer/src
+COPY plinko/src plinko/src
 # Touch main.rs to force rebuild
-RUN touch state-syncer/src/main.rs
+RUN touch plinko/src/main.rs
 
 # Build the actual binary
-RUN cargo build --release -p state-syncer --jobs 2
-RUN cargo build --release --bin bench_hints -p state-syncer
+RUN cargo build --release -p plinko --jobs 2
+RUN cargo build --release --bin bench_hints -p plinko
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 WORKDIR /app
 
 # Copy binary
-COPY --from=builder /app/target/release/state-syncer /usr/local/bin/
+COPY --from=builder /app/target/release/plinko /usr/local/bin/
 COPY --from=builder /app/target/release/bench_hints /usr/local/bin/
 
 # Create data directories
@@ -55,4 +55,4 @@ ENV RUST_LOG=info
 
 EXPOSE 3002
 
-CMD ["state-syncer"]
+CMD ["plinko"]

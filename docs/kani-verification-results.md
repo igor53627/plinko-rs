@@ -58,7 +58,7 @@ binomial_sample(count, num, denom, prf_output) =
 
 ```bash
 # Via Docker (works on Apple Silicon)
-docker run --platform linux/amd64 -v $(pwd):/work -w /work/state-syncer \
+docker run --platform linux/amd64 -v $(pwd):/work -w /work/plinko \
   rust:latest bash -c "
     cargo install --locked kani-verifier
     cargo kani setup
@@ -66,7 +66,7 @@ docker run --platform linux/amd64 -v $(pwd):/work -w /work/state-syncer \
   "
 
 # Native (Linux x86_64 only)
-cd state-syncer
+cd plinko
 cargo kani --harness proof_binomial_sample_bounded --output-format terse
 ```
 

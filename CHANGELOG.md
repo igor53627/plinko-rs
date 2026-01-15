@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Repository rename and crate move**: consolidated `state-syncer` into the `plinko` crate
+  - Workspace now uses `plinko` for hint generation and iPRF/CT primitives
+  - Docker artifacts updated to build/run `plinko` instead of `state-syncer`
+  - Documentation references updated to the new crate paths
+
 - **Constant-time HintInit for TEE execution** (`--constant-time` flag): Issue #62
   - Eliminates timing side-channels that could leak iPRF mappings during hint generation
   - Uses `IprfTee::inverse_ct` with fixed MAX_PREIMAGES=512 iterations (no early exit)

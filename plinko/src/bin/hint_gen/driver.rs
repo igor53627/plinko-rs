@@ -27,6 +27,13 @@ pub struct HintParams {
     pub total_hints: usize,
 }
 
+pub type HintInitOutput = (
+    Vec<RegularHint>,
+    Vec<Vec<usize>>,
+    Vec<BackupHint>,
+    Vec<Vec<usize>>,
+);
+
 impl HintParams {
     pub fn from_args(args: &Args, w: usize) -> Self {
         let num_regular = args.lambda * w;
@@ -62,7 +69,7 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
 /// We require expected * 2 <= MAX_PREIMAGES to ensure truncation probability
 /// is negligible (< 2^{-100}) via Chernoff bounds.
 pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
-    let expected_preimages = (params.total_hints + w - 1) / w;
+    let expected_preimages = params.total_hints.div_ceil(w);
     if expected_preimages * 2 > MAX_PREIMAGES {
         eyre::bail!(
             "Parameter configuration too dense for constant-time mode.\n\
@@ -77,7 +84,7 @@ pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
 
 /// Compute database geometry from file length and arguments.
 pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geometry> {
-    if db_len_bytes % WORD_SIZE != 0 {
+    if !db_len_bytes.is_multiple_of(WORD_SIZE) {
         eyre::bail!("DB size must be multiple of 32 bytes");
     }
 
@@ -126,7 +133,7 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     }
 
     let mut pad_entries = final_pad;
-    if !args.allow_truncation && c % 2 != 0 {
+    if !args.allow_truncation && !c.is_multiple_of(2) {
         c += 1;
         n_effective = c * w;
         pad_entries = n_effective - n_entries;
@@ -180,16 +187,7 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
 }
 
 /// Initialize hint structures and compute block memberships.
-pub fn init_hints(
-    master_seed: &[u8; 32],
-    c: usize,
-    params: &HintParams,
-) -> (
-    Vec<RegularHint>,
-    Vec<Vec<usize>>,
-    Vec<BackupHint>,
-    Vec<Vec<usize>>,
-) {
+pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> HintInitOutput {
     let mut regular_hints: Vec<RegularHint> = Vec::with_capacity(params.num_regular);
     let mut regular_hint_blocks: Vec<Vec<usize>> = Vec::with_capacity(params.num_regular);
 
@@ -226,6 +224,7 @@ pub fn init_hints(
 }
 
 /// Print final results summary.
+#[allow(clippy::too_many_arguments)]
 pub fn print_results(
     duration: Duration,
     file_len: usize,
