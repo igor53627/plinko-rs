@@ -1,7 +1,16 @@
 [package]
-name = "state-syncer"
+name = "plinko"
 version = "0.1.0"
 edition = "2021"
+description = "Plinko PIR cryptographic primitives - invertible PRF, binomial sampling, constant-time operations"
+license = "MIT"
+repository = "https://github.com/igor53627/plinko-rs"
+keywords = ["pir", "cryptography", "privacy", "ethereum"]
+categories = ["cryptography", "algorithms"]
+
+[features]
+default = []
+parallel = ["rayon"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
@@ -9,13 +18,14 @@ eyre = "0.6"
 indicatif = "0.17"
 sha2 = "0.10"
 blake3 = "1.5"
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }
 aes = "0.8"
 ctr = "0.9"
 rand = { version = "0.8", features = ["small_rng"] }
 rand_chacha = "0.3"
 memmap2 = "0.9"
 puruspe = "0.4"
+once_cell = "1.19"
 
 [dev-dependencies]
 proptest = "1.4"

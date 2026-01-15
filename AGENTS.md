@@ -116,7 +116,7 @@ Always consult this file first when implementing or verifying protocol logic.
 cargo build --release
 
 # Build hints generator
-cd state-syncer && cargo build --release --bin plinko_hints
+cd plinko && cargo build --release --bin plinko_hints
 ```
 
 ## Run Commands
@@ -128,12 +128,12 @@ cd state-syncer && cargo build --release --bin plinko_hints
   --output-dir /mnt/mainnet/plinko
 
 # Generate hints (standard mode)
-./state-syncer/target/release/plinko_hints \
+./plinko/target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128
 
 # Generate hints (constant-time mode for TEE)
-./state-syncer/target/release/plinko_hints \
+./plinko/target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128 --constant-time
 ```
@@ -149,7 +149,7 @@ cd state-syncer && cargo build --release --bin plinko_hints
 
 ## Formal Verification Compliance
 
-When modifying Rust code in `state-syncer/`, ALWAYS verify changes don't break alignment with:
+When modifying Rust code in `plinko/`, ALWAYS verify changes don't break alignment with:
 
 1. **Paper specification** (`docs/plinko_paper_*.json`)
    - HintInit must match Fig. 7 pseudocode
@@ -187,7 +187,7 @@ Before committing Rust changes to hint generation or iPRF:
 
 ## Documentation Sync Rules
 
-When modifying `state-syncer/src/bin/hint_gen/`:
+When modifying `plinko/src/bin/hint_gen/`:
 - Update `docs/hint_generation.md` if module structure or API changes
 - Update `docs/constant_time_mode.md` if CT security model changes
 - Keep the module table in `docs/hint_generation.md` current with file sizes

@@ -95,11 +95,11 @@ curl -O https://plinko-regression-data.53627.org/metadata.json
 
 ## Hint Generation
 
-The `state-syncer` crate includes a Plinko hint generator for benchmarking:
+The `plinko` crate includes a Plinko hint generator for benchmarking:
 
 ```bash
 # Build
-cd state-syncer && cargo build --release --bin plinko_hints
+cd plinko && cargo build --release --bin plinko_hints
 
 # Generate hints (standard mode)
 ./target/release/plinko_hints \
@@ -163,19 +163,19 @@ We maintain consistency between three sources:
 
 | Component | Paper (2024-318) | Coq Formalization | Rust Implementation | Verified |
 |-----------|------------------|-------------------|---------------------|----------|
-| iPRF structure | §4.2: `iF.F(k,x) = S(P(x))` | [Plinko.v](docs/Plinko.v) `iPRF.forward` | [iprf.rs](state-syncer/src/iprf.rs) `Iprf::forward` | proptest |
+| iPRF structure | §4.2: `iF.F(k,x) = S(P(x))` | [Plinko.v](docs/Plinko.v) `iPRF.forward` | [iprf.rs](plinko/src/iprf.rs) `Iprf::forward` | proptest |
 | iPRF inverse | §4.2: `iF.F⁻¹(k,y) = {P⁻¹(z) : z ∈ S⁻¹(y)}` | `iPRF.inverse` | `Iprf::inverse` | proptest |
 | PMNS forward | Algorithm 1 | `PMNS.forward` | `Iprf::trace_ball` | proptest |
 | PMNS inverse | Algorithm 2 | `PMNS.inverse` | `Iprf::trace_ball_inverse` | proptest |
-| Binomial sampling | §4.3: "derandomized using r as randomness" | `binomial_sample`, `binomial_sample_tee` | [binomial.rs](state-syncer/src/binomial.rs), `Iprf`/`IprfTee` | **Kani** + tests |
+| Binomial sampling | §4.3: "derandomized using r as randomness" | `binomial_sample`, `binomial_sample_tee` | [binomial.rs](plinko/src/binomial.rs), `Iprf`/`IprfTee` | **Kani** + tests |
 | Swap-or-Not PRP | Referenced: Morris-Rogaway 2013 | `SwapOrNot.prp_forward/inverse` | `SwapOrNot::forward/inverse` | proptest |
-| HintInit | Fig. 7: c keys, subset sizes c/2+1 and c/2 | `hint_init`, `process_db_entry` | [plinko_hints.rs](state-syncer/src/bin/plinko_hints.rs) | proptest |
-| Plinko params | §3: w=√N block size | [DbSpec.v](plinko/formal/specs/DbSpec.v) | [db.rs](state-syncer/src/db.rs) `derive_plinko_params` | proptest |
+| HintInit | Fig. 7: c keys, subset sizes c/2+1 and c/2 | `hint_init`, `process_db_entry` | [plinko_hints.rs](plinko/src/bin/plinko_hints.rs) | proptest |
+| Plinko params | §3: w=√N block size | [DbSpec.v](plinko/formal/specs/DbSpec.v) | [db.rs](plinko/src/db.rs) `derive_plinko_params` | proptest |
 
 **Key design decision (binomial sampling)**: The paper specifies a derandomized Binomial(n, p; r) but not a concrete sampler. We implement:
 
 - **Standard path (`binomial_sample`)**: True Binomial(n, p) inverse-CDF sampler. Small n (<=1024) uses exact PMF recurrence O(n); large n uses binary search over CDF via regularized incomplete beta O(log n). Used by non-TEE `Iprf`.
-- **TEE path (`binomial_sample_tee`)**: Constant-time exact inverse-CDF sampler with fixed `CT_BINOMIAL_MAX_COUNT + 1` iterations, no early exit. Uses `ct_f64_le`/`ct_select_f64` from [constant_time.rs](state-syncer/src/constant_time.rs) for data-oblivious execution. Protocol invariant: `count <= CT_BINOMIAL_MAX_COUNT` (65536), enforced by `IprfTee::new`.
+- **TEE path (`binomial_sample_tee`)**: Constant-time exact inverse-CDF sampler with fixed `CT_BINOMIAL_MAX_COUNT + 1` iterations, no early exit. Uses `ct_f64_le`/`ct_select_f64` from [constant_time.rs](plinko/src/constant_time.rs) for data-oblivious execution. Protocol invariant: `count <= CT_BINOMIAL_MAX_COUNT` (65536), enforced by `IprfTee::new`.
 
 Both paths implement true Binomial(n, p) sampling consistent with the formal spec. The approximation-based fallback from earlier versions has been removed.
 
@@ -197,7 +197,7 @@ The `plinko/formal/` directory contains Rocq (Coq) specifications and proofs.
 - Math: `binomial_theorem_Z` (standard combinatorial identity)
 - FFI: Rust↔Rocq refinement axioms (verified via proptest)
 
-See [kani_proofs.rs](state-syncer/src/kani_proofs.rs) for Rust verification harnesses.
+See [kani_proofs.rs](plinko/src/kani_proofs.rs) for Rust verification harnesses.
 
 **Kani** (bit-precise model checking):
 - `binomial_sample`: Output bounded, matches Coq definition exactly
@@ -210,10 +210,10 @@ See [kani_proofs.rs](state-syncer/src/kani_proofs.rs) for Rust verification harn
 
 ```bash
 # Run Kani proofs (requires Kani toolchain)
-cd state-syncer && cargo kani --tests
+cd plinko && cargo kani --tests
 
 # Run proptest harnesses
-cd state-syncer && cargo test --lib kani_proofs
+cd plinko && cargo test --lib kani_proofs
 
 # Run Rocq proofs
 cd plinko/formal && make

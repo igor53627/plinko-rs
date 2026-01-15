@@ -1,4 +1,4 @@
-//! State Syncer library for Plinko PIR
+//! Plinko PIR cryptographic primitives
 //!
 //! This crate provides core Plinko PIR primitives:
 //! - `iprf`: Invertible PRF implementation (paper §4.2)

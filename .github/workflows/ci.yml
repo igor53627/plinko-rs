@@ -22,10 +22,10 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: state-syncer
+          workspaces: plinko
 
-      - name: Run state-syncer tests
-        run: cargo test --manifest-path state-syncer/Cargo.toml
+      - name: Run plinko tests
+        run: cargo test --manifest-path plinko/Cargo.toml
 
   clippy:
     name: Clippy
@@ -41,10 +41,10 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: state-syncer
+          workspaces: plinko
 
-      - name: Run clippy on state-syncer
-        run: cargo clippy --manifest-path state-syncer/Cargo.toml -- -W clippy::all
+      - name: Run clippy on plinko
+        run: cargo clippy --manifest-path plinko/Cargo.toml -- -W clippy::all
 
   fmt:
     name: Format
@@ -58,4 +58,4 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --manifest-path state-syncer/Cargo.toml -- --check
+        run: cargo fmt --manifest-path plinko/Cargo.toml -- --check

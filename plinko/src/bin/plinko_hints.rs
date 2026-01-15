@@ -5,7 +5,7 @@ mod hint_gen;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
-use state_syncer::iprf::{Iprf, IprfTee};
+use plinko::iprf::{Iprf, IprfTee};
 use std::fs::File;
 use std::time::Instant;
 

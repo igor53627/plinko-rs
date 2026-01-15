@@ -4,8 +4,8 @@ use crate::hint_gen::{
     compute_backup_blocks, compute_regular_blocks, derive_subset_seed, BackupHint, RegularHint,
     SEED_LABEL_BACKUP, SEED_LABEL_REGULAR, WORD_SIZE,
 };
+use plinko::iprf::{PrfKey128, MAX_PREIMAGES};
 use rand::RngCore;
-use state_syncer::iprf::{PrfKey128, MAX_PREIMAGES};
 use std::time::Duration;
 
 use super::Args;
