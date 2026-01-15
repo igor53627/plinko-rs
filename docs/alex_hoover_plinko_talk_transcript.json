@@ -7,7 +7,7 @@
   "coauthors": ["Giuseppe Persiano", "Kevin Yeo"],
   "extracted_via": "Gemini 2.0 Flash API",
   "extraction_date": "2025-12-12",
-  "referenced_in_issue": "https://github.com/igor53627/plinko-extractor/issues/40#issuecomment-3640449842",
+  "referenced_in_issue": "https://github.com/igor53627/plinko-rs/issues/40#issuecomment-3640449842",
   
   "key_segments": {
     "full_domain_security_requirement": {

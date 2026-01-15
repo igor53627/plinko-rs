@@ -1,4 +1,4 @@
-# Plinko Extractor - Agent Rules
+# Plinko RS - Agent Rules
 
 ## Code Environment
 
@@ -112,7 +112,7 @@ Always consult this file first when implementing or verifying protocol logic.
 ## Build Commands
 
 ```bash
-# Build extractor
+# Build plinko binary
 cargo build --release
 
 # Build hints generator
@@ -123,7 +123,7 @@ cd plinko && cargo build --release --bin plinko_hints
 
 ```bash
 # Extract from Reth DB (on aya)
-./target/release/plinko-extractor \
+./target/release/plinko \
   --db-path /mnt/mainnet/data \
   --output-dir /mnt/mainnet/plinko
 

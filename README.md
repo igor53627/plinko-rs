@@ -16,8 +16,8 @@ A Rust workspace for the Plinko PIR stack: Ethereum state extraction, iPRF + hin
 # Build all release binaries
 cargo build --release
 
-# Run extractor
-./target/release/plinko-extractor \
+# Run plinko
+./target/release/plinko \
   --db-path /path/to/reth/db \
   --output-dir ./data \
   --limit 1000000 # Optional: Extract subset for testing
