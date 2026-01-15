@@ -1,5 +1,5 @@
 use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
-use plinko::iprf::{IprfTee, MAX_PREIMAGES};
+use plinko::iprf::IprfTee;
 
 use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
@@ -9,6 +9,7 @@ use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
 /// # Safety Requirements
 /// - `num_backup` must be >= 1 (CT indexing clamps to index 0 for dummy access)
 /// - `backup_bitsets` and `backup_hints` must have at least 1 element
+#[allow(clippy::too_many_arguments)]
 pub fn process_entries_ct(
     db_bytes: &[u8],
     n_entries: usize,
@@ -42,10 +43,10 @@ pub fn process_entries_ct(
 
         let (indices, count) = block_iprfs_ct[block].inverse_ct(offset as u64);
 
-        for t in 0..MAX_PREIMAGES {
+        for (t, &idx) in indices.iter().enumerate() {
             let in_range = ct_lt_u64(t as u64, count as u64);
 
-            let j = indices[t] as usize;
+            let j = idx as usize;
 
             let is_regular = ct_lt_u64(j as u64, num_regular as u64);
             let backup_idx = j.wrapping_sub(num_regular);
@@ -145,10 +146,9 @@ mod tests {
             .map(|key| Iprf::new(*key, total_hints as u64, w as u64))
             .collect();
 
-        for i in 0..(c * w) {
+        for (i, entry) in db.iter().enumerate() {
             let block = i / w;
             let offset = i % w;
-            let entry = &db[i];
 
             let hint_indices = block_iprfs[block].inverse(offset as u64);
 
@@ -180,17 +180,16 @@ mod tests {
             .map(|key| IprfTee::new(*key, total_hints as u64, w as u64))
             .collect();
 
-        for i in 0..(c * w) {
+        for (i, entry) in db.iter().enumerate() {
             let block = i / w;
             let offset = i % w;
-            let entry = &db[i];
 
             let (indices, count) = block_iprfs_ct[block].inverse_ct(offset as u64);
 
-            for t in 0..MAX_PREIMAGES {
+            for (t, &idx) in indices.iter().enumerate() {
                 let in_range = ct_lt_u64(t as u64, count as u64);
 
-                let j = indices[t] as usize;
+                let j = idx as usize;
 
                 let is_regular = ct_lt_u64(j as u64, num_regular as u64);
                 let backup_idx = j.wrapping_sub(num_regular);

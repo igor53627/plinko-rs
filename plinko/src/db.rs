@@ -210,7 +210,7 @@ mod tests {
             prop_assert_eq!(set_size % 4, 0);
 
             // set_size >= ceil(db_entries / chunk_size)
-            let base_sets = (db_entries + chunk_size - 1) / chunk_size;
+            let base_sets = db_entries.div_ceil(chunk_size);
             prop_assert!(set_size >= base_sets);
             prop_assert!(set_size <= base_sets + 3); // round_up_multiple adds at most 3
 
@@ -292,7 +292,7 @@ mod tests {
                 chunk_size *= 2;
             }
             let mut set_size = (db_entries as f64 / chunk_size as f64).ceil() as u64;
-            set_size = (set_size + 3) / 4 * 4;
+            set_size = set_size.div_ceil(4) * 4;
             (chunk_size, set_size)
         }
 

@@ -4984,6 +4984,7 @@ dependencies = [
  "eyre",
  "indicatif",
  "memmap2",
+ "once_cell",
  "proptest",
  "puruspe",
  "rand 0.8.5",
@@ -4993,7 +4994,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "plinko-extractor"
+name = "plinko-rs"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives 0.8.26",

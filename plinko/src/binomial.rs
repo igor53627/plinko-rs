@@ -371,7 +371,7 @@ mod tests {
         let samples: u64 = 10000;
         let mut sum: u64 = 0;
         for i in 0..samples {
-            let prf = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
             sum += binomial_sample(n, num, denom, prf);
         }
 
@@ -569,7 +569,7 @@ mod tests {
         let samples: u64 = 10000;
         let mut sum: u64 = 0;
         for i in 0..samples {
-            let prf = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
             sum += binomial_sample_tee(n, num, denom, prf);
         }
 
@@ -648,7 +648,7 @@ mod tests {
         let samples = 100u64;
         let mut sum: u64 = 0;
         for i in 0..samples {
-            let prf = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
             let result = binomial_sample_tee(n, num, denom, prf);
             assert!(result <= n, "result {} > n {}", result, n);
             sum += result;

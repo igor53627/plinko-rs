@@ -1,6 +1,6 @@
 # Plinko Delta File Format
 
-The `state-syncer` service produces per-block delta files (e.g., `delta-23237685.bin`) that allow PIR clients to update their local hints without re-downloading the database.
+The `plinko` service produces per-block delta files (e.g., `delta-23237685.bin`) that allow PIR clients to update their local hints without re-downloading the database.
 
 ## File Structure
 
