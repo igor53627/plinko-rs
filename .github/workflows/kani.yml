@@ -28,7 +28,7 @@ jobs:
           fi
 
       - name: Run Kani proofs
-        working-directory: state-syncer
+        working-directory: plinko
         run: |
           source "$HOME/.cargo/env"
           # Run only binomial_sample harnesses (pure arithmetic, no crypto deps)
@@ -45,6 +45,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run proptest harnesses
-        working-directory: state-syncer
+        working-directory: plinko
         run: |
           cargo test --lib kani_proofs -- --nocapture

@@ -5,16 +5,16 @@ on:
     branches: [main]
     paths:
       - 'plinko/formal/**'
-      - 'state-syncer/src/**'
-      - 'state-syncer/Cargo.toml'
+      - 'plinko/src/**'
+      - 'plinko/Cargo.toml'
       - 'Cargo.toml'
       - '.github/workflows/formal.yml'
   pull_request:
     branches: [main]
     paths:
       - 'plinko/formal/**'
-      - 'state-syncer/src/**'
-      - 'state-syncer/Cargo.toml'
+      - 'plinko/src/**'
+      - 'plinko/Cargo.toml'
       - 'Cargo.toml'
       - '.github/workflows/formal.yml'
 
