@@ -18,7 +18,7 @@ RUN mkdir -p src && \
 
 # Copy the actual Cargo.toml files
 COPY plinko/Cargo.toml plinko/
-# (If plinko-extractor is part of workspace, copy its toml too, but we focus on plinko)
+# If additional workspace crates are added, copy their Cargo.toml files here.
 
 # Build dependencies
 RUN cargo build --release -p plinko --bins --jobs 2 || true

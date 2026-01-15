@@ -6,9 +6,9 @@ Last run: 2025-12-06
 
 | Harness | Result | Time |
 |---------|--------|------|
-| `proof_binomial_sample_bounded` | ✅ SUCCESSFUL | 37.4s |
-| `proof_binomial_sample_zero_denom` | ✅ SUCCESSFUL | 0.2s |
-| `proof_binomial_sample_matches_coq` | ⏳ Long running | >5min |
+| `proof_binomial_sample_bounded` | SUCCESSFUL | 37.4s |
+| `proof_binomial_sample_zero_denom` | SUCCESSFUL | 0.2s |
+| `proof_binomial_sample_matches_coq` | LONG_RUNNING | >5min |
 
 ## Verified Properties
 
