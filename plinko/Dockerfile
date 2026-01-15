@@ -13,7 +13,7 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
     mkdir -p plinko/src && \
-    echo "fn main() {}" > plinko/src/main.rs && \
+    echo "pub fn placeholder() {}" > plinko/src/lib.rs && \
     touch plinko/Cargo.toml
 
 # Copy the actual Cargo.toml files
@@ -21,16 +21,12 @@ COPY plinko/Cargo.toml plinko/
 # (If plinko-extractor is part of workspace, copy its toml too, but we focus on plinko)
 
 # Build dependencies
-RUN cargo build --release -p plinko --jobs 2 || true
+RUN cargo build --release -p plinko --bins --jobs 2 || true
 
 # Now copy the real source code
 COPY plinko/src plinko/src
-# Touch main.rs to force rebuild
-RUN touch plinko/src/main.rs
-
-# Build the actual binary
-RUN cargo build --release -p plinko --jobs 2
-RUN cargo build --release --bin bench_hints -p plinko
+# Build the actual binaries
+RUN cargo build --release -p plinko --bins --jobs 2
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -39,8 +35,8 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 WORKDIR /app
 
-# Copy binary
-COPY --from=builder /app/target/release/plinko /usr/local/bin/
+# Copy binaries
+COPY --from=builder /app/target/release/plinko_hints /usr/local/bin/
 COPY --from=builder /app/target/release/bench_hints /usr/local/bin/
 
 # Create data directories
@@ -55,4 +51,4 @@ ENV RUST_LOG=info
 
 EXPOSE 3002
 
-CMD ["plinko"]
+CMD ["plinko_hints"]
