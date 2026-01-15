@@ -104,6 +104,6 @@ For Plinko's privacy guarantees, both approaches provide pseudorandom inclusion/
 
 ## Implementation
 
-See [plinko/src/bin/plinko_hints.rs](../plinko/src/bin/plinko_hints.rs):
+See [plinko/src/bin/plinko_hints.rs](../../plinko/src/bin/plinko_hints.rs):
 - `process_block_standard()` - Standard per-hint BLAKE3
 - `process_block_xof()` - XOF stream per block
