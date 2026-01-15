@@ -6,9 +6,9 @@ Last run: 2025-12-06
 
 | Harness | Result | Time |
 |---------|--------|------|
-| `proof_binomial_sample_bounded` | ✅ SUCCESSFUL | 37.4s |
-| `proof_binomial_sample_zero_denom` | ✅ SUCCESSFUL | 0.2s |
-| `proof_binomial_sample_matches_coq` | ⏳ Long running | >5min |
+| `proof_binomial_sample_bounded` | SUCCESSFUL | 37.4s |
+| `proof_binomial_sample_zero_denom` | SUCCESSFUL | 0.2s |
+| `proof_binomial_sample_matches_coq` | LONG_RUNNING | >5min |
 
 ## Verified Properties
 
@@ -58,7 +58,7 @@ binomial_sample(count, num, denom, prf_output) =
 
 ```bash
 # Via Docker (works on Apple Silicon)
-docker run --platform linux/amd64 -v $(pwd):/work -w /work/state-syncer \
+docker run --platform linux/amd64 -v $(pwd):/work -w /work/plinko \
   rust:latest bash -c "
     cargo install --locked kani-verifier
     cargo kani setup
@@ -66,7 +66,7 @@ docker run --platform linux/amd64 -v $(pwd):/work -w /work/state-syncer \
   "
 
 # Native (Linux x86_64 only)
-cd state-syncer
+cd plinko
 cargo kani --harness proof_binomial_sample_bounded --output-format terse
 ```
 

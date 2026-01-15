@@ -9,7 +9,7 @@
       "author": "maintainer"
     },
     {
-      "content": "The state-syncer/ crate contains the core Plinko implementation: iPRF (invertible PRF), IprfTee, Sometimes-Recurse PRP (SwapOrNotSr), true Binomial(n,p) sampling (binomial_sample / binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), and hint generation. The canonical Rocq specs/proofs and linking layer live in plinko/formal/ (see .github/workflows/formal.yml).",
+      "content": "The plinko/ crate contains the core Plinko implementation: iPRF (invertible PRF), IprfTee, Sometimes-Recurse PRP (SwapOrNotSr), true Binomial(n,p) sampling (binomial_sample / binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), and hint generation. The canonical Rocq specs/proofs and linking layer live in plinko/formal/ (see .github/workflows/formal.yml).",
       "author": "maintainer"
     },
     {
@@ -41,12 +41,12 @@
     },
     {
       "title": "iPRF Implementation",
-      "purpose": "Document state-syncer/src/iprf.rs and related modules: Sometimes-Recurse PRP (SwapOrNotSr), PMNS (Pseudorandom Multinomial Sampler), Binomial(n,p) sampling (binomial_sample and TEE-safe binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), Iprf vs IprfTee, and constant-time primitives in state-syncer/src/constant_time.rs for TEE execution.",
+      "purpose": "Document plinko/src/iprf.rs and related modules: Sometimes-Recurse PRP (SwapOrNotSr), PMNS (Pseudorandom Multinomial Sampler), Binomial(n,p) sampling (binomial_sample and TEE-safe binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), Iprf vs IprfTee, and constant-time primitives in plinko/src/constant_time.rs for TEE execution.",
       "parent": "Plinko Protocol"
     },
     {
       "title": "Hint Generation",
-      "purpose": "Document state-syncer/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, seed-based storage, constant-time mode (--constant-time) for TEE execution with BlockBitset, ct_select_usize, ct_xor_32_masked",
+      "purpose": "Document plinko/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, seed-based storage, constant-time mode (--constant-time) for TEE execution with BlockBitset, ct_select_usize, ct_xor_32_masked",
       "parent": "Plinko Protocol"
     },
     {

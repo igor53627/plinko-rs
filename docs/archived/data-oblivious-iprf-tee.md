@@ -9,7 +9,7 @@ Implement constant-time (data-oblivious) iPRF algorithms to enable secure server
 
 ## Motivation
 
-Current iPRF implementation in [`iprf.rs`](../../state-syncer/src/iprf.rs) uses variable-length loops and conditional branches that leak information through timing side channels:
+Current iPRF implementation in [`iprf.rs`](../../plinko/src/iprf.rs) uses variable-length loops and conditional branches that leak information through timing side channels:
 
 ```rust
 // LEAKY: Branch on secret PRF bit
@@ -55,7 +55,7 @@ For TEE execution, all operations must be data-oblivious (constant-time) to prev
 
 ### Phase 1: Constant-Time Primitives
 
-**New file:** `state-syncer/src/constant_time.rs`
+**New file:** `plinko/src/constant_time.rs`
 
 ```rust
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeLess};
@@ -257,11 +257,11 @@ fn process_block_tee(
 
 | File | Action | Description |
 |------|--------|-------------|
-| `state-syncer/src/constant_time.rs` | Create | CT primitives using `subtle` crate |
-| `state-syncer/src/iprf.rs` | Modify | Add `SwapOrNotTee`, `IprfTee` structs |
-| `state-syncer/src/bin/plinko_hints.rs` | Modify | Add `--tee` flag and `process_block_tee()` |
-| `state-syncer/src/lib.rs` | Modify | Export `constant_time` module |
-| `state-syncer/Cargo.toml` | Modify | Add `subtle = "2.5"` dependency |
+| `plinko/src/constant_time.rs` | Create | CT primitives using `subtle` crate |
+| `plinko/src/iprf.rs` | Modify | Add `SwapOrNotTee`, `IprfTee` structs |
+| `plinko/src/bin/plinko_hints.rs` | Modify | Add `--tee` flag and `process_block_tee()` |
+| `plinko/src/lib.rs` | Modify | Export `constant_time` module |
+| `plinko/Cargo.toml` | Modify | Add `subtle = "2.5"` dependency |
 
 ## Testing Strategy
 
@@ -293,7 +293,7 @@ fn tee_iprf_matches_standard_iprf() {
 
 ```bash
 # Grep for secret-dependent branches in TEE code
-grep -n "if.*secret\|while.*secret\|for.*secret" state-syncer/src/*.rs
+grep -n "if.*secret\\|while.*secret\\|for.*secret" plinko/src/*.rs
 ```
 
 ### Timing Analysis (Optional)

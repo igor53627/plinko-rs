@@ -4,6 +4,8 @@ This directory contains scripts to test Plinko PIR hint generation inside an AMD
 
 ## Overview
 
+Last validated: **Dec 5, 2025** (Ubuntu 24.04, QEMU 10.0.0). Re-run after major refactors or host upgrades.
+
 AMD SEV-SNP (Secure Encrypted Virtualization - Secure Nested Paging) provides hardware-based memory encryption for virtual machines, protecting guest memory from the host/hypervisor. This allows running the Plinko hint generation in a confidential computing environment.
 
 ## Requirements

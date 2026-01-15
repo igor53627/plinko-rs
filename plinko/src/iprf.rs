@@ -190,7 +190,7 @@ fn sr_t_rounds(n: u64, n0: u64) -> usize {
 /// - Total error budget ε is split equally among p = |G'(N₀)| stages
 /// - Each stage gets ε/p error budget
 /// - Per Eq. (2), t_N = ceil(7.23 lg N + 4.82 lg(p/ε))
-///                   = ceil(7.23 lg N + 4.82 lg p + 4.82 λ)
+///   = ceil(7.23 lg N + 4.82 lg p + 4.82 λ)
 fn sr_t_rounds_with_security(n: u64, n0: u64, lambda: u32) -> usize {
     let num_stages = sr_num_stages(n0);
     sr_t_rounds_with_params(n, num_stages, lambda)
@@ -453,12 +453,13 @@ impl SwapOrNotSrTee {
         let y = y % self.domain;
 
         let mut sizes = [0u64; 64];
+        let max_levels = self.max_levels.min(sizes.len());
         let mut n = self.domain;
         let mut stopped: u64 = 0;
 
-        for i in 0..self.max_levels {
+        for size in sizes.iter_mut().take(max_levels) {
             let should_record = ct_gt_u64(n, 1) & ct_eq_u64(stopped, 0);
-            sizes[i] = ct_select_u64(should_record, n, 0);
+            *size = ct_select_u64(should_record, n, 0);
 
             let half = n / 2;
             let y_in_right = ct_ge_u64(y, half);
@@ -469,8 +470,7 @@ impl SwapOrNotSrTee {
         }
 
         let mut val = y;
-        for level in (0..self.max_levels).rev() {
-            let n_lvl = sizes[level];
+        for (level, &n_lvl) in sizes.iter().take(max_levels).enumerate().rev() {
             let skip = ct_lt_u64(n_lvl, 2);
             val = ct_select_u64(skip, val, self.apply_rounds_inverse(level, n_lvl, val));
         }
@@ -642,14 +642,15 @@ impl IprfTee {
         let count = count_u64 as usize;
         let mut result = [0u64; MAX_PREIMAGES];
 
-        for i in 0..MAX_PREIMAGES {
-            let in_range = ct_lt_u64(i as u64, count as u64);
-            let z = ball_start + i as u64;
+        for (i, slot) in result.iter_mut().enumerate() {
+            let i_u64 = i as u64;
+            let in_range = ct_lt_u64(i_u64, count as u64);
+            let z = ball_start + i_u64;
             // Only call inverse for valid z values; use 0 for out-of-range
             let z_valid = ct_lt_u64(z, self.domain);
             let z_safe = ct_select_u64(z_valid, z, 0);
             let x = self.prp.inverse(z_safe);
-            result[i] = ct_select_u64(in_range & z_valid, x, 0);
+            *slot = ct_select_u64(in_range & z_valid, x, 0);
         }
 
         (result, count)

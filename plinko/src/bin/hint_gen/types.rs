@@ -35,11 +35,13 @@ pub struct Args {
 }
 
 pub struct RegularHint {
+    #[allow(dead_code)]
     pub subset_seed: [u8; 32],
     pub parity: [u8; 32],
 }
 
 pub struct BackupHint {
+    #[allow(dead_code)]
     pub subset_seed: [u8; 32],
     pub parity_in: [u8; 32],
     pub parity_out: [u8; 32],

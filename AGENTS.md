@@ -147,6 +147,11 @@ cd plinko && cargo build --release --bin plinko_hints
 
 - Do NOT use emojis in code, comments, or documentation
 
+## PR Formatting
+
+- Use real newlines in PR descriptions/comments; never include literal "\n"
+- Use Markdown headings ("## Summary", "## Testing") with dash bullet lists
+
 ## Formal Verification Compliance
 
 When modifying Rust code in `plinko/`, ALWAYS verify changes don't break alignment with:

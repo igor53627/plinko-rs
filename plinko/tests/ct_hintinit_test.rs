@@ -5,7 +5,7 @@
 //! timing side-channel protection.
 
 use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
-use plinko::iprf::{Iprf, IprfTee, PrfKey128, MAX_PREIMAGES};
+use plinko::iprf::{Iprf, IprfTee, PrfKey128};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
@@ -160,11 +160,9 @@ fn hintinit_fast(
         .map(|key| Iprf::new(*key, total_hints as u64, w as u64))
         .collect();
 
-    for i in 0..n_effective {
+    let mut process_entry = |i: usize, entry: [u8; 32]| {
         let block = i / w;
         let offset = i % w;
-
-        let entry: [u8; 32] = if i < n { db[i] } else { [0u8; 32] };
 
         let hint_indices = block_iprfs[block].inverse(offset as u64);
 
@@ -185,6 +183,13 @@ fn hintinit_fast(
                 }
             }
         }
+    };
+
+    for (i, entry) in db.iter().copied().enumerate() {
+        process_entry(i, entry);
+    }
+    for i in n..n_effective {
+        process_entry(i, [0u8; 32]);
     }
 
     (regular_hints, backup_hints)
@@ -238,18 +243,16 @@ fn hintinit_ct(
         .map(|key| IprfTee::new(*key, total_hints as u64, w as u64))
         .collect();
 
-    for i in 0..n_effective {
+    let mut process_entry = |i: usize, entry: [u8; 32]| {
         let block = i / w;
         let offset = i % w;
 
-        let entry: [u8; 32] = if i < n { db[i] } else { [0u8; 32] };
-
         let (indices, count) = block_iprfs_ct[block].inverse_ct(offset as u64);
 
-        for t in 0..MAX_PREIMAGES {
+        for (t, &idx) in indices.iter().enumerate() {
             let in_range = ct_lt_u64(t as u64, count as u64);
 
-            let j = indices[t] as usize;
+            let j = idx as usize;
 
             let is_regular = ct_lt_u64(j as u64, num_regular as u64);
             let backup_idx = j.wrapping_sub(num_regular);
@@ -282,6 +285,13 @@ fn hintinit_ct(
                 update_backup_out,
             );
         }
+    };
+
+    for (i, entry) in db.iter().copied().enumerate() {
+        process_entry(i, entry);
+    }
+    for i in n..n_effective {
+        process_entry(i, [0u8; 32]);
     }
 
     (regular_hints, backup_hints)

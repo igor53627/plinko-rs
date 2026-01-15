@@ -24,7 +24,7 @@ Implements Plinko's HintInit matching Fig. 7 of the paper and Plinko.v Coq spec.
 
 ```bash
 # Build
-cd state-syncer && cargo build --release --bin plinko_hints
+cd plinko && cargo build --release --bin plinko_hints
 
 # Generate hints (standard mode)
 ./target/release/plinko_hints \

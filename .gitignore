@@ -1,5 +1,6 @@
 /target
 /data
+deltas/
 **/*.rs.bk
 *.swp
 .DS_Store

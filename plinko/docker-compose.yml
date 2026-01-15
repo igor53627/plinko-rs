@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  state-syncer:
+  plinko:
     build:
       context: ..
-      dockerfile: state-syncer/Dockerfile
-    image: plinko-state-syncer:latest
-    container_name: plinko-state-syncer
+      dockerfile: plinko/Dockerfile
+    image: plinko:latest
+    container_name: plinko
     restart: unless-stopped
     ports:
       - "3002:3002"

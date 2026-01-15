@@ -3,6 +3,7 @@ use plinko::iprf::Iprf;
 use crate::hint_gen::subsets::{block_in_subset, xor_32};
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_entries_fast(
     db_bytes: &[u8],
     n_entries: usize,

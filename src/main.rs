@@ -1,4 +1,3 @@
-use alloy_primitives::U256;
 use clap::Parser;
 use eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -12,7 +11,6 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     path::PathBuf,
-    time::{Duration, Instant},
 };
 
 #[derive(Parser, Debug)]
@@ -112,14 +110,14 @@ fn main() -> Result<()> {
         let mut cursor = tx.cursor_read::<tables::PlainAccountState>()?;
 
         // Resume from last key
-        let walker = if let Some(key) = last_acc_key.clone() {
+        let walker = if let Some(key) = last_acc_key {
             let mut w = cursor.walk(Some(key))?;
             // Skip the first element if it matches the last key we processed
             if let Some(Ok((addr, _))) = w.next() {
                 if addr != key {
                     // If it's different, we shouldn't have skipped it.
                     drop(w);
-                    let mut w2 = cursor.walk(Some(key))?;
+                    let w2 = cursor.walk(Some(key))?;
                     w2
                 } else {
                     w
@@ -220,7 +218,7 @@ fn main() -> Result<()> {
         let mut cursor = tx.cursor_dup_read::<tables::PlainStorageState>()?;
 
         // Resume Logic for Storage
-        let walker = if let Some(addr) = last_sto_addr.clone() {
+        let walker = if let Some(addr) = last_sto_addr {
             // Try to seek to the address
             if let Some((_k, _)) = cursor.seek_exact(addr)? {
                 // If found, jump to next unique key
