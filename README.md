@@ -1,9 +1,9 @@
-# Plinko Extractor
+# Plinko RS
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/plinko-extractor)
-[![Interactive Visualization](https://img.shields.io/badge/Demo-Protocol%20Visualization-blue)](https://igor53627.github.io/plinko-extractor/protocol-visualization.html)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/plinko-rs)
+[![Interactive Visualization](https://img.shields.io/badge/Demo-Protocol%20Visualization-blue)](https://igor53627.github.io/plinko-rs/protocol-visualization.html)
 
-A high-performance Rust tool to extract the complete Ethereum state (Accounts and Storage) directly from a Reth database and convert it into the artifacts required by the Plinko PIR server.
+A Rust workspace for the Plinko PIR stack: Ethereum state extraction, iPRF + hint generation, and formal verification artifacts.
 
 ## Why this exists?
 - **Speed**: Directly reads the MDBX database using `reth-db`, bypassing RPC overhead.
@@ -13,7 +13,7 @@ A high-performance Rust tool to extract the complete Ethereum state (Accounts an
 ## Usage
 
 ```bash
-# Build release binary
+# Build all release binaries
 cargo build --release
 
 # Run extractor
@@ -28,7 +28,7 @@ cargo build --release
 - `--output-dir`: Output directory (default: `data`).
 - `--limit`: (Optional) Limit the number of accounts/slots extracted (for testing).
 
-## Output Artifacts
+## Output Artifacts (Extractor)
 
 The extractor produces three files:
 
@@ -103,14 +103,16 @@ cd plinko && cargo build --release --bin plinko_hints
 
 # Generate hints (standard mode)
 ./target/release/plinko_hints \
-  --db-path ./database.bin \
+  --db-path ../data/database.bin \
   --lambda 128
 
 # Generate hints (constant-time mode for TEE)
 ./target/release/plinko_hints \
-  --db-path ./database.bin \
+  --db-path ../data/database.bin \
   --lambda 128 --constant-time
 ```
+
+See [docs/hint_generation.md](docs/hint_generation.md) for more details.
 
 ### Constant-Time Mode
 
@@ -146,7 +148,7 @@ To keep the PIR database fresh without re-downloading the entire ~175GB dataset:
 1.  **Initial Sync**: Client downloads the full `database.bin` snapshot (once).
 2.  **Incremental Updates**:
     *   A separate service monitors the chain for state changes.
-    *   It publishes a compact list of `(DatabaseIndex, NewValue)` for each block.
+    *   It publishes a compact list of delta updates for each block (see [plinko/docs/delta-format.md](plinko/docs/delta-format.md)).
     *   **Client Update**: The Plinko client updates its local hints using the XOR property:
         `NewHint = OldHint XOR (OldVal at Index) XOR (NewVal at Index)`
     *   This operation is $O(1)$ per changed state entry.

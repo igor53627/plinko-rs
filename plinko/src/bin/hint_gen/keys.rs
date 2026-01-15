@@ -8,7 +8,7 @@ pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
         let mut hasher = Sha256::new();
         hasher.update(master_seed);
         hasher.update(b"block_key");
-        hasher.update(&(block_idx as u64).to_le_bytes());
+        hasher.update((block_idx as u64).to_le_bytes());
         let hash = hasher.finalize();
         let mut key = [0u8; 16];
         key.copy_from_slice(&hash[0..16]);
@@ -21,7 +21,7 @@ pub fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8
     let mut hasher = Sha256::new();
     hasher.update(master_seed);
     hasher.update(label);
-    hasher.update(&idx.to_le_bytes());
+    hasher.update(idx.to_le_bytes());
     let hash = hasher.finalize();
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&hash[0..32]);
