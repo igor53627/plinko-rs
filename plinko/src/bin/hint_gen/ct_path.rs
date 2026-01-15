@@ -1,5 +1,5 @@
-use state_syncer::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
-use state_syncer::iprf::{IprfTee, MAX_PREIMAGES};
+use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
+use plinko::iprf::{IprfTee, MAX_PREIMAGES};
 
 use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
@@ -93,7 +93,7 @@ mod tests {
         block_in_subset, compute_backup_blocks, compute_regular_blocks, xor_32,
     };
     use crate::hint_gen::types::{SEED_LABEL_BACKUP, SEED_LABEL_REGULAR};
-    use state_syncer::iprf::Iprf;
+    use plinko::iprf::Iprf;
 
     #[test]
     fn test_ct_and_fast_produce_same_results() {
