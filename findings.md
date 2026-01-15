@@ -1,4 +1,4 @@
-# Plinko Extractor: State Size & Performance Findings
+# Plinko RS: State Size & Performance Findings
 
 This document provides exact data sizes for the full Ethereum state and estimates the client-side storage requirements for the Plinko PIR protocol.
 
@@ -106,4 +106,3 @@ The extractor produces a static snapshot at a specific block height. To handle n
 | **Setup Cost** | Download 175 GB | Stream 87 GB (Once) |
 
 For a light client wallet (like Rabby), storing **~214 MB** of static hints to gain complete read privacy for the entire Ethereum state is a highly practical trade-off.
-

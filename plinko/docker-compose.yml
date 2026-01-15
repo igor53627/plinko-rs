@@ -13,7 +13,7 @@ services:
     volumes:
       # Mount the extracted data from the host
       # Adjust the host path to match where you extracted data on the server
-      - ./data/plinko-extraction:/data:rw
+      - ./data/plinko:/data:rw
       # Mount a directory for public artifacts (deltas, snapshots)
       - ./data/public:/public:rw
     environment:
