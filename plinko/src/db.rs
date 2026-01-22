@@ -1,11 +1,17 @@
+use crate::schema48::ENTRY_SIZE as ENTRY_SIZE_48;
 use eyre::{ensure, Result};
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
 use std::path::Path;
 
-pub const DB_ENTRY_SIZE: usize = 32; // 32 bytes (256 bits)
+pub const DB_ENTRY_SIZE: usize = 32; // 32 bytes (256 bits) - legacy v1 schema
 pub const DB_ENTRY_U64_COUNT: usize = 4; // 32 bytes = 4 * u64
 
+/// Database entry size for v2 schema (48 bytes = 3 × 16 bytes for GPU alignment)
+pub const DB_ENTRY_SIZE_V2: usize = ENTRY_SIZE_48;
+pub const DB_ENTRY_U64_COUNT_V2: usize = 6; // 48 bytes = 6 * u64
+
+/// Legacy 32-byte entry database (v1 schema)
 pub struct Database {
     pub mmap: MmapMut,
     pub num_entries: u64,
@@ -102,6 +108,96 @@ impl Database {
     pub fn flush(&self) -> Result<()> {
         self.mmap.flush()?;
         Ok(())
+    }
+}
+
+/// 48-byte entry database (v2 schema) for GPU-optimized PIR.
+///
+/// Uses uniform 48-byte entries (3×16B) for both accounts and storage,
+/// enabling optimal GPU memory coalescing and Binius operations.
+pub struct Database48 {
+    pub mmap: MmapMut,
+    pub num_entries: u64,
+    pub chunk_size: u64,
+    pub set_size: u64,
+}
+
+impl Database48 {
+    /// Loads a 48-byte entry database file into memory.
+    ///
+    /// Validates that the file size is a multiple of 48 bytes, then memory-maps
+    /// it and derives Plinko parameters based on entry count.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let len = file.metadata()?.len();
+
+        ensure!(
+            len % DB_ENTRY_SIZE_V2 as u64 == 0,
+            "Database size {} is not a multiple of {} (v2 schema)",
+            len,
+            DB_ENTRY_SIZE_V2
+        );
+
+        let num_entries = len / DB_ENTRY_SIZE_V2 as u64;
+        let (chunk_size, set_size) = derive_plinko_params(num_entries);
+
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+
+        Ok(Self {
+            mmap,
+            num_entries,
+            chunk_size,
+            set_size,
+        })
+    }
+
+    /// Returns a 48-byte slice for the database entry at the given index.
+    pub fn get(&self, index: u64) -> Option<&[u8]> {
+        let idx = index as usize * DB_ENTRY_SIZE_V2;
+        if idx + DB_ENTRY_SIZE_V2 > self.mmap.len() {
+            return None;
+        }
+        Some(&self.mmap[idx..idx + DB_ENTRY_SIZE_V2])
+    }
+
+    /// Returns a mutable 48-byte slice for the database entry at the given index.
+    pub fn get_mut(&mut self, index: u64) -> Option<&mut [u8]> {
+        let idx = index as usize * DB_ENTRY_SIZE_V2;
+        if idx + DB_ENTRY_SIZE_V2 > self.mmap.len() {
+            return None;
+        }
+        Some(&mut self.mmap[idx..idx + DB_ENTRY_SIZE_V2])
+    }
+
+    /// Overwrites the database entry at the given index with raw bytes.
+    pub fn update(&mut self, index: u64, new_val: &[u8; DB_ENTRY_SIZE_V2]) {
+        let idx = index as usize * DB_ENTRY_SIZE_V2;
+        if idx + DB_ENTRY_SIZE_V2 <= self.mmap.len() {
+            self.mmap[idx..idx + DB_ENTRY_SIZE_V2].copy_from_slice(new_val);
+        }
+    }
+
+    /// Overwrites the database entry with six u64 values in little-endian order.
+    pub fn update_u64s(&mut self, index: u64, new_val: [u64; DB_ENTRY_U64_COUNT_V2]) {
+        let idx = index as usize * DB_ENTRY_SIZE_V2;
+        if idx + DB_ENTRY_SIZE_V2 <= self.mmap.len() {
+            for (i, val) in new_val.iter().enumerate() {
+                let bytes = val.to_le_bytes();
+                self.mmap[idx + i * 8..idx + (i + 1) * 8].copy_from_slice(&bytes);
+            }
+        }
+    }
+
+    /// Flushes in-memory changes to the database file.
+    pub fn flush(&self) -> Result<()> {
+        self.mmap.flush()?;
+        Ok(())
+    }
+
+    /// Returns the entry size in bytes (48).
+    pub const fn entry_size(&self) -> usize {
+        DB_ENTRY_SIZE_V2
     }
 }
 

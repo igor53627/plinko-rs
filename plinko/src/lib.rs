@@ -9,7 +9,9 @@
 pub mod binomial;
 pub mod constant_time;
 pub mod db;
+pub mod gpu;
 pub mod iprf;
+pub mod schema48;
 
 #[cfg(any(kani, test))]
 #[path = "kani_proofs.rs"]
