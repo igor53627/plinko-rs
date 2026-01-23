@@ -88,10 +88,12 @@ fn main() -> Result<()> {
     println!();
 
     // Create fake block keys (for benchmarking, actual keys don't matter)
-    let block_keys: Vec<[u8; 16]> = (0..set_size)
+    // ChaCha uses 256-bit keys (8 × u32)
+    let block_keys: Vec<[u32; 8]> = (0..set_size)
         .map(|i| {
-            let mut key = [0u8; 16];
-            key[0..8].copy_from_slice(&i.to_le_bytes());
+            let mut key = [0u32; 8];
+            key[0] = i as u32;
+            key[1] = (i >> 32) as u32;
             key
         })
         .collect();
