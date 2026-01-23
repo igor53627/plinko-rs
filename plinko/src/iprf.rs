@@ -8,6 +8,8 @@
 //! The Swap-or-Not PRP is based on Morris-Rogaway (eprint 2013/560).
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
+#[cfg(feature = "batch_iprf")]
+use aes::cipher::BlockSizeUser;
 use aes::Aes128;
 use sha2::{Digest, Sha256};
 
@@ -208,6 +210,31 @@ pub struct SwapOrNotSr {
     domain: u64,
     max_levels: usize,
     security_bits: u32,
+    round_keys: Vec<Vec<u64>>,
+    round_ns: Vec<u64>,
+}
+
+#[cfg(feature = "batch_iprf")]
+type AesBlock = GenericArray<u8, <Aes128 as BlockSizeUser>::BlockSize>;
+
+#[cfg(feature = "batch_iprf")]
+pub struct SwapOrNotSrBatchScratch {
+    blocks: Vec<AesBlock>,
+    partners: Vec<u64>,
+    active: Vec<usize>,
+    depths: Vec<usize>,
+}
+
+#[cfg(feature = "batch_iprf")]
+impl SwapOrNotSrBatchScratch {
+    pub fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            partners: Vec::new(),
+            active: Vec::new(),
+            depths: Vec::new(),
+        }
+    }
 }
 
 impl SwapOrNotSr {
@@ -224,11 +251,39 @@ impl SwapOrNotSr {
             (domain as f64).log2().ceil() as usize
         };
 
+        let mut round_keys: Vec<Vec<u64>> = Vec::with_capacity(max_levels);
+        let mut round_ns: Vec<u64> = Vec::with_capacity(max_levels);
+        let mut n_level = domain;
+        for level in 0..max_levels {
+            if n_level <= 1 {
+                round_keys.push(Vec::new());
+                round_ns.push(n_level);
+                break;
+            }
+            let t = sr_t_rounds_with_security(n_level, domain, security_bits);
+            let mut keys = Vec::with_capacity(t);
+            for round in 0..t {
+                let mut input = [0u8; 16];
+                let combined = ((level as u64) << 32) | (round as u64);
+                input[0..8].copy_from_slice(&combined.to_be_bytes());
+                input[8..16].copy_from_slice(&n_level.to_be_bytes());
+
+                let mut block = GenericArray::from(input);
+                cipher.encrypt_block(&mut block);
+                keys.push(u64::from_be_bytes(block[0..8].try_into().unwrap()) % n_level);
+            }
+            round_keys.push(keys);
+            round_ns.push(n_level);
+            n_level /= 2;
+        }
+
         Self {
             cipher,
             domain,
             max_levels,
             security_bits,
+            round_keys,
+            round_ns,
         }
     }
 
@@ -256,8 +311,7 @@ impl SwapOrNotSr {
         (block[0] & 1) == 1
     }
 
-    fn round(&self, level: usize, round_num: usize, n: u64, x: u64) -> u64 {
-        let k_i = self.derive_round_key(level, round_num, n);
+    fn round_with_key(&self, level: usize, round_num: usize, n: u64, x: u64, k_i: u64) -> u64 {
         let partner = (k_i + n - (x % n)) % n;
         let canonical = x.max(partner);
 
@@ -269,21 +323,139 @@ impl SwapOrNotSr {
     }
 
     fn apply_rounds_forward(&self, level: usize, n: u64, x: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
         let mut val = x;
-        for r in 0..t {
-            val = self.round(level, r, n, val);
+        if level < self.round_keys.len() && self.round_ns.get(level) == Some(&n) {
+            for (r, &k_i) in self.round_keys[level].iter().enumerate() {
+                val = self.round_with_key(level, r, n, val, k_i);
+            }
+        } else {
+            let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+            for r in 0..t {
+                let k_i = self.derive_round_key(level, r, n);
+                val = self.round_with_key(level, r, n, val, k_i);
+            }
         }
         val
     }
 
     fn apply_rounds_inverse(&self, level: usize, n: u64, y: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
         let mut val = y;
-        for r in (0..t).rev() {
-            val = self.round(level, r, n, val);
+        if level < self.round_keys.len() && self.round_ns.get(level) == Some(&n) {
+            for r in (0..self.round_keys[level].len()).rev() {
+                let k_i = self.round_keys[level][r];
+                val = self.round_with_key(level, r, n, val, k_i);
+            }
+        } else {
+            let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+            for r in (0..t).rev() {
+                let k_i = self.derive_round_key(level, r, n);
+                val = self.round_with_key(level, r, n, val, k_i);
+            }
         }
         val
+    }
+
+    #[cfg(feature = "batch_iprf")]
+    fn apply_rounds_inverse_batch(
+        &self,
+        level: usize,
+        n: u64,
+        vals: &mut [u64],
+        active: &[usize],
+        scratch: &mut SwapOrNotSrBatchScratch,
+    ) {
+        if active.is_empty() {
+            return;
+        }
+
+        let use_precomputed = level < self.round_keys.len() && self.round_ns.get(level) == Some(&n);
+        let rounds = if use_precomputed {
+            self.round_keys[level].len()
+        } else {
+            sr_t_rounds_with_security(n, self.domain, self.security_bits)
+        };
+
+        let mut combined_bytes = [0u8; 8];
+        for r in (0..rounds).rev() {
+            let k_i = if use_precomputed {
+                self.round_keys[level][r]
+            } else {
+                self.derive_round_key(level, r, n)
+            };
+
+            let combined = ((level as u64) << 32) | (r as u64) | 0x80000000;
+            combined_bytes.copy_from_slice(&combined.to_be_bytes());
+
+            scratch.blocks.clear();
+            scratch.partners.clear();
+            scratch.blocks.reserve(active.len());
+            scratch.partners.reserve(active.len());
+
+            for &idx in active {
+                let val = vals[idx];
+                let partner = (k_i + n - val) % n;
+                let canonical = val.max(partner);
+
+                let mut block = AesBlock::default();
+                block[0..8].copy_from_slice(&combined_bytes);
+                block[8..16].copy_from_slice(&canonical.to_be_bytes());
+                scratch.blocks.push(block);
+                scratch.partners.push(partner);
+            }
+
+            self.cipher.encrypt_blocks(&mut scratch.blocks);
+
+            for (slot, &idx) in active.iter().enumerate() {
+                if (scratch.blocks[slot][0] & 1) == 1 {
+                    vals[idx] = scratch.partners[slot];
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "batch_iprf")]
+    pub fn inverse_batch(&self, vals: &mut [u64], scratch: &mut SwapOrNotSrBatchScratch) {
+        if vals.is_empty() {
+            return;
+        }
+
+        scratch.depths.clear();
+        scratch.depths.resize(vals.len(), 0);
+
+        for (i, &y) in vals.iter().enumerate() {
+            let mut n = self.domain;
+            let mut depth = 0usize;
+            for _level in 0..self.max_levels {
+                if n <= 1 {
+                    break;
+                }
+                depth += 1;
+                let half = n / 2;
+                if y >= half {
+                    break;
+                }
+                n = half;
+            }
+            scratch.depths[i] = depth;
+        }
+
+        for level in (0..self.round_ns.len()).rev() {
+            let n = self.round_ns[level];
+            if n <= 1 {
+                continue;
+            }
+
+            let mut active = std::mem::take(&mut scratch.active);
+            active.clear();
+            for (i, &depth) in scratch.depths.iter().enumerate() {
+                if depth > level {
+                    active.push(i);
+                }
+            }
+
+            self.apply_rounds_inverse_batch(level, n, vals, &active, scratch);
+            scratch.active = active;
+        }
     }
 
     pub fn forward(&self, x: u64) -> u64 {
@@ -880,6 +1052,41 @@ impl Iprf {
     ///
     /// A `Vec<u64>` containing the ball indices that map to bin `y` (the closed-open
     /// range `start..start+count`).
+    #[cfg(feature = "batch_iprf")]
+    fn trace_ball_inverse_range(&self, y: u64, n: u64, m: u64) -> (u64, u64) {
+        if m == 1 {
+            return (0, n);
+        }
+
+        let mut low = 0u64;
+        let mut high = m - 1;
+        let mut ball_count = n;
+        let mut ball_start = 0u64;
+
+        while low < high {
+            let mid = (low + high) / 2;
+            let left_bins = mid - low + 1;
+            let total_bins = high - low + 1;
+
+            let node_id = encode_node(low, high, n);
+            let prf_output = self.prf_eval(node_id);
+
+            let left_count =
+                crate::binomial::binomial_sample(ball_count, left_bins, total_bins, prf_output);
+
+            if y <= mid {
+                high = mid;
+                ball_count = left_count;
+            } else {
+                low = mid + 1;
+                ball_start += left_count;
+                ball_count -= left_count;
+            }
+        }
+
+        (ball_start, ball_count)
+    }
+
     fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Vec<u64> {
         if m == 1 {
             return (0..n).collect();
@@ -912,6 +1119,30 @@ impl Iprf {
         }
 
         (ball_start..ball_start + ball_count).collect()
+    }
+
+    #[cfg(feature = "batch_iprf")]
+    pub fn inverse_into(
+        &self,
+        y: u64,
+        out: &mut Vec<u64>,
+        scratch: &mut SwapOrNotSrBatchScratch,
+    ) {
+        out.clear();
+        if y >= self.range {
+            return;
+        }
+
+        let (start, count) = self.trace_ball_inverse_range(y, self.domain, self.range);
+        if count == 0 {
+            return;
+        }
+
+        out.reserve(count as usize);
+        for z in start..start + count {
+            out.push(z);
+        }
+        self.prp.inverse_batch(out, scratch);
     }
 
     /// Produces a 64-bit pseudorandom value by AES-encrypting a 16-byte block containing `x`.
