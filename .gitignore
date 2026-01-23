@@ -21,3 +21,5 @@ regression-data/*.bin
 regression-data/*.part*
 .agents/reasoner-skills/
 .tmp/
+tmp/sample.db
+tmp/synthetic_test/
