@@ -26,6 +26,11 @@ Options:
 - `--attempts N`: Run N parallel attempts (best-of-N), use 3 for complex proofs
 - `--branch <branch>`: Target a specific git branch
 
+## GitHub CLI hygiene
+
+- When using `gh` to create or edit issues/PRs, ensure newlines are real (not literal `\n`); prefer `--body-file` or a here-doc.
+- If a posted issue/PR body contains literal `\n`, fix it immediately with `gh issue edit`/`gh pr edit`.
+
 ## Codex Cloud + Remote Rocq Verification
 
 For Coq/Rocq proof synthesis with verification, use the remote build server.
@@ -136,6 +141,22 @@ cd plinko && cargo build --release --bin plinko_hints
 ./plinko/target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128 --constant-time
+```
+
+### Run With journald Logging (aya)
+
+Use `systemd-run` so stdout/stderr land in the system journal with a named unit:
+
+```bash
+systemd-run --unit plinko_hints_0p01_prodW --working-directory=/mnt/mainnet/plinko \
+  bash -lc 'RUST_BACKTRACE=1 ./target/release/plinko_hints \
+    --db-path /mnt/mainnet/plinko/tmp/sample_0p01pct.db \
+    --entries-per-block 49177 \
+    --lambda 127 \
+    --seed 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
+
+# View logs
+journalctl -u plinko_hints_0p01_prodW -n 200
 ```
 
 ## Data Format
