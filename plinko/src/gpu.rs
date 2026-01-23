@@ -203,7 +203,7 @@ impl GpuHintGenerator {
 // ============================================================================
 
 const CHACHA_ROUNDS: usize = 8;
-const SN_ROUNDS: usize = 64;
+const SN_ROUNDS: usize = 759;
 
 /// ChaCha quarter round operating on four values
 #[inline(always)]
