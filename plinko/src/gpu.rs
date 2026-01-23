@@ -44,12 +44,12 @@ pub struct PlinkoParams {
 #[cfg(feature = "cuda")]
 unsafe impl DeviceRepr for PlinkoParams {}
 
-/// iPRF key for one block (16 bytes AES key)
+/// iPRF key for one block (256-bit ChaCha key as 8 × u32)
 #[cfg(feature = "cuda")]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 pub struct IprfBlockKey {
-    pub key: [u8; 16],
+    pub key: [u32; 8],
 }
 
 #[cfg(feature = "cuda")]
@@ -210,7 +210,7 @@ impl CpuHintGenerator {
     pub fn generate_hints(
         &self,
         entries: &[u8],
-        _block_keys: &[[u8; 16]],
+        _block_keys: &[[u32; 8]],
         hint_subsets: &[u8],
         num_entries: u64,
         chunk_size: u64,
@@ -281,8 +281,8 @@ mod tests {
         // Create fake entries (all zeros)
         let entries = vec![0u8; num_entries as usize * ENTRY_SIZE];
 
-        // Create fake block keys
-        let block_keys = vec![[0u8; 16]; set_size as usize];
+        // Create fake block keys (256-bit ChaCha keys)
+        let block_keys = vec![[0u32; 8]; set_size as usize];
 
         // Create hint subsets (each hint includes all blocks)
         let subset_bytes = (set_size as usize + 7) / 8;
@@ -321,7 +321,7 @@ mod tests {
         // Entry 2: first 8 bytes = 0x02
         entries[2 * ENTRY_SIZE] = 0x02;
 
-        let block_keys = vec![[0u8; 16]; set_size as usize];
+        let block_keys = vec![[0u32; 8]; set_size as usize];
 
         // Hint 0 includes both blocks
         let hint_subsets = vec![0b11u8];
