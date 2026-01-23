@@ -1,6 +1,7 @@
 use clap::Parser;
 use eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
+use plinko::schema48::{AccountEntry48, CodeStore, StorageEntry48, ENTRY_SIZE};
 use reth_db::{
     cursor::{DbCursorRO, DbDupCursorRO},
     database::Database,
@@ -44,9 +45,13 @@ fn main() -> Result<()> {
     let now = || chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
 
     println!("[{}] Opening database at {:?}", now(), args.db_path);
+    println!("[{}] Using 48-byte schema (v2)", now());
 
     // We keep the DB open, but we will open/close TXs
     let db = open_db_read_only(&args.db_path, Default::default())?;
+
+    // Code store for bytecode hash deduplication
+    let mut code_store = CodeStore::new();
 
     let (mut db_writer, mut acc_map_writer, mut sto_map_writer) = if !args.count_only {
         // Create output directory
@@ -96,9 +101,9 @@ fn main() -> Result<()> {
     drop(tx);
 
     // --- PROCESS ACCOUNTS ---
-    println!("[{}] Processing Accounts...", now());
+    println!("[{}] Processing Accounts (48-byte entries)...", now());
     let mut count_acc = 0;
-    let mut total_indices = 0;
+    let mut total_entries = 0u64; // Now each account/storage is 1 entry (not 3)
     let mut last_acc_key = None;
 
     loop {
@@ -146,40 +151,49 @@ fn main() -> Result<()> {
                 break;
             }
 
-            // --- WRITE DATABASE ENTRY ---
-            // Account layout: 3 words (96 bytes)
-            //   Word 0: Nonce (u64 in first 8 bytes, zero-padded to 32)
-            //   Word 1: Balance (u256, 32 bytes LE)
-            //   Word 2: Bytecode Hash (32 bytes)
-            // Note: Previously used 4 words with padding, removed to reduce N by ~12%
+            // --- GET OR CREATE CODE ID ---
+            let bytecode_hash = account.bytecode_hash.map(|h| {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(h.as_slice());
+                arr
+            });
+            let code_id = code_store.get_or_insert(bytecode_hash.as_ref());
+
+            // --- WRITE DATABASE ENTRY (48 bytes) ---
             if let Some(writer) = db_writer.as_mut() {
-                // 1. Nonce (u64 -> 32 bytes)
-                let mut nonce_bytes = [0u8; 32];
-                nonce_bytes[0..8].copy_from_slice(&account.nonce.to_le_bytes());
-                writer.write_all(&nonce_bytes)?;
+                // Convert address to [u8; 20]
+                let addr_bytes: [u8; 20] = address.0 .0;
 
-                // 2. Balance (u256 -> 32 bytes)
-                writer.write_all(&account.balance.to_le_bytes::<32>())?;
+                // Convert balance to [u8; 32] (little-endian)
+                let balance_bytes = account.balance.to_le_bytes::<32>();
 
-                // 3. Bytecode Hash (Option<B256> -> 32 bytes)
-                let code_hash = account.bytecode_hash.unwrap_or_default();
-                writer.write_all(code_hash.as_slice())?;
+                // Create 48-byte account entry
+                let entry =
+                    AccountEntry48::new(&balance_bytes, account.nonce, code_id, &addr_bytes);
+                writer.write_all(&entry.to_bytes())?;
             }
 
             // --- WRITE MAPPING ---
             if let Some(writer) = acc_map_writer.as_mut() {
                 // Address (20) + Index (4)
                 writer.write_all(address.as_slice())?;
-                writer.write_all(&(total_indices as u32).to_le_bytes())?;
+
+                let entry_index = u32::try_from(total_entries)
+                    .map_err(|_| eyre::eyre!("total_entries {} exceeds u32::MAX", total_entries))?;
+                writer.write_all(&entry_index.to_le_bytes())?;
             }
 
-            total_indices += 3; // 3 words per account
+            total_entries += 1; // 1 entry per account now (was 3)
             count_acc += 1;
             batch_count += 1;
             current_acc_key = Some(address);
 
             if count_acc % 10000 == 0 {
-                pb.set_message(format!("Acc: {}, Sto: 0", count_acc));
+                pb.set_message(format!(
+                    "Acc: {}, Sto: 0, CodeIDs: {}",
+                    count_acc,
+                    code_store.len()
+                ));
                 pb.inc(1);
             }
 
@@ -197,15 +211,17 @@ fn main() -> Result<()> {
         drop(tx); // Close transaction
     }
 
+    let account_entries = total_entries;
     println!(
-        "[{}] Processed {} accounts. Current Index: {}",
+        "[{}] Processed {} accounts ({} entries). Unique bytecode hashes: {}",
         now(),
         count_acc,
-        total_indices
+        account_entries,
+        code_store.len()
     );
 
     // --- PROCESS STORAGE ---
-    println!("[{}] Processing Storage...", now());
+    println!("[{}] Processing Storage (48-byte entries)...", now());
     let mut count_sto = 0;
     let mut last_sto_addr = None;
 
@@ -262,19 +278,30 @@ fn main() -> Result<()> {
                 break;
             }
 
-            // --- WRITE DATABASE ENTRY ---
+            // --- WRITE DATABASE ENTRY (48 bytes) ---
             if let Some(writer) = db_writer.as_mut() {
-                writer.write_all(&storage_entry.value.to_le_bytes::<32>())?;
+                // Convert types
+                let addr_bytes: [u8; 20] = address.0 .0;
+                let value_bytes = storage_entry.value.to_le_bytes::<32>();
+                let mut slot_key = [0u8; 32];
+                slot_key.copy_from_slice(storage_entry.key.as_slice());
+
+                // Create 48-byte storage entry
+                let entry = StorageEntry48::new(&value_bytes, &addr_bytes, &slot_key);
+                writer.write_all(&entry.to_bytes())?;
             }
 
             // --- WRITE MAPPING ---
             if let Some(writer) = sto_map_writer.as_mut() {
                 writer.write_all(address.as_slice())?;
                 writer.write_all(storage_entry.key.as_slice())?;
-                writer.write_all(&(total_indices as u32).to_le_bytes())?;
+
+                let entry_index = u32::try_from(total_entries)
+                    .map_err(|_| eyre::eyre!("total_entries {} exceeds u32::MAX", total_entries))?;
+                writer.write_all(&entry_index.to_le_bytes())?;
             }
 
-            total_indices += 1;
+            total_entries += 1;
             count_sto += 1;
             batch_count += 1;
 
@@ -294,11 +321,22 @@ fn main() -> Result<()> {
 
     pb.finish_and_clear();
     println!(
-        "[{}] Done! Acc: {}, Sto: {}, Total Indices: {}",
+        "[{}] Done! Acc: {}, Sto: {}, Total Entries: {}",
         now(),
         count_acc,
         count_sto,
-        total_indices
+        total_entries
+    );
+
+    // Calculate sizes
+    let db_size_bytes = total_entries * ENTRY_SIZE as u64;
+    let db_size_gb = db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    println!(
+        "[{}] Database size: {} entries × {} bytes = {:.2} GB",
+        now(),
+        total_entries,
+        ENTRY_SIZE,
+        db_size_gb
     );
 
     if let Some(mut writer) = db_writer {
@@ -311,21 +349,39 @@ fn main() -> Result<()> {
         writer.flush()?;
     }
 
+    // --- WRITE CODE STORE ---
+    if !args.count_only && !code_store.is_empty() {
+        let code_store_path = args.output_dir.join("code_store.bin");
+        println!("[{}] Writing code store: {:?}", now(), code_store_path);
+        std::fs::write(&code_store_path, code_store.to_bytes())?;
+        println!(
+            "[{}] Code store: {} unique bytecode hashes ({} bytes)",
+            now(),
+            code_store.len(),
+            4 + code_store.len() * 32
+        );
+    }
+
     // --- WRITE METADATA ---
     if !args.count_only {
         let meta_path = args.output_dir.join("metadata.json");
         let json = format!(
             r#"{{
+  "schema_version": 2,
+  "entry_size_bytes": {},
   "block": {},
   "accounts": {},
   "storage_slots": {},
-  "total_indices": {},
+  "total_entries": {},
+  "unique_bytecode_hashes": {},
   "generated_at": "{}"
 }}"#,
+            ENTRY_SIZE,
             last_block,
             count_acc,
             count_sto,
-            total_indices,
+            total_entries,
+            code_store.len(),
             now()
         );
         std::fs::write(meta_path, json)?;

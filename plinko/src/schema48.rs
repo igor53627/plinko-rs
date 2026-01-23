@@ -24,7 +24,6 @@
 //! └────────────────────────────────────┴─────────┴─────────────┘
 //! ```
 
-
 /// Entry size in bytes (48 = 3 × 16 for GPU alignment)
 pub const ENTRY_SIZE: usize = 48;
 
