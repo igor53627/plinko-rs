@@ -69,7 +69,7 @@ def _run_bench(gpu: str, data_name: str, lambda_param: int, iterations: int, chu
     # Build
     print(f"\n=== Building ===")
     build_result = subprocess.run(
-        ["cargo", "build", "--release", "-p", "plinko", "--bin", "bench_gpu_hints", "--features", "cuda"],
+        ["cargo", "build", "--release", "-p", "plinko", "--bin", "bench_gpu_hints", "--features", "cuda,parallel"],
         capture_output=True,
         text=True,
         env=env,

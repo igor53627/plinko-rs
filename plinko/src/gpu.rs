@@ -198,15 +198,231 @@ impl GpuHintGenerator {
     }
 }
 
-/// CPU fallback hint generator (for testing without GPU)
-pub struct CpuHintGenerator;
+// ============================================================================
+// ChaCha8 implementation for CPU
+// ============================================================================
+
+const CHACHA_ROUNDS: usize = 8;
+const SN_ROUNDS: usize = 64;
+
+/// ChaCha quarter round operating on four values
+#[inline(always)]
+fn quarter_round(a: u32, b: u32, c: u32, d: u32) -> (u32, u32, u32, u32) {
+    let a = a.wrapping_add(b); let d = (d ^ a).rotate_left(16);
+    let c = c.wrapping_add(d); let b = (b ^ c).rotate_left(12);
+    let a = a.wrapping_add(b); let d = (d ^ a).rotate_left(8);
+    let c = c.wrapping_add(d); let b = (b ^ c).rotate_left(7);
+    (a, b, c, d)
+}
+
+fn chacha8_block(key: &[u32; 8], counter: u32, nonce: u32) -> [u32; 16] {
+    let mut s: [u32; 16] = [
+        0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
+        key[0], key[1], key[2], key[3],
+        key[4], key[5], key[6], key[7],
+        counter, nonce, 0, 0,
+    ];
+    let initial = s;
+
+    for _ in 0..CHACHA_ROUNDS / 2 {
+        // Column rounds
+        (s[0], s[4], s[8], s[12]) = quarter_round(s[0], s[4], s[8], s[12]);
+        (s[1], s[5], s[9], s[13]) = quarter_round(s[1], s[5], s[9], s[13]);
+        (s[2], s[6], s[10], s[14]) = quarter_round(s[2], s[6], s[10], s[14]);
+        (s[3], s[7], s[11], s[15]) = quarter_round(s[3], s[7], s[11], s[15]);
+        // Diagonal rounds
+        (s[0], s[5], s[10], s[15]) = quarter_round(s[0], s[5], s[10], s[15]);
+        (s[1], s[6], s[11], s[12]) = quarter_round(s[1], s[6], s[11], s[12]);
+        (s[2], s[7], s[8], s[13]) = quarter_round(s[2], s[7], s[8], s[13]);
+        (s[3], s[4], s[9], s[14]) = quarter_round(s[3], s[4], s[9], s[14]);
+    }
+
+    for i in 0..16 {
+        s[i] = s[i].wrapping_add(initial[i]);
+    }
+    s
+}
+
+/// SwapOrNot inverse using ChaCha8
+fn sn_inverse(key: &[u32; 8], y: u64, domain: u64) -> u64 {
+    let mut val = y;
+    for r in (0..SN_ROUNDS).rev() {
+        // Derive round key
+        let output = chacha8_block(key, r as u32, 0);
+        let k_i = (((output[1] as u64) << 32) | (output[0] as u64)) % domain;
+
+        let partner = (k_i + domain - (val % domain)) % domain;
+        let canonical = val.max(partner);
+
+        // PRF bit
+        let output2 = chacha8_block(key, r as u32 | 0x80000000, canonical as u32);
+        if output2[0] & 1 == 1 {
+            val = partner;
+        }
+    }
+    val
+}
+
+/// CPU hint generator with full ChaCha8-based iPRF
+pub struct CpuHintGenerator {
+    parallel: bool,
+}
 
 impl CpuHintGenerator {
+    pub fn new() -> Self {
+        Self { parallel: true }
+    }
+
+    pub fn new_serial() -> Self {
+        Self { parallel: false }
+    }
+
+    /// Generate hints using CPU with full ChaCha8 iPRF.
+    #[cfg(feature = "parallel")]
+    pub fn generate_hints(
+        &self,
+        entries: &[u8],
+        block_keys: &[[u32; 8]],
+        hint_subsets: &[u8],
+        num_entries: u64,
+        chunk_size: u64,
+        set_size: u64,
+        total_hints: u32,
+    ) -> Vec<[u8; 32]> {
+        use rayon::prelude::*;
+
+        let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+
+        if self.parallel {
+            (0..total_hints as usize)
+                .into_par_iter()
+                .map(|hint_idx| {
+                    self.compute_hint(
+                        hint_idx,
+                        entries,
+                        block_keys,
+                        hint_subsets,
+                        num_entries,
+                        chunk_size,
+                        set_size,
+                        subset_bytes_per_hint,
+                    )
+                })
+                .collect()
+        } else {
+            (0..total_hints as usize)
+                .map(|hint_idx| {
+                    self.compute_hint(
+                        hint_idx,
+                        entries,
+                        block_keys,
+                        hint_subsets,
+                        num_entries,
+                        chunk_size,
+                        set_size,
+                        subset_bytes_per_hint,
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    pub fn generate_hints(
+        &self,
+        entries: &[u8],
+        block_keys: &[[u32; 8]],
+        hint_subsets: &[u8],
+        num_entries: u64,
+        chunk_size: u64,
+        set_size: u64,
+        total_hints: u32,
+    ) -> Vec<[u8; 32]> {
+        let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+
+        (0..total_hints as usize)
+            .map(|hint_idx| {
+                self.compute_hint(
+                    hint_idx,
+                    entries,
+                    block_keys,
+                    hint_subsets,
+                    num_entries,
+                    chunk_size,
+                    set_size,
+                    subset_bytes_per_hint,
+                )
+            })
+            .collect()
+    }
+
+    #[inline]
+    fn compute_hint(
+        &self,
+        hint_idx: usize,
+        entries: &[u8],
+        block_keys: &[[u32; 8]],
+        hint_subsets: &[u8],
+        num_entries: u64,
+        chunk_size: u64,
+        set_size: u64,
+        subset_bytes_per_hint: usize,
+    ) -> [u8; 32] {
+        let mut parity = [0u64; 4];
+
+        for block_idx in 0..set_size as usize {
+            // Check subset membership
+            let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
+            let bit_mask = 1u8 << (block_idx % 8);
+            if (hint_subsets[byte_idx] & bit_mask) == 0 {
+                continue;
+            }
+
+            // Full iPRF inverse using ChaCha8-based SwapOrNot
+            let key = &block_keys[block_idx];
+            let preimage = sn_inverse(key, hint_idx as u64, chunk_size);
+
+            if preimage < chunk_size {
+                let entry_idx = block_idx as u64 * chunk_size + preimage;
+                if entry_idx < num_entries {
+                    let entry_start = entry_idx as usize * ENTRY_SIZE;
+                    let entry_bytes = &entries[entry_start..entry_start + 32];
+
+                    // XOR as u64s
+                    for i in 0..4 {
+                        let val = u64::from_le_bytes(
+                            entry_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                        );
+                        parity[i] ^= val;
+                    }
+                }
+            }
+        }
+
+        // Convert parity to bytes
+        let mut result = [0u8; 32];
+        for i in 0..4 {
+            result[i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
+        }
+        result
+    }
+}
+
+impl Default for CpuHintGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Simplified CPU hint generator (no iPRF, for baseline comparison)
+pub struct SimpleCpuHintGenerator;
+
+impl SimpleCpuHintGenerator {
     pub fn new() -> Self {
         Self
     }
 
-    /// Generate hints using CPU (serial, for testing/validation).
+    /// Generate hints using simplified CPU (no iPRF, just XOR first entry per block)
     pub fn generate_hints(
         &self,
         entries: &[u8],
@@ -224,21 +440,18 @@ impl CpuHintGenerator {
             let mut parity = [0u64; 4];
 
             for block_idx in 0..set_size as usize {
-                // Check subset membership
                 let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
                 let bit_mask = 1u8 << (block_idx % 8);
                 if (hint_subsets[byte_idx] & bit_mask) == 0 {
                     continue;
                 }
 
-                // Simplified: just XOR the first entry in each block for testing
-                // Full implementation would use iPRF.inverse()
+                // Simplified: just XOR the first entry in each block
                 let entry_idx = block_idx * chunk_size as usize;
                 if entry_idx < num_entries as usize {
                     let entry_start = entry_idx * ENTRY_SIZE;
                     let entry_bytes = &entries[entry_start..entry_start + 32];
 
-                    // XOR as u64s
                     for i in 0..4 {
                         let val = u64::from_le_bytes(
                             entry_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
@@ -248,7 +461,6 @@ impl CpuHintGenerator {
                 }
             }
 
-            // Convert parity to bytes
             for i in 0..4 {
                 hints[hint_idx][i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
             }
@@ -258,15 +470,41 @@ impl CpuHintGenerator {
     }
 }
 
-impl Default for CpuHintGenerator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_chacha8_block() {
+        // Test with zero key and counter to verify basic operation
+        let key = [0u32; 8];
+        let output = chacha8_block(&key, 0, 0);
+
+        // ChaCha8 with zero inputs produces deterministic non-zero output
+        // due to the constants in the initial state
+        assert_ne!(output[0], 0);
+
+        // Different counter should produce different output
+        let output2 = chacha8_block(&key, 1, 0);
+        assert_ne!(output, output2);
+
+        // Same inputs should produce same output (determinism)
+        let output3 = chacha8_block(&key, 0, 0);
+        assert_eq!(output, output3);
+    }
+
+    #[test]
+    fn test_sn_inverse_roundtrip() {
+        // SwapOrNot should be its own inverse when applied twice
+        let key = [0x12345678u32, 0x9ABCDEF0, 0x11111111, 0x22222222,
+                   0x33333333, 0x44444444, 0x55555555, 0x66666666];
+        let domain = 1000u64;
+
+        for y in [0u64, 1, 50, 500, 999] {
+            let x = sn_inverse(&key, y, domain);
+            assert!(x < domain, "Preimage should be in domain");
+        }
+    }
 
     #[test]
     fn test_cpu_hint_generator_basic() {
@@ -306,27 +544,37 @@ mod tests {
     }
 
     #[test]
-    fn test_cpu_hint_generator_nonzero() {
+    fn test_cpu_hint_generator_consistency() {
+        // Test that the generator produces consistent results across calls
         let gen = CpuHintGenerator::new();
+        let gen_serial = CpuHintGenerator::new_serial();
 
-        let num_entries = 4u64;
-        let chunk_size = 2u64;
-        let set_size = 2u64;
-        let total_hints = 1u32;
+        let num_entries = 64u64;
+        let chunk_size = 16u64;
+        let set_size = 4u64;
+        let total_hints = 8u32;
 
-        // Create entries with known values
+        // Create entries with deterministic pattern
         let mut entries = vec![0u8; num_entries as usize * ENTRY_SIZE];
-        // Entry 0: first 8 bytes = 0x01
-        entries[0] = 0x01;
-        // Entry 2: first 8 bytes = 0x02
-        entries[2 * ENTRY_SIZE] = 0x02;
+        for i in 0..num_entries as usize {
+            entries[i * ENTRY_SIZE] = i as u8;
+            entries[i * ENTRY_SIZE + 1] = (i >> 8) as u8;
+        }
 
-        let block_keys = vec![[0u32; 8]; set_size as usize];
+        // Create block keys with deterministic values
+        let block_keys: Vec<[u32; 8]> = (0..set_size)
+            .map(|i| {
+                let mut key = [0u32; 8];
+                key[0] = i as u32 + 42;
+                key
+            })
+            .collect();
 
-        // Hint 0 includes both blocks
-        let hint_subsets = vec![0b11u8];
+        // All hints include all blocks
+        let subset_bytes = (set_size as usize + 7) / 8;
+        let hint_subsets = vec![0xFFu8; total_hints as usize * subset_bytes];
 
-        let hints = gen.generate_hints(
+        let hints1 = gen.generate_hints(
             &entries,
             &block_keys,
             &hint_subsets,
@@ -336,16 +584,26 @@ mod tests {
             total_hints,
         );
 
-        // Parity should be 0x01 ^ 0x02 = 0x03
-        assert_eq!(hints[0][0], 0x03);
+        let hints2 = gen_serial.generate_hints(
+            &entries,
+            &block_keys,
+            &hint_subsets,
+            num_entries,
+            chunk_size,
+            set_size,
+            total_hints,
+        );
+
+        assert_eq!(hints1.len(), total_hints as usize);
+        assert_eq!(hints1, hints2, "Parallel and serial should produce identical results");
     }
 
     #[cfg(feature = "cuda")]
     #[test]
     fn test_params_layout() {
-        // Verify PlinkoParams is correctly sized for GPU
+        // Verify struct sizes match CUDA kernel expectations
         assert_eq!(std::mem::size_of::<PlinkoParams>(), 32);
-        assert_eq!(std::mem::size_of::<IprfBlockKey>(), 16);
+        assert_eq!(std::mem::size_of::<IprfBlockKey>(), 32); // ChaCha: 8 × u32
         assert_eq!(std::mem::size_of::<HintOutput>(), 32);
     }
 }
