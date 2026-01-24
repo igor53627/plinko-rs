@@ -20,10 +20,11 @@
 #include <cuda_runtime.h>
 
 // Constants
-#define ENTRY_SIZE 40  // v3 schema: 40-byte entries, use 64-bit loads (not 128-bit)
+#define ENTRY_SIZE 40      // v3 schema: 40-byte raw entries
+#define PACKED_ENTRY_SIZE 32 // Packed entries (stripped padding/tag) for GPU opt
 #define PARITY_SIZE 32
 #define WARP_SIZE 32
-#define CHACHA_ROUNDS 8
+#define CHACHA_ROUNDS 12
 
 // Batching: ChaCha8 produces 512 bits, we need ~65 bits per SN round (64-bit key + 1 bit)
 // So one ChaCha8 block can cover ~7 rounds
@@ -50,6 +51,45 @@ struct IprfBlockKey {
 struct HintOutput {
     uint8_t parity[PARITY_SIZE];
 };
+
+// ============================================================================
+// Data Compaction Kernel
+// ============================================================================
+
+/**
+ * Compacts 40-byte entries into 32-byte dense arrays.
+ * 
+ * This enables:
+ * 1. Perfect 128-bit alignment for reads (ulong2)
+ * 2. 20% reduction in global memory traffic during hint generation
+ * 3. Removal of padding/tag bytes that are unused for parity
+ */
+extern "C" __global__ void compact_entries_kernel(
+    const uint8_t* __restrict__ raw_entries,
+    uint8_t* __restrict__ packed_entries,
+    uint64_t num_entries
+) {
+    uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_entries) return;
+
+    // Read 32 bytes from 40-byte stride
+    // We can use ulong4 to read 32 bytes if aligned, but source is 40-byte stride.
+    // 40 is 8-byte aligned, so we can use ulong (64-bit) loads safely.
+    
+    const uint64_t* src_ptr = (const uint64_t*)(raw_entries + idx * ENTRY_SIZE);
+    ulong4* dst_ptr = (ulong4*)(packed_entries + idx * PACKED_ENTRY_SIZE);
+
+    // Load 4x 64-bit words (32 bytes)
+    // This is safe because ENTRY_SIZE (40) is a multiple of 8
+    uint64_t v0 = src_ptr[0];
+    uint64_t v1 = src_ptr[1];
+    uint64_t v2 = src_ptr[2];
+    uint64_t v3 = src_ptr[3];
+
+    // Store as one coalesced 256-bit write (or 2x 128-bit)
+    // ulong4 provides a clean vector type for 32 bytes
+    *dst_ptr = make_ulong4(v0, v1, v2, v3);
+}
 
 // ============================================================================
 // ChaCha8 Implementation
@@ -606,6 +646,7 @@ extern "C" __global__ void hint_gen_kernel_tiled(
  * - Uses sn_inverse_batched_fast (eliminates dead ChaCha code)
  * - Uses 128-bit vector loads (ulong2) for database reads
  * - ASSUMES pre-derived PRP keys (no SHA-256 in loop)
+ * - ASSUMES packed 32-byte entries (via compact_entries_kernel)
  */
 extern "C" __global__ void hint_gen_kernel_opt(
     const PlinkoParams params,
@@ -658,15 +699,17 @@ extern "C" __global__ void hint_gen_kernel_opt(
             if (preimage < params.chunk_size) {
                 uint64_t entry_idx = block_idx * params.chunk_size + preimage;
                 if (entry_idx < params.num_entries) {
-                    // Use 64-bit loads for 40-byte entries (40 % 8 = 0, always aligned)
-                    // Can't use ulong2 (128-bit) because 40 % 16 = 8, odd entries misaligned
-                    const uint64_t* entry_ptr = (const uint64_t*)(entries + entry_idx * ENTRY_SIZE);
+                    // Use ulong2 loads (128-bit) on packed 32-byte entries
+                    // Packed entries are always 16-byte aligned (32 * N)
+                    const ulong2* entry_ptr = (const ulong2*)(entries + entry_idx * PACKED_ENTRY_SIZE);
 
-                    // Read first 32 bytes of data, skip 8-byte TAG
-                    parity_vec[0].x ^= entry_ptr[0];
-                    parity_vec[0].y ^= entry_ptr[1];
-                    parity_vec[1].x ^= entry_ptr[2];
-                    parity_vec[1].y ^= entry_ptr[3];
+                    ulong2 v0 = entry_ptr[0];
+                    ulong2 v1 = entry_ptr[1];
+
+                    parity_vec[0].x ^= v0.x;
+                    parity_vec[0].y ^= v0.y;
+                    parity_vec[1].x ^= v1.x;
+                    parity_vec[1].y ^= v1.y;
                 }
             }
         }

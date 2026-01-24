@@ -73,26 +73,17 @@ pub struct GpuHintGenerator {
     kernel: CudaFunction,
     kernel_tiled: CudaFunction,
     kernel_opt: CudaFunction,
+    kernel_compact: CudaFunction,
 }
 
 #[cfg(feature = "cuda")]
 impl GpuHintGenerator {
     /// Create a new GPU hint generator on the specified device.
-    ///
-    /// # Arguments
-    ///
-    /// * `device_ord` - CUDA device ordinal (0 for first GPU)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if CUDA initialization fails or the kernel cannot be loaded.
     pub fn new(device_ord: usize) -> Result<Self, cudarc::driver::DriverError> {
         let device = CudaDevice::new(device_ord)?;
 
-        // Load PTX compiled by build.rs
-        let ptx_path = concat!(env!("OUT_DIR"), "/hint_kernel.ptx");
-        let ptx = std::fs::read_to_string(ptx_path)
-            .expect("Failed to read hint_kernel.ptx - was it compiled?");
+        // Embed PTX at compile time
+        let ptx = include_str!(concat!(env!("OUT_DIR"), "/hint_kernel.ptx"));
 
         device.load_ptx(
             ptx.into(),
@@ -101,6 +92,7 @@ impl GpuHintGenerator {
                 "hint_gen_kernel",
                 "hint_gen_kernel_tiled",
                 "hint_gen_kernel_opt",
+                "compact_entries_kernel",
             ],
         )?;
 
@@ -113,12 +105,16 @@ impl GpuHintGenerator {
         let kernel_opt = device
             .get_func("hint_gen", "hint_gen_kernel_opt")
             .expect("Failed to get hint_gen_kernel_opt from PTX module");
+        let kernel_compact = device
+            .get_func("hint_gen", "compact_entries_kernel")
+            .expect("Failed to get compact_entries_kernel from PTX module");
 
         Ok(Self {
             device,
             kernel,
             kernel_tiled,
             kernel_opt,
+            kernel_compact,
         })
     }
 
@@ -162,8 +158,36 @@ impl GpuHintGenerator {
             "hint_subsets size mismatch"
         );
 
-        // Copy data to GPU (40-byte entries, using 64-bit loads in kernel)
-        let d_entries = self.device.htod_sync_copy(entries)?;
+        // Copy data to GPU and compact immediately
+        let d_packed = {
+            // Scope for raw entries to ensure they are freed ASAP
+            let d_entries = self.device.htod_sync_copy(entries)?;
+
+            // Compaction: Compress 40-byte entries to 32-byte packed format
+            let packed_size = params.num_entries as usize * 32;
+            let mut d_packed: CudaSlice<u8> = unsafe { self.device.alloc(packed_size)? };
+
+            let threads_per_block_compact = 256;
+            let num_blocks_compact = (params.num_entries as u32 + threads_per_block_compact - 1)
+                / threads_per_block_compact;
+            let cfg_compact = LaunchConfig {
+                grid_dim: (num_blocks_compact, 1, 1),
+                block_dim: (threads_per_block_compact, 1, 1),
+                shared_mem_bytes: 0,
+            };
+
+            unsafe {
+                self.kernel_compact.clone().launch(
+                    cfg_compact,
+                    (&d_entries, &mut d_packed, params.num_entries),
+                )?;
+            }
+            // Synchronize to ensure compaction is done before dropping source
+            // self.device.synchronize()?; // htod and launch are already sync/ordered on stream 0
+            
+            d_packed
+            // d_entries is dropped here
+        };
 
         // Optimization: Derive PRP keys on CPU to save GPU time
         // Note: For benchmarking, this is done once outside the hint generation loop
@@ -221,7 +245,7 @@ impl GpuHintGenerator {
                 (
                     params,
                     &d_block_keys,
-                    &d_entries,
+                    &d_packed,
                     &d_hint_subsets,
                     &mut d_output,
                 ),
@@ -244,7 +268,7 @@ impl GpuHintGenerator {
 // ChaCha8 implementation for CPU
 // ============================================================================
 
-const CHACHA_ROUNDS: usize = 8;
+const CHACHA_ROUNDS: usize = 12;
 const SN_ROUNDS: usize = 759;
 
 /// ChaCha quarter round operating on four values
