@@ -305,11 +305,12 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     import re
 
     os.chdir("/app")
-    src_path = "/mainnet/mainnet_optimized48.bin"
+    # Use v3 schema (40-byte entries) from plinko-data volume
+    src_path = "/data/mainnet-v3/database.bin"
     slice_path = f"/tmp/mainnet_slice_{worker_id}.bin"
 
     file_size = os.path.getsize(src_path)
-    entry_size = 48
+    entry_size = 40  # v3 schema
     total_entries = file_size // entry_size
 
     if replicate_data:
@@ -400,13 +401,13 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     }
 
 
-@app.function(image=image, gpu="H200", volumes={"/mainnet": mainnet_volume}, timeout=7200)
+@app.function(image=image, gpu="H200", volumes={"/data": volume}, timeout=7200)
 def bench_multi_gpu_worker_h200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False):
     """Single H200 worker for multi-GPU benchmark."""
     return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "H200", replicate_data)
 
 
-@app.function(image=image, gpu="B200", volumes={"/mainnet": mainnet_volume}, timeout=7200)
+@app.function(image=image, gpu="B200", volumes={"/data": volume}, timeout=7200)
 def bench_multi_gpu_worker_b200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False):
     """Single B200 worker for multi-GPU benchmark."""
     return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "B200", replicate_data)
@@ -416,7 +417,7 @@ def bench_multi_gpu_worker_b200(worker_id: int, num_workers: int, total_hints: i
 # Production Hint Generation
 # =============================================================================
 
-@app.function(image=image, gpu="H200", volumes={"/mainnet": mainnet_volume, "/hints": hints_volume}, timeout=14400)
+@app.function(image=image, gpu="H200", volumes={"/data": volume, "/hints": hints_volume}, timeout=14400)
 def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_size: int = 131072):
     """Production hint generation worker. Saves hints to volume."""
     import subprocess
@@ -424,7 +425,7 @@ def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_s
     import re
 
     os.chdir("/app")
-    db_path = "/mainnet/mainnet_optimized48.bin"
+    db_path = "/data/mainnet-v3/database.bin"  # v3 schema (40-byte entries)
     output_path = f"/hints/{run_id}/hints_{worker_id:03d}.bin"
 
     # Create output directory
@@ -765,7 +766,7 @@ def main(
             avg_gpu_time_ms = sum(r['gpu_time_ms'] for r in valid_results) / len(valid_results)
 
             # Calculate set_size based on data
-            mainnet_entries = 2150000000
+            mainnet_entries = 1834095877  # v3 schema
             worker_entries = int(mainnet_entries * data_pct / 100) if replicate else int(mainnet_entries * data_pct / 100 / multi_gpu)
             worker_set_size = (worker_entries + 131072 - 1) // 131072
             worker_set_size = ((worker_set_size + 3) // 4) * 4
