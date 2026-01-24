@@ -8,12 +8,21 @@ use memmap2::MmapOptions;
 use plinko::iprf::{Iprf, IprfTee};
 use std::fs::File;
 use std::time::Instant;
+#[cfg(feature = "profiling")]
+use std::fs::OpenOptions;
 
 use hint_gen::*;
 
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
+
+    #[cfg(feature = "profiling")]
+    let profiler_guard = if args.profile {
+        Some(pprof::ProfilerGuard::new(args.profile_freq as i32)?)
+    } else {
+        None
+    };
 
     println!("Plinko PIR Hint Generator (Paper-compliant)");
     println!("============================================");
@@ -49,12 +58,16 @@ fn main() -> eyre::Result<()> {
     let start = Instant::now();
 
     println!("\n[1/4] Generating {} iPRF keys...", geom.c);
+    let keys_start = Instant::now();
     let block_keys = derive_block_keys(&master_seed, geom.c);
+    let keys_duration = keys_start.elapsed();
 
     println!("[2/4] Initializing {} regular hints...", params.num_regular);
     println!("[3/4] Initializing {} backup hints...", params.num_backup);
+    let init_start = Instant::now();
     let (mut regular_hints, regular_hint_blocks, mut backup_hints, backup_hint_blocks) =
         init_hints(&master_seed, geom.c, &params);
+    let init_duration = init_start.elapsed();
 
     println!("[4/4] Streaming database ({} entries)...", geom.n_effective);
     if args.constant_time {
@@ -71,7 +84,8 @@ fn main() -> eyre::Result<()> {
             .progress_chars("#>-"),
     );
 
-    if args.constant_time {
+    let (iprf_setup_duration, stream_duration) = if args.constant_time {
+        let iprf_setup_start = Instant::now();
         let block_iprfs_ct: Vec<IprfTee> = block_keys
             .iter()
             .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
@@ -85,7 +99,9 @@ fn main() -> eyre::Result<()> {
             .iter()
             .map(|blocks| BlockBitset::from_sorted_blocks(blocks, geom.c))
             .collect();
+        let iprf_setup_duration = iprf_setup_start.elapsed();
 
+        let stream_start = Instant::now();
         hint_gen::ct_path::process_entries_ct(
             db_bytes,
             geom.n_entries,
@@ -100,12 +116,17 @@ fn main() -> eyre::Result<()> {
             &mut backup_hints,
             |i| pb.set_position(i as u64),
         );
+        let stream_duration = stream_start.elapsed();
+        (iprf_setup_duration, stream_duration)
     } else {
+        let iprf_setup_start = Instant::now();
         let block_iprfs: Vec<Iprf> = block_keys
             .iter()
             .map(|key| Iprf::new(*key, params.total_hints as u64, geom.w as u64))
             .collect();
+        let iprf_setup_duration = iprf_setup_start.elapsed();
 
+        let stream_start = Instant::now();
         hint_gen::fast_path::process_entries_fast(
             db_bytes,
             geom.n_entries,
@@ -121,9 +142,17 @@ fn main() -> eyre::Result<()> {
             &mut backup_hints,
             |i| pb.set_position(i as u64),
         );
-    }
+        let stream_duration = stream_start.elapsed();
+        (iprf_setup_duration, stream_duration)
+    };
 
     pb.finish_with_message("Done");
+
+    println!("\n=== Timings ===");
+    println!("Key derivation: {:.2?}", keys_duration);
+    println!("Hint init: {:.2?}", init_duration);
+    println!("iPRF setup: {:.2?}", iprf_setup_duration);
+    println!("Streaming: {:.2?}", stream_duration);
 
     let duration = start.elapsed();
     print_results(
@@ -136,6 +165,18 @@ fn main() -> eyre::Result<()> {
         geom.w,
         geom.c,
     );
+
+    #[cfg(feature = "profiling")]
+    if let Some(guard) = profiler_guard {
+        let report = guard.report().build()?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&args.profile_out)?;
+        report.flamegraph(file)?;
+        println!("Profile written to {:?}", args.profile_out);
+    }
 
     Ok(())
 }

@@ -1,4 +1,6 @@
 use plinko::iprf::Iprf;
+#[cfg(feature = "batch_iprf")]
+use plinko::iprf::SwapOrNotSrBatchScratch;
 
 use crate::hint_gen::subsets::{block_in_subset, xor_32};
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
@@ -19,6 +21,11 @@ pub fn process_entries_fast(
     backup_hints: &mut [BackupHint],
     progress_callback: impl Fn(usize),
 ) {
+    #[cfg(feature = "batch_iprf")]
+    let mut preimages: Vec<u64> = Vec::new();
+    #[cfg(feature = "batch_iprf")]
+    let mut scratch = SwapOrNotSrBatchScratch::new();
+
     for i in 0..n_effective {
         let block = i / w;
         let offset = i % w;
@@ -32,21 +39,47 @@ pub fn process_entries_fast(
             [0u8; 32]
         };
 
-        let hint_indices = block_iprfs[block].inverse(offset as u64);
+        #[cfg(feature = "batch_iprf")]
+        {
+            block_iprfs[block].inverse_into(offset as u64, &mut preimages, &mut scratch);
 
-        for j in hint_indices {
-            let j = j as usize;
-            if j < num_regular {
-                if block_in_subset(&regular_hint_blocks[j], block) {
-                    xor_32(&mut regular_hints[j].parity, &entry);
+            for &j in preimages.iter() {
+                let j = j as usize;
+                if j < num_regular {
+                    if block_in_subset(&regular_hint_blocks[j], block) {
+                        xor_32(&mut regular_hints[j].parity, &entry);
+                    }
+                } else {
+                    let backup_idx = j - num_regular;
+                    if backup_idx < num_backup {
+                        if block_in_subset(&backup_hint_blocks[backup_idx], block) {
+                            xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
+                        } else {
+                            xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
+                        }
+                    }
                 }
-            } else {
-                let backup_idx = j - num_regular;
-                if backup_idx < num_backup {
-                    if block_in_subset(&backup_hint_blocks[backup_idx], block) {
-                        xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
-                    } else {
-                        xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
+            }
+        }
+
+        #[cfg(not(feature = "batch_iprf"))]
+        {
+            let hint_indices = block_iprfs[block].inverse(offset as u64);
+
+            for j in hint_indices {
+                let j = j as usize;
+                if j < num_regular {
+                    if block_in_subset(&regular_hint_blocks[j], block) {
+                        xor_32(&mut regular_hints[j].parity, &entry);
+                    }
+                } else {
+                    let backup_idx = j - num_regular;
+                    if backup_idx < num_backup {
+                        if block_in_subset(&backup_hint_blocks[backup_idx], block) {
+                            xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
+                        } else {
+                            xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
+                        }
                     }
                 }
             }

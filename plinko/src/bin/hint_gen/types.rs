@@ -32,6 +32,18 @@ pub struct Args {
 
     #[arg(long)]
     pub constant_time: bool,
+
+    /// Enable CPU profiling (requires --features profiling)
+    #[arg(long, default_value = "false")]
+    pub profile: bool,
+
+    /// Output flamegraph path when profiling
+    #[arg(long, default_value = "profile.svg")]
+    pub profile_out: PathBuf,
+
+    /// Sampling frequency for profiling (Hz)
+    #[arg(long, default_value = "100")]
+    pub profile_freq: u32,
 }
 
 pub struct RegularHint {

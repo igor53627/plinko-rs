@@ -6,10 +6,15 @@
 //!
 //! Algorithm:
 //! - Small count (<=1024): Exact inverse-CDF with PMF recurrence, O(n)
-//! - Large count (>1024): Binary search over CDF using regularized incomplete beta, O(log n)
+//! - Large count (>1024): BTPE (feature `btpe`) or beta-CDF binary search, O(log n)
 //!
 //! For TEE environments, use `binomial_sample_tee` which is constant-time and
 //! matches the simplified arithmetic formula in BinomialSpec.v exactly.
+
+#[cfg(feature = "btpe")]
+use aes::Aes128;
+#[cfg(feature = "btpe")]
+use ctr::cipher::{KeyIvInit, StreamCipher};
 
 /// Threshold for switching between exact and approximate algorithms.
 /// Below this, we use exact PMF summation. Above, we use binary search with beta function.
@@ -17,6 +22,11 @@ const EXACT_THRESHOLD: u64 = 1024;
 
 /// Maximum value of u64 as f64 for normalization
 const U64_MAX_F64: f64 = u64::MAX as f64;
+
+#[inline]
+fn prf_to_unit(prf_output: u64) -> f64 {
+    (prf_output as f64 + 0.5) / (U64_MAX_F64 + 1.0)
+}
 
 /// True derandomized binomial sampler.
 ///
@@ -51,7 +61,6 @@ pub fn binomial_sample(count: u64, num: u64, denom: u64, prf_output: u64) -> u64
     }
 
     let mut p = num as f64 / denom as f64;
-    let u = (prf_output as f64 + 0.5) / (U64_MAX_F64 + 1.0);
 
     // Use symmetry to keep p <= 0.5, avoiding underflow in q^n for exact branch
     // Binomial(n, p) = n - Binomial(n, 1-p)
@@ -61,9 +70,18 @@ pub fn binomial_sample(count: u64, num: u64, denom: u64, prf_output: u64) -> u64
     }
 
     let k = if count <= EXACT_THRESHOLD {
+        let u = prf_to_unit(prf_output);
         binomial_inverse_exact(count, p, u)
     } else {
-        binomial_inverse_binary_search(count, p, u)
+        #[cfg(feature = "btpe")]
+        {
+            binomial_btpe(count, p, prf_output)
+        }
+        #[cfg(not(feature = "btpe"))]
+        {
+            let u = prf_to_unit(prf_output);
+            binomial_inverse_binary_search(count, p, u)
+        }
     };
 
     if use_complement {
@@ -137,6 +155,244 @@ fn binomial_cdf(n: u64, p: f64, k: u64) -> f64 {
     let x = 1.0 - p;
 
     puruspe::betai(a, b, x)
+}
+
+#[cfg(feature = "btpe")]
+fn binomial_btpe(n: u64, p: f64, prf_output: u64) -> u64 {
+    let mut rng = AesCtrRng::new_from_prf(prf_output);
+    btpe_sample(n, p, &mut rng)
+}
+
+#[cfg(feature = "btpe")]
+fn btpe_sample(n: u64, p: f64, rng: &mut AesCtrRng) -> u64 {
+    let q = 1.0 - p;
+    let xnp = n as f64 * p;
+    if xnp < 30.0 {
+        return btpe_inverse_small(n, p, q, rng);
+    }
+
+    let params = BtpeParams::new(n, p, q, xnp);
+
+    loop {
+        let u = rng.next_f64() * params.p4;
+        let mut v = rng.next_f64();
+
+        if u <= params.p1 {
+            let ix = (params.xm - params.p1 * v + u) as i64;
+            return ix as u64;
+        }
+
+        if u <= params.p2 {
+            let x = params.xl + (u - params.p1) / params.c;
+            v = v * params.c + 1.0 - (params.xm - x).abs() / params.p1;
+            if v > 1.0 || v <= 0.0 {
+                continue;
+            }
+            let ix = x as i64;
+            if btpe_accept(ix, v, &params) {
+                return ix as u64;
+            }
+            continue;
+        }
+
+        if u <= params.p3 {
+            let ix = (params.xl + v.ln() / params.xll) as i64;
+            if ix < 0 {
+                continue;
+            }
+            v = v * (u - params.p2) * params.xll;
+            if btpe_accept(ix, v, &params) {
+                return ix as u64;
+            }
+            continue;
+        }
+
+        let ix = (params.xr - v.ln() / params.xlr) as i64;
+        if ix > params.n as i64 {
+            continue;
+        }
+        v = v * (u - params.p3) * params.xlr;
+        if btpe_accept(ix, v, &params) {
+            return ix as u64;
+        }
+    }
+}
+
+#[cfg(feature = "btpe")]
+fn btpe_inverse_small(n: u64, p: f64, q: f64, rng: &mut AesCtrRng) -> u64 {
+    let qn = q.powi(n as i32);
+    let r = p / q;
+    let g = r * (n as f64 + 1.0);
+
+    loop {
+        let mut ix: u64 = 0;
+        let mut f = qn;
+        let mut u = rng.next_f64();
+        loop {
+            if u < f {
+                return ix;
+            }
+            if ix > 110 {
+                break;
+            }
+            u -= f;
+            ix += 1;
+            f *= g / ix as f64 - r;
+        }
+    }
+}
+
+#[cfg(feature = "btpe")]
+fn btpe_accept(ix: i64, v: f64, params: &BtpeParams) -> bool {
+    let k = (ix - params.m).abs() as f64;
+    if k > 20.0 && k < params.xnpq / 2.0 - 1.0 {
+        let amaxp = (k / params.xnpq)
+            * ((k * (k / 3.0 + 0.625) + 1.0 / 6.0) / params.xnpq + 0.5);
+        let ynorm = -k * k / (2.0 * params.xnpq);
+        let alv = v.ln();
+        if alv < ynorm - amaxp {
+            return true;
+        }
+        if alv > ynorm + amaxp {
+            return false;
+        }
+
+        let x1 = ix as f64 + 1.0;
+        let f1 = params.fm + 1.0;
+        let z = params.n as f64 + 1.0 - params.fm;
+        let w = params.n as f64 - ix as f64 + 1.0;
+
+        let t = params.xm * (f1 / x1).ln()
+            + (params.n as f64 - params.m as f64 + 0.5) * (z / w).ln()
+            + (ix as f64 - params.m as f64) * ((w * params.p) / (x1 * params.q)).ln()
+            + stirling_correction(f1)
+            + stirling_correction(z)
+            + stirling_correction(x1)
+            + stirling_correction(w);
+
+        return alv <= t;
+    }
+
+    let mut f = 1.0;
+    let r = params.p / params.q;
+    let g = (params.n as f64 + 1.0) * r;
+    if ix > params.m {
+        for i in (params.m + 1)..=ix {
+            f *= g / i as f64 - r;
+        }
+    } else if ix < params.m {
+        for i in (ix + 1)..=params.m {
+            f /= g / i as f64 - r;
+        }
+    }
+
+    v <= f
+}
+
+#[cfg(feature = "btpe")]
+fn stirling_correction(x: f64) -> f64 {
+    let x2 = x * x;
+    (13860.0 - (462.0 - (132.0 - (99.0 - 140.0 / x2) / x2) / x2) / x2) / x / 166320.0
+}
+
+#[cfg(feature = "btpe")]
+struct BtpeParams {
+    n: u64,
+    p: f64,
+    q: f64,
+    m: i64,
+    fm: f64,
+    xnpq: f64,
+    p1: f64,
+    xm: f64,
+    xl: f64,
+    xr: f64,
+    c: f64,
+    xll: f64,
+    xlr: f64,
+    p2: f64,
+    p3: f64,
+    p4: f64,
+}
+
+#[cfg(feature = "btpe")]
+impl BtpeParams {
+    fn new(n: u64, p: f64, q: f64, xnp: f64) -> Self {
+        let ffm = xnp + p;
+        let m = ffm as i64;
+        let fm = m as f64;
+        let xnpq = xnp * q;
+        let p1 = (2.195 * xnpq.sqrt() - 4.6 * q).floor() + 0.5;
+        let xm = fm + 0.5;
+        let xl = xm - p1;
+        let xr = xm + p1;
+        let c = 0.134 + 20.5 / (15.3 + fm);
+        let mut al = (ffm - xl) / (ffm - xl * p);
+        let xll = al * (1.0 + 0.5 * al);
+        al = (xr - ffm) / (xr * q);
+        let xlr = al * (1.0 + 0.5 * al);
+        let p2 = p1 * (1.0 + 2.0 * c);
+        let p3 = p2 + c / xll;
+        let p4 = p3 + c / xlr;
+
+        Self {
+            n,
+            p,
+            q,
+            m,
+            fm,
+            xnpq,
+            p1,
+            xm,
+            xl,
+            xr,
+            c,
+            xll,
+            xlr,
+            p2,
+            p3,
+            p4,
+        }
+    }
+}
+
+#[cfg(feature = "btpe")]
+struct AesCtrRng {
+    cipher: ctr::Ctr128BE<Aes128>,
+    buf: [u8; 64],
+    idx: usize,
+}
+
+#[cfg(feature = "btpe")]
+impl AesCtrRng {
+    fn new_from_prf(prf_output: u64) -> Self {
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(&prf_output.to_le_bytes());
+        key[8..].copy_from_slice(&prf_output.to_le_bytes());
+        let iv = [0u8; 16];
+        let cipher = ctr::Ctr128BE::<Aes128>::new(&key.into(), &iv.into());
+        Self {
+            cipher,
+            buf: [0u8; 64],
+            idx: 64,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        if self.idx + 8 > self.buf.len() {
+            self.buf = [0u8; 64];
+            self.cipher.apply_keystream(&mut self.buf);
+            self.idx = 0;
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&self.buf[self.idx..self.idx + 8]);
+        self.idx += 8;
+        u64::from_le_bytes(bytes)
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        prf_to_unit(self.next_u64())
+    }
 }
 
 /// Maximum count for constant-time exact binomial sampling.
