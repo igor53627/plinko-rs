@@ -20,7 +20,7 @@
 #include <cuda_runtime.h>
 
 // Constants
-#define ENTRY_SIZE 48
+#define ENTRY_SIZE 40  // v3 schema: 40-byte entries (was 48 in v2)
 #define PARITY_SIZE 32
 #define WARP_SIZE 32
 #define CHACHA_ROUNDS 8
@@ -662,7 +662,7 @@ extern "C" __global__ void hint_gen_kernel_opt(
                     // We need to load 32 bytes total (2 x ulong2)
                     const ulong2* entry_ptr = (const ulong2*)(entries + entry_idx * ENTRY_SIZE);
                     
-                    // Note: ENTRY_SIZE is 48, so we are reading the first 32 bytes
+                    // Note: ENTRY_SIZE is 40, we read the first 32 bytes (data), skip 8-byte TAG
                     ulong2 v0 = entry_ptr[0];
                     ulong2 v1 = entry_ptr[1];
                     
