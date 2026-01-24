@@ -658,15 +658,17 @@ extern "C" __global__ void hint_gen_kernel_opt(
             if (preimage < params.chunk_size) {
                 uint64_t entry_idx = block_idx * params.chunk_size + preimage;
                 if (entry_idx < params.num_entries) {
-                    // Use 64-bit loads for 40-byte entries (40 % 8 = 0, always aligned)
-                    // Can't use ulong2 (128-bit) because 40 % 16 = 8, odd entries misaligned
-                    const uint64_t* entry_ptr = (const uint64_t*)(entries + entry_idx * ENTRY_SIZE);
+                    // Use 128-bit loads (ulong2) even for 40-byte entries
+                    // Hardware handles misalignment (split transactions) better than 4x scalar loads
+                    const ulong2* vec_ptr = (const ulong2*)(entries + entry_idx * ENTRY_SIZE);
+                    
+                    ulong2 v0 = vec_ptr[0];
+                    ulong2 v1 = vec_ptr[1];
 
-                    // Read first 32 bytes of data, skip 8-byte TAG
-                    parity_vec[0].x ^= entry_ptr[0];
-                    parity_vec[0].y ^= entry_ptr[1];
-                    parity_vec[1].x ^= entry_ptr[2];
-                    parity_vec[1].y ^= entry_ptr[3];
+                    parity_vec[0].x ^= v0.x;
+                    parity_vec[0].y ^= v0.y;
+                    parity_vec[1].x ^= v1.x;
+                    parity_vec[1].y ^= v1.y;
                 }
             }
         }
