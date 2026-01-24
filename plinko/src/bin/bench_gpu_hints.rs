@@ -8,8 +8,8 @@
 
 use clap::Parser;
 use eyre::Result;
-use plinko::db::Database48;
-use plinko::schema48::ENTRY_SIZE;
+use plinko::db::Database40;
+use plinko::schema40::ENTRY_SIZE;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,7 +21,7 @@ use plinko::gpu::{GpuHintGenerator, IprfBlockKey, PlinkoParams};
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Benchmark GPU hint generation")]
 struct Args {
-    /// Path to database.bin (48-byte schema)
+    /// Path to database.bin (40-byte schema v3)
     #[arg(long)]
     db: PathBuf,
 
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
 
     // Load database
     println!("Loading database: {:?}", args.db);
-    let db = Database48::load(&args.db)?;
+    let db = Database40::load(&args.db)?;
     let num_entries = db.num_entries;
 
     // Use override chunk_size if provided, otherwise use derived value
