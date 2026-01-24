@@ -6,14 +6,16 @@
  * - This matches the production Rust implementation
  *
  * Optimizations:
- * 1. Batched ChaCha8 - one block produces data for multiple SwapOrNot rounds
+ * 1. Batched ChaCha20 - one block produces data for multiple SwapOrNot rounds
  * 2. Warp-level parallelism - 32 threads share block key loads via shuffle
  * 3. SHA-256 key derivation done once per block per warp, then broadcast
  * 4. Fast PRF Bit - eliminates dead code in ChaCha8 for the swap decision bit
  * 5. Vectorized Loads - uses 128-bit loads (ulong2) for database entries
  *
- * Uses ChaCha8 for PRP (ARX only - no memory lookups)
+ * Uses ChaCha20 for PRP (ARX only - no memory lookups)
  * Uses SHA-256 for key derivation (ARX + bitwise ops)
+ *
+ * EXPERIMENT: ChaCha20 (20 rounds) instead of ChaCha8 (8 rounds)
  */
 
 #include <cstdint>
@@ -23,10 +25,10 @@
 #define ENTRY_SIZE 48
 #define PARITY_SIZE 32
 #define WARP_SIZE 32
-#define CHACHA_ROUNDS 8
+#define CHACHA_ROUNDS 20  // ChaCha20 (was 8 for ChaCha8)
 
-// Batching: ChaCha8 produces 512 bits, we need ~65 bits per SN round (64-bit key + 1 bit)
-// So one ChaCha8 block can cover ~7 rounds
+// Batching: ChaCha20 produces 512 bits, we need ~65 bits per SN round (64-bit key + 1 bit)
+// So one ChaCha20 block can cover ~7 rounds
 #define SN_ROUNDS 759
 #define ROUNDS_PER_CHACHA 7
 

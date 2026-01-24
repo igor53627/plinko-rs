@@ -13,6 +13,8 @@ Benchmark of GPU-accelerated hint generation for Plinko PIR using ChaCha8-based 
 - **Output:** 1.07 GB hints file
 - **Throughput:** ~2,700 hints/sec per GPU
 
+**ChaCha8 vs ChaCha20:** ChaCha20 is 1.9× slower (7.6 min vs 4.1 min max GPU time). ChaCha8 recommended for production.
+
 ## Production Parameters
 
 | Parameter | Symbol | Value | Description |
@@ -208,6 +210,44 @@ modal volume get plinko-hints /hints/20260123_174356/hints_combined.bin
 1. Key derivation happens once per block per warp (amortized over 32 threads)
 2. SHA-256 uses ARX operations that map efficiently to GPU
 3. The cost is dominated by SwapOrNot rounds (759 ChaCha8 evaluations per block)
+
+### ChaCha8 vs ChaCha20 Comparison
+
+An experiment was run on 2026-01-23 comparing ChaCha8 (8 rounds) vs ChaCha20 (20 rounds) to measure the performance impact of increased cipher rounds.
+
+**Experiment bookmark:** `chacha20-experiment` (jj)
+
+| Metric | ChaCha8 | ChaCha20 | Slowdown |
+|--------|---------|----------|----------|
+| **2× H200 (1% hints)** |
+| Worker 0 time | 77.5s | 154.1s | 2.0× |
+| Worker 1 time | 75.5s | 133.6s | 1.8× |
+| Throughput | 4,331 hints/sec | 2,178 hints/sec | 0.50× |
+| **50× H200 (100% hints)** |
+| Run ID | 20260123_174356 | 20260123_221733 | - |
+| Wall clock | 597.3s (10.0 min) | 911.0s (15.2 min) | 1.5× |
+| Max GPU time | 246.7s (4.1 min) | 457.9s (7.6 min) | 1.9× |
+| Avg GPU time | ~220s | ~443s | 2.0× |
+| Total hints | 33,554,432 | 33,554,432 | same |
+| Output size | 1.07 GB | 1.07 GB | same |
+
+**Analysis:**
+- ChaCha20 is roughly **1.9× slower** than ChaCha8 on GPU
+- This is less than the theoretical 2.5× (20/8 rounds) because:
+  1. SHA-256 key derivation is fixed cost (same for both)
+  2. Memory I/O overhead is constant
+  3. SwapOrNot logic outside ChaCha is unchanged
+- **Recommendation:** Use ChaCha8 for production. It provides adequate security for PRP usage while being ~2× faster.
+
+**ChaCha20 Run Details:**
+```
+Run ID:           20260123_221733
+GPUs:             50× H200
+Total hints:      33,554,432
+Max GPU time:     457.9s (7.6 min)
+Wall clock:       911.0s (15.2 min)
+Output:           1.07 GB
+```
 
 ### Performance Scaling
 
