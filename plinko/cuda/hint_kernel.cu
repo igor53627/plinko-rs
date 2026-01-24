@@ -20,7 +20,7 @@
 #include <cuda_runtime.h>
 
 // Constants
-#define ENTRY_SIZE 40  // v3 schema: 40-byte entries (was 48 in v2)
+#define ENTRY_SIZE 40  // v3 schema: 40-byte entries, use 64-bit loads (not 128-bit)
 #define PARITY_SIZE 32
 #define WARP_SIZE 32
 #define CHACHA_ROUNDS 8
@@ -658,18 +658,15 @@ extern "C" __global__ void hint_gen_kernel_opt(
             if (preimage < params.chunk_size) {
                 uint64_t entry_idx = block_idx * params.chunk_size + preimage;
                 if (entry_idx < params.num_entries) {
-                    // Optimization 2: Use 128-bit (16-byte) vector loads
-                    // We need to load 32 bytes total (2 x ulong2)
-                    const ulong2* entry_ptr = (const ulong2*)(entries + entry_idx * ENTRY_SIZE);
-                    
-                    // Note: ENTRY_SIZE is 40, we read the first 32 bytes (data), skip 8-byte TAG
-                    ulong2 v0 = entry_ptr[0];
-                    ulong2 v1 = entry_ptr[1];
-                    
-                    parity_vec[0].x ^= v0.x;
-                    parity_vec[0].y ^= v0.y;
-                    parity_vec[1].x ^= v1.x;
-                    parity_vec[1].y ^= v1.y;
+                    // Use 64-bit loads for 40-byte entries (40 % 8 = 0, always aligned)
+                    // Can't use ulong2 (128-bit) because 40 % 16 = 8, odd entries misaligned
+                    const uint64_t* entry_ptr = (const uint64_t*)(entries + entry_idx * ENTRY_SIZE);
+
+                    // Read first 32 bytes of data, skip 8-byte TAG
+                    parity_vec[0].x ^= entry_ptr[0];
+                    parity_vec[0].y ^= entry_ptr[1];
+                    parity_vec[1].x ^= entry_ptr[2];
+                    parity_vec[1].y ^= entry_ptr[3];
                 }
             }
         }
