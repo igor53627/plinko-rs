@@ -22,7 +22,11 @@ const MAINNET_ACCOUNTS: u64 = 330_000_000;
 const MAINNET_STORAGE: u64 = 1_400_000_000;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Generate synthetic PIR database for benchmarking")]
+#[command(
+    author,
+    version,
+    about = "Generate synthetic PIR database for benchmarking"
+)]
 struct Args {
     /// Output directory for artifacts
     #[arg(long, default_value = "data/synthetic")]
@@ -53,12 +57,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Calculate counts based on scale or explicit values
-    let num_accounts = args.accounts.unwrap_or_else(|| {
-        ((MAINNET_ACCOUNTS as f64) * (args.scale_percent / 100.0)) as u64
-    });
-    let num_storage = args.storage.unwrap_or_else(|| {
-        ((MAINNET_STORAGE as f64) * (args.scale_percent / 100.0)) as u64
-    });
+    let num_accounts = args
+        .accounts
+        .unwrap_or_else(|| ((MAINNET_ACCOUNTS as f64) * (args.scale_percent / 100.0)) as u64);
+    let num_storage = args
+        .storage
+        .unwrap_or_else(|| ((MAINNET_STORAGE as f64) * (args.scale_percent / 100.0)) as u64);
     let total_entries = num_accounts + num_storage;
     let total_bytes = total_entries * ENTRY_SIZE as u64;
     let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
@@ -89,7 +93,9 @@ fn main() -> Result<()> {
     let pb = ProgressBar::new(total_entries);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
             .unwrap()
             .progress_chars("#>-"),
     );
@@ -206,9 +212,11 @@ fn main() -> Result<()> {
     println!("Plinko parameters:");
     println!("  chunk_size (w): {}", chunk_size);
     println!("  set_size (c): {}", set_size);
-    println!("  capacity: {} (overhead: {:.2}%)",
-             chunk_size * set_size,
-             100.0 * (chunk_size * set_size - total_entries) as f64 / total_entries as f64);
+    println!(
+        "  capacity: {} (overhead: {:.2}%)",
+        chunk_size * set_size,
+        100.0 * (chunk_size * set_size - total_entries) as f64 / total_entries as f64
+    );
 
     Ok(())
 }
