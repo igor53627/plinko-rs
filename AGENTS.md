@@ -213,6 +213,10 @@ Before committing Rust changes to hint generation or iPRF:
 
 ## Documentation Sync Rules
 
+When running GPU benchmarks:
+- **ALWAYS** check `docs/gpu_benchmark_commands.md` for the latest command templates and data locations.
+- **UPDATE** `docs/gpu_benchmark_commands.md` with new results after significant benchmark runs.
+
 When modifying `plinko/src/bin/hint_gen/`:
 - Update `docs/hint_generation.md` if module structure or API changes
 - Update `docs/constant_time_mode.md` if CT security model changes

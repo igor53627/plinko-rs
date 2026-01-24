@@ -14,6 +14,7 @@ app = modal.App("plinko-bench")
 volume = modal.Volume.from_name("plinko-data", create_if_missing=True)
 mainnet_volume = modal.Volume.from_name("morphogenesis-data", create_if_missing=True)
 hints_volume = modal.Volume.from_name("plinko-hints", create_if_missing=True)
+bin_volume = modal.Volume.from_name("plinko-bin-vol", create_if_missing=True)
 
 # Minimal image - just Rust + CUDA
 image = (
@@ -28,6 +29,41 @@ image = (
         ignore=["target", ".git", ".jj", "tmp", "__pycache__", ".DS_Store", "data", ".beads"]
     )
 )
+
+@app.function(image=image, gpu="H200", volumes={"/bin_vol": bin_volume}, timeout=600)
+def build_binary():
+    """Build the benchmark binary once and cache it."""
+    import subprocess
+    import os
+    import shutil
+
+    os.chdir("/app")
+    print("Building binary...")
+    
+    # Set up environment
+    env = os.environ.copy()
+    env["PATH"] = f"/root/.cargo/bin:/usr/local/cuda/bin:{env.get('PATH', '')}"
+    env["LD_LIBRARY_PATH"] = f"/usr/local/cuda/lib64:{env.get('LD_LIBRARY_PATH', '')}"
+    env["CUDA_ROOT"] = "/usr/local/cuda"
+    env["CUDA_PATH"] = "/usr/local/cuda"
+    env["CUDA_ARCH"] = "sm_90"
+
+    build_result = subprocess.run(
+        ["cargo", "build", "--release", "-p", "plinko", "--bin", "bench_gpu_hints", "--features", "cuda,parallel"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    
+    if build_result.returncode != 0:
+        print(build_result.stderr[-3000:])
+        raise RuntimeError("Build failed")
+
+    # Copy to volume
+    print("Copying binary to volume...")
+    shutil.copy2("target/release/bench_gpu_hints", "/bin_vol/bench_gpu_hints")
+    os.chmod("/bin_vol/bench_gpu_hints", 0o755)
+    print("Build complete.")
 
 
 @app.function(image=image, gpu="H100", volumes={"/data": volume}, timeout=7200)
@@ -295,16 +331,18 @@ def _run_bench(gpu: str, data_name: str, lambda_param: int, iterations: int, chu
 
 
 def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, chunk_size: int, slice_pct: float, gpu_name: str, replicate_data: bool = False):
-    """Implementation for multi-GPU worker (shared by H200 and B200).
-
-    If replicate_data=True: Each worker gets the SAME data slice (for accurate hint benchmarking)
-    If replicate_data=False: Data is SPLIT among workers (for I/O testing)
-    """
+    """Implementation for multi-GPU worker (shared by H200 and B200)."""
     import subprocess
     import os
     import re
 
     os.chdir("/app")
+    
+    # Check for pre-built binary
+    bin_path = "/bin_vol/bench_gpu_hints"
+    if not os.path.exists(bin_path):
+        raise FileNotFoundError(f"Binary not found at {bin_path}. Run build_binary first.")
+
     # Use v3 schema (40-byte entries) from plinko-data volume
     src_path = "/data/mainnet-v3/database.bin"
     slice_path = f"/tmp/mainnet_slice_{worker_id}.bin"
@@ -352,7 +390,7 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
 
     print(f"Worker {worker_id}/{num_workers}: {worker_hints:,} hints, {slice_entries:,} entries, set_size={worker_set_size}")
 
-    # Build
+    # Set up environment
     env = os.environ.copy()
     env["PATH"] = f"/root/.cargo/bin:/usr/local/cuda/bin:{env.get('PATH', '')}"
     env["LD_LIBRARY_PATH"] = f"/usr/local/cuda/lib64:{env.get('LD_LIBRARY_PATH', '')}"
@@ -360,16 +398,9 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     env["CUDA_PATH"] = "/usr/local/cuda"
     env["CUDA_ARCH"] = "sm_90"
 
-    build_result = subprocess.run(
-        ["cargo", "build", "--release", "-p", "plinko", "--bin", "bench_gpu_hints", "--features", "cuda,parallel"],
-        capture_output=True, text=True, env=env,
-    )
-    if build_result.returncode != 0:
-        raise RuntimeError(f"Build failed: {build_result.stderr[-1000:]}")
-
     # Run benchmark (iterations=1, warmup=1 to get GPU loaded, then measure)
     cmd = [
-        "./target/release/bench_gpu_hints",
+        bin_path,
         "--db", slice_path,
         "--lambda", "128",
         "--iterations", "1",
@@ -380,9 +411,9 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     ]
 
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    output = result.stdout if result.stdout else ""
+    output = result.stdout + (result.stderr if result.stderr else "")
 
-    # Parse actual GPU time from output (e.g., "Iteration 1: 28703.982 ms")
+    # Parse actual GPU time from output
     gpu_time_ms = None
     for line in output.split('\n'):
         if 'Iteration 1:' in line:
@@ -391,23 +422,26 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
                 gpu_time_ms = float(match.group(1))
                 break
 
+    if gpu_time_ms is None:
+        print(f"Worker {worker_id} FAILED to produce timing. Full Output:\n{output}")
+
     os.remove(slice_path)
 
     return {
         "worker_id": worker_id,
         "hints": worker_hints,
         "gpu_time_ms": gpu_time_ms,
-        "output": output[-1500:]
+        "output": output[-5000:]
     }
 
 
-@app.function(image=image, gpu="H200", volumes={"/data": volume}, timeout=7200)
+@app.function(image=image, gpu="H200", volumes={"/data": volume, "/bin_vol": bin_volume}, timeout=7200)
 def bench_multi_gpu_worker_h200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False):
     """Single H200 worker for multi-GPU benchmark."""
     return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "H200", replicate_data)
 
 
-@app.function(image=image, gpu="B200", volumes={"/data": volume}, timeout=7200)
+@app.function(image=image, gpu="B200", volumes={"/data": volume, "/bin_vol": bin_volume}, timeout=7200)
 def bench_multi_gpu_worker_b200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False):
     """Single B200 worker for multi-GPU benchmark."""
     return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "B200", replicate_data)
@@ -702,6 +736,10 @@ def main(
 
     # Multi-GPU mode
     if multi_gpu > 0:
+        # Build binary first
+        print("Building binary...")
+        build_binary.remote()
+        
         gpu_type = gpu.upper()
 
         # GPU pricing (Modal)
