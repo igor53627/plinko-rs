@@ -356,7 +356,12 @@ impl CodeStore {
         }
 
         // Allocate new ID (1-indexed since 0 is reserved)
-        let id = CodeId((self.hashes.len() + 1) as u32);
+        // Guard against u32 overflow (0 is reserved for CODE_ID_NONE)
+        let next_len = self.hashes.len() + 1;
+        if next_len >= u32::MAX as usize {
+            panic!("CodeStore exhausted: reached maximum of 4B unique bytecodes");
+        }
+        let id = CodeId(next_len as u32);
         self.hashes.push(*hash);
         self.hash_to_id.insert(*hash, id);
         id

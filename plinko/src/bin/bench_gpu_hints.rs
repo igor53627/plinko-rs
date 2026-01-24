@@ -8,7 +8,7 @@
 
 use clap::Parser;
 use eyre::Result;
-use plinko::db::Database40;
+use plinko::db::{Database40, derive_plinko_params};
 use plinko::schema40::ENTRY_SIZE;
 use std::fs::File;
 use std::io::Write;
@@ -86,12 +86,7 @@ fn main() -> Result<()> {
     let (num_entries, chunk_size, set_size, entries_vec, entries_slice) = if let Some(n) = args.synthetic_entries {
         println!("Mode: Synthetic In-Memory ({} entries)", n);
         
-        // Derive params (simplified logic from db.rs)
-        let target_chunk = (4.0 * n as f64).sqrt() as u64;
-        let mut w = 1u64;
-        while w < target_chunk { w *= 2; }
-        let mut c = n.div_ceil(w);
-        c = c.div_ceil(4) * 4;
+        let (w, c) = derive_plinko_params(n);
 
         let total_bytes = n as usize * ENTRY_SIZE;
         println!("Allocating {:.2} GB for database...", total_bytes as f64 / 1e9);

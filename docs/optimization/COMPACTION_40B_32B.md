@@ -8,18 +8,10 @@ The "Compaction" optimization reduces the bandwidth required for hint generation
 
 ### Account Database (40 Bytes)
 *   **Original:** `[Balance(16) | Nonce(4) | CodeID(4) | Tag(8) | Padding(8)]`
-*   **Compacted (32 Bytes):** `[Balance(16) | Nonce(4) | CodeID(4) | Unused(4) | Unused(4)]`
-    *   We keep the first 32 bytes.
-    *   The `Tag` (bytes 24-32) and `Padding` (bytes 32-40) are dropped.
-    *   *Note: In the current 40B schema, the Tag starts at offset 24. Since 24 < 32, the Tag is actually PARTIALLY preserved in the first 32 bytes?*
-    *   **Correction:**
-        *   Balance: 0-16
-        *   Nonce: 16-20
-        *   CodeID: 20-24
-        *   Tag: 24-32
-        *   Padding: 32-40
-    *   **Wait:** If we keep the first 32 bytes, we are keeping the **Tag**. We are only dropping the **Padding**.
-    *   **Conclusion:** For accounts, we are **not losing any data** except the empty padding. The Tag is preserved.
+*   **Compacted (32 Bytes):** `[Balance(16) | Nonce(4) | CodeID(4) | Tag(8)]`
+    *   Layout: `Balance (0-16) | Nonce (16-20) | CodeID (20-24) | Tag (24-32) | Padding (32-40)`
+    *   By keeping the first 32 bytes, the Tag is preserved; only the Padding is dropped.
+    *   **Conclusion:** For accounts, we are **not losing any data** except the empty padding.
 
 ### Storage Database (40 Bytes)
 *   **Original:** `[Value(32) | Tag(8)]`

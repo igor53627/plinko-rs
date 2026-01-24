@@ -285,7 +285,7 @@ fn quarter_round(a: u32, b: u32, c: u32, d: u32) -> (u32, u32, u32, u32) {
     (a, b, c, d)
 }
 
-fn chacha8_block(key: &[u32; 8], counter: u32, nonce: u32) -> [u32; 16] {
+fn chacha_block(key: &[u32; 8], counter: u32, nonce: u32) -> [u32; 16] {
     let mut s: [u32; 16] = [
         0x61707865, 0x3320646e, 0x79622d32, 0x6b206574, key[0], key[1], key[2], key[3], key[4],
         key[5], key[6], key[7], counter, nonce, 0, 0,
@@ -316,14 +316,14 @@ fn sn_inverse(key: &[u32; 8], y: u64, domain: u64) -> u64 {
     let mut val = y;
     for r in (0..SN_ROUNDS).rev() {
         // Derive round key
-        let output = chacha8_block(key, r as u32, 0);
+        let output = chacha_block(key, r as u32, 0);
         let k_i = (((output[1] as u64) << 32) | (output[0] as u64)) % domain;
 
         let partner = (k_i + domain - (val % domain)) % domain;
         let canonical = val.max(partner);
 
         // PRF bit
-        let output2 = chacha8_block(key, r as u32 | 0x80000000, canonical as u32);
+        let output2 = chacha_block(key, r as u32 | 0x80000000, canonical as u32);
         if output2[0] & 1 == 1 {
             val = partner;
         }
@@ -544,7 +544,7 @@ mod tests {
     fn test_chacha8_block() {
         // Test with zero key and counter to verify basic operation
         let key = [0u32; 8];
-        let output = chacha8_block(&key, 0, 0);
+        let output = chacha_block(&key, 0, 0);
 
         // ChaCha8 with zero inputs produces deterministic non-zero output
         // due to the constants in the initial state

@@ -63,6 +63,7 @@ def build_binary():
     print("Copying binary to volume...")
     shutil.copy2("target/release/bench_gpu_hints", "/bin_vol/bench_gpu_hints")
     os.chmod("/bin_vol/bench_gpu_hints", 0o755)
+    bin_volume.commit()
     print("Build complete.")
 
 
@@ -347,8 +348,13 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     src_path = "/data/mainnet-v3/database.bin"
     slice_path = f"/tmp/mainnet_slice_{worker_id}.bin"
 
+    if not os.path.exists(src_path):
+        raise FileNotFoundError(f"Mainnet v3 data not found: {src_path}")
+
     file_size = os.path.getsize(src_path)
     entry_size = 40  # v3 schema
+    if file_size % entry_size != 0:
+        raise ValueError(f"File size {file_size} not aligned to {entry_size}-byte entries (Worker {worker_id})")
     total_entries = file_size // entry_size
 
     if replicate_data:
