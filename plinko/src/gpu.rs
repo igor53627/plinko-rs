@@ -25,7 +25,7 @@ use cudarc::driver::{CudaDevice, CudaFunction, CudaSlice, DeviceRepr, LaunchAsyn
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 
-use crate::schema48::ENTRY_SIZE;
+use crate::schema40::ENTRY_SIZE;
 
 /// Plinko parameters for GPU kernel
 #[cfg(feature = "cuda")]
@@ -126,7 +126,7 @@ impl GpuHintGenerator {
     ///
     /// # Arguments
     ///
-    /// * `entries` - Database entries (N × 48 bytes)
+    /// * `entries` - Database entries (N × 40 bytes)
     /// * `block_keys` - iPRF key for each block (c keys)
     /// * `hint_subsets` - Precomputed block subsets as bitsets
     /// * `params` - Plinko parameters
@@ -162,7 +162,7 @@ impl GpuHintGenerator {
             "hint_subsets size mismatch"
         );
 
-        // Copy data to GPU
+        // Copy data to GPU (40-byte entries, using 64-bit loads in kernel)
         let d_entries = self.device.htod_sync_copy(entries)?;
 
         // Optimization: Derive PRP keys on CPU to save GPU time
