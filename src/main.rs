@@ -167,6 +167,15 @@ fn main() -> Result<()> {
                 // Convert balance to [u8; 32] (little-endian)
                 let balance_bytes = account.balance.to_le_bytes::<32>();
 
+                // Guard against nonce overflow (v3 schema uses u32 for nonce)
+                if account.nonce > u32::MAX as u64 {
+                    return Err(eyre::eyre!(
+                        "Account {} nonce {} exceeds u32::MAX (v3 schema limit)",
+                        address,
+                        account.nonce
+                    ));
+                }
+
                 // Create 40-byte account entry
                 let entry =
                     AccountEntry40::new(&balance_bytes, account.nonce, code_id, &addr_bytes);
