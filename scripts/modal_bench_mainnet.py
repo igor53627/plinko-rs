@@ -62,11 +62,33 @@ def bench_mainnet_2xh200(
     )
 
     # Check mainnet data
-    db_path = f"{VOLUME_PATH}/mainnet-v3/database.bin"
-    manifest_path = f"{VOLUME_PATH}/mainnet-v3/manifest.json"
+    db_dir = f"{VOLUME_PATH}/mainnet-v3"
+    db_path = f"{db_dir}/database.bin"
+    manifest_path = f"{db_dir}/manifest.json"
 
     if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Mainnet v3 database not found at {db_path}")
+        print(f"\n=== Generating Mainnet v3 Data (Full Scale) ===")
+        # Build generator
+        subprocess.run(
+            ["cargo", "build", "--release", "-p", "plinko", "--bin", "gen_synthetic"],
+            check=True,
+        )
+        
+        os.makedirs(db_dir, exist_ok=True)
+        # Generate full mainnet scale (100%)
+        # This will produce ~83GB of data (40-byte entries)
+        subprocess.run(
+            [
+                "./target/release/gen_synthetic",
+                "--output-dir", db_dir,
+                "--scale-percent", "100.0",
+                "--seed", "42",
+            ],
+            check=True,
+        )
+        volume.commit()
+    else:
+        print(f"\n=== Using existing data: {db_path} ===")
 
     db_size = os.path.getsize(db_path)
     print(f"\n=== Mainnet v3 Database ===")
@@ -141,11 +163,30 @@ def bench_mainnet_1xh200(
         check=True,
     )
 
-    db_path = f"{VOLUME_PATH}/mainnet-v3/database.bin"
-    manifest_path = f"{VOLUME_PATH}/mainnet-v3/manifest.json"
+    # Check mainnet data
+    db_dir = f"{VOLUME_PATH}/mainnet-v3"
+    db_path = f"{db_dir}/database.bin"
+    manifest_path = f"{db_dir}/manifest.json"
 
     if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Mainnet v3 database not found at {db_path}")
+        print(f"\n=== Generating Mainnet v3 Data (Full Scale) ===")
+        subprocess.run(
+            ["cargo", "build", "--release", "-p", "plinko", "--bin", "gen_synthetic"],
+            check=True,
+        )
+        os.makedirs(db_dir, exist_ok=True)
+        subprocess.run(
+            [
+                "./target/release/gen_synthetic",
+                "--output-dir", db_dir,
+                "--scale-percent", "100.0",
+                "--seed", "42",
+            ],
+            check=True,
+        )
+        volume.commit()
+    else:
+        print(f"\n=== Using existing data: {db_path} ===")
 
     db_size = os.path.getsize(db_path)
     print(f"\n=== Mainnet v3 Database ===")

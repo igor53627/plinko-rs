@@ -21,9 +21,13 @@ use plinko::gpu::{GpuHintGenerator, IprfBlockKey, PlinkoParams};
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Benchmark GPU hint generation")]
 struct Args {
-    /// Path to database.bin (40-byte schema v3)
+    /// Path to database.bin (40-byte schema v3). Required unless --synthetic-entries is used.
+    #[arg(long, required_unless_present = "synthetic_entries")]
+    db: Option<PathBuf>,
+
+    /// Generate synthetic database in-memory with N entries (avoids disk I/O)
     #[arg(long)]
-    db: PathBuf,
+    synthetic_entries: Option<u64>,
 
     /// Security parameter lambda (default: 128)
     #[arg(long, default_value_t = 128)]
@@ -78,10 +82,33 @@ fn main() -> Result<()> {
     println!("==============================");
     println!();
 
-    // Load database
-    println!("Loading database: {:?}", args.db);
-    let db = Database40::load(&args.db)?;
-    let num_entries = db.num_entries;
+    // Load database or generate synthetic
+    let (num_entries, chunk_size, set_size, entries_vec, entries_slice) = if let Some(n) = args.synthetic_entries {
+        println!("Mode: Synthetic In-Memory ({} entries)", n);
+        
+        // Derive params (simplified logic from db.rs)
+        let target_chunk = (4.0 * n as f64).sqrt() as u64;
+        let mut w = 1u64;
+        while w < target_chunk { w *= 2; }
+        let mut c = n.div_ceil(w);
+        c = c.div_ceil(4) * 4;
+
+        let total_bytes = n as usize * ENTRY_SIZE;
+        println!("Allocating {:.2} GB for database...", total_bytes as f64 / 1e9);
+        
+        // Allocate and fill with pattern to avoid zero-page optimizations
+        let mut v = vec![0xAAu8; total_bytes];
+        // Ensure vector is actually substantiated in memory
+        v[0] = 0x01;
+        v[total_bytes - 1] = 0x02;
+
+        (n, w, c, Some(v), None) // Return ownership of vec in Option to keep it alive
+    } else {
+        let path = args.db.as_ref().unwrap();
+        println!("Loading database: {:?}", path);
+        let db = Database40::load(path)?;
+        (db.num_entries, db.chunk_size, db.set_size, None, Some(db)) // Keep db alive
+    };
 
     // Use override chunk_size if provided, otherwise use derived value
     let (chunk_size, mut set_size) = if let Some(w) = args.chunk_size {
@@ -91,7 +118,7 @@ fn main() -> Result<()> {
         println!("  Using override chunk_size (mainnet params)");
         (w, c)
     } else {
-        (db.chunk_size, db.set_size)
+        (chunk_size, set_size)
     };
 
     // Override set_size if provided (to simulate mainnet workload on smaller DB)
@@ -99,6 +126,13 @@ fn main() -> Result<()> {
         println!("  Using override set_size (mainnet params): {}", c);
         set_size = c;
     }
+
+    // Get reference to entries slice
+    let entries = if let Some(ref v) = entries_vec {
+        &v[..]
+    } else {
+        &entries_slice.as_ref().unwrap().mmap[..]
+    };
 
     println!("  Entries: {}", num_entries);
     println!(
@@ -221,8 +255,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // Get database bytes
-    let entries = &db.mmap[..];
 
     // Store GPU mean time for speedup comparison
     #[allow(unused_mut)]
@@ -257,9 +289,11 @@ fn main() -> Result<()> {
                 "Generating {} hints (starting at {})...",
                 total_hints, hint_start
             );
+            println!("Calling GPU generate_hints...");
             let start = Instant::now();
             let hints = gpu.generate_hints(entries, &gpu_block_keys, &hint_subsets, params)?;
             let elapsed = start.elapsed();
+            println!("GPU generate_hints completed in {:.3}s", elapsed.as_secs_f64());
 
             println!(
                 "  Generation time: {:.3} s ({} hints)",
@@ -296,7 +330,8 @@ fn main() -> Result<()> {
         } else {
             // Benchmark mode: warmup + multiple iterations
             println!("Warmup ({} iterations)...", args.warmup);
-            for _ in 0..args.warmup {
+            for i in 0..args.warmup {
+                println!("Warmup iteration {}...", i + 1);
                 let _ = gpu.generate_hints(entries, &gpu_block_keys, &hint_subsets, params)?;
             }
             println!();
@@ -305,6 +340,7 @@ fn main() -> Result<()> {
             let mut times = Vec::with_capacity(args.iterations as usize);
 
             for i in 0..args.iterations {
+                println!("Benchmark iteration {}...", i + 1);
                 let start = Instant::now();
                 let hints = gpu.generate_hints(entries, &gpu_block_keys, &hint_subsets, params)?;
                 let elapsed = start.elapsed();
