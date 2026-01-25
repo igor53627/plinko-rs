@@ -24,3 +24,5 @@ regression-data/*.part*
 tmp/sample.db
 tmp/synthetic_test/
 hints_combined.bin
+hints.bin
+hints.bin

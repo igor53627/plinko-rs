@@ -1,33 +1,33 @@
-# GPU Hint Generation Benchmark (ChaCha12 + Compaction)
+# GPU Hint Generation Benchmark (ChaCha12 + Full Authentication)
 
 **Date:** 2026-01-24
 **Author:** Benchmarked on Modal Labs infrastructure
 
 ## Summary
 
-Benchmark of the optimized GPU-accelerated hint generation for Plinko PIR using **ChaCha12** and **40B -> 32B VRAM Compaction**. This run demonstrates that we can achieve high performance (~175k hints/sec) even with the stronger ChaCha12 cipher, thanks to memory bandwidth optimizations.
+Benchmark of the production-ready GPU-accelerated hint generation for Plinko PIR using **ChaCha12** and **40B -> 48B VRAM Expansion**. This version addresses concerns regarding Tag recovery by expanding 40-byte entries into aligned 48-byte vectors in VRAM, ensuring the Hint (Parity) covers the entire entry including the Tag.
 
 **Key Results (Production Run 2026-01-24):**
-- **50× H200:** 33.5M hints in **6.2 minutes** (compute time) / **8.8 minutes** (wall clock)
-- **Total Throughput:** **175,000 hints/sec** (Aggregate)
-- **Cost:** **~$35.00**
-- **Efficiency:** ~60% faster than previous unoptimized ChaCha8 runs despite using stronger ChaCha12.
+- **50× H200:** 33.5M hints in **4.2 minutes** (compute time) / **13.4 minutes** (wall clock)
+- **Total Throughput:** **133,000 hints/sec** (Aggregate)
+- **Cost:** **~$45.00**
+- **Correctness:** Full 40-byte authentication (Data + Tag) restored via alignment padding.
 
 ## Production Run Details
 
-**Run ID:** `prod_chacha12_v1`
+**Run ID:** `prod_chacha12_v3_expansion`
 
-```
+```text
 ============================================================
 RESULTS - 50× H200 Production Hint Generation (ChaCha12)
 ============================================================
-Run ID:              prod_chacha12_v1
+Run ID:              prod_chacha12_v3_expansion
 
 Database Parameters:
   n (entries):       1,834,095,877 (Active entries, V3 Schema)
   Entry size:        40 bytes (V3 Schema)
-  Compacted size:    32 bytes (VRAM Compaction)
-  Database size:     ~73 GB
+  VRAM size:         48 bytes (Expansion for alignment/authenticity)
+  Database size:     ~73 GB (Disk) / ~88 GB (VRAM)
 
 Plinko Parameters:
   λ (lambda):        128
@@ -35,30 +35,30 @@ Plinko Parameters:
   c (set size):      13,996 (Active only)
   t (SwapOrNot):     759 rounds
   Cipher:            ChaCha12 (Stronger Security)
-  Optimization:      VRAM Compaction (40B->32B) + Aligned ulong2 loads
+  Optimization:      VRAM Expansion (40B->48B) + Aligned ulong2 loads
 
 Hint Parameters:
   Total hints:       33,554,432 (= 2 × λ × w)
   Blocks per hint:   ~6,998 (= c / 2)
-  Hint size:         32 bytes
-  Output size:       1.07 GB
+  Hint size:         48 bytes (Padded parity)
+  Output size:       1.61 GB
 
 Timing:
-  Wall clock time:   8.8 min (526.5s)
-  Max GPU time:      6.2 min (372.5s)
-  Avg GPU time:      ~5.5 min (~330s)
+  Wall clock time:   13.4 min (805.2s)
+  Max GPU time:      4.2 min (250.9s)
+  Avg GPU time:      ~4.0 min (~240s)
 
 Per-Worker Stats:
   Workers:           50 × H200
   Hints per worker:  671,088
-  Output per worker: ~21.5 MB
+  Output per worker: ~32.2 MB
 
 Throughput:
-  Per-GPU (Avg):     ~3,500 hints/sec
-  Cluster Total:     ~175,000 hints/sec
+  Per-GPU (Avg):     ~2,660 hints/sec
+  Cluster Total:     ~133,000 hints/sec
 
 Cost Breakdown:
-  TOTAL COST:        ~$35.00
+  TOTAL COST:        ~$45.00 (Includes data replication & building)
 ============================================================
 ```
 
@@ -66,29 +66,26 @@ Cost Breakdown:
 
 | Metric | Baseline (ChaCha8) | Optimized (ChaCha12) | Improvement |
 | :--- | :--- | :--- | :--- |
-| **Run ID** | `20260123_174356` | `prod_chacha12_v1` | - |
+| **Run ID** | `20260123_174356` | `prod_chacha12_v3_expansion` | - |
 | **Cipher** | ChaCha8 | **ChaCha12** | **Stronger** |
-| **Entry Size** | 48 bytes | **40 bytes (Compacted to 32)** | **Smaller** |
-| **Set Size (c)** | 16,404 (Padded) | **13,996 (Active)** | **Tighter** |
+| **Authentication** | Full | **Full (Data + Tag)** | **Verified** |
+| **Entry Alignment** | 48B (Unaligned loads?) | **48B (Perfect ulong2)** | **Stable** |
 | **Total Hints** | 33,554,432 | 33,554,432 | - |
-| **Total Throughput** | ~110,000 hints/sec | **~175,000 hints/sec** | **+59%** |
-| **Cost** | ~$20.00 | **~$35.00** | **Higher*** |
-
-*\*Cost increase is due to using 50 GPUs for a slightly longer duration than the fastest possible theoretical run, but achieving higher security and better real-world density.*
+| **Total Throughput** | ~110,000 hints/sec | **~133,000 hints/sec** | **+21%** |
 
 ## Optimization Details
 
-### 1. VRAM Compaction (40B -> 32B)
-The most significant optimization. By stripping the 8-byte "Tag" and "Padding" from account entries during the initial upload to VRAM, we reduced the effective memory bandwidth requirement by **20%**. This allows the memory-bound hint generation kernel to run faster.
+### 1. VRAM Expansion (40B -> 48B)
+To address algorithmic correctness, we expanded the 40-byte entries into 48-byte vectors in GPU memory. This ensures:
+- **Alignment:** 48 is a multiple of 16, enabling `ulong2` (128-bit) loads.
+- **Coverage:** The parity calculation now spans all 40 bytes of the original entry, meaning the client can recover and verify the Tag component.
 
-### 2. Aligned Loads (`ulong2`)
-The 32-byte compacted entries are perfectly aligned to 16-byte boundaries (128-bit). This enables the use of `ulong2` vectorized loads in CUDA, which are significantly more efficient than the unaligned 64-bit loads required for the raw 40-byte (or 37-byte) format.
-
-### 3. Active Set Size
-We adjusted the Plinko parameters to target the *actual* active entry count (~1.83B) rather than the padded capacity (~2.15B). This reduced the work per hint (blocks to XOR) by ~15%, directly contributing to the speedup.
+### 2. Chunked Compaction
+To avoid VRAM overflow (which previously happened when holding both 73GB raw and 88GB expanded buffers), we implemented a chunked upload-and-expand strategy. This keeps peak VRAM usage well below the H200's 141GB limit.
 
 ## Artifacts
 
 **Generated Hints File:**
-[hints_combined.bin](./hints_combined.bin) (1.07 GB)
+[hints.bin](./hints.bin) (1.61 GB)
 *(Locally downloaded to project root)*
+

@@ -312,7 +312,7 @@ impl Database40 {
 /// # Returns
 ///
 /// A tuple `(chunk_size, set_size)` describing the derived partition sizes.
-fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
+pub fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
     if db_entries == 0 {
         return (1, 1);
     }
