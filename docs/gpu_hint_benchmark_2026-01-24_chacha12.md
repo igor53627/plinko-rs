@@ -15,13 +15,13 @@ Benchmark of the production-ready GPU-accelerated hint generation for Plinko PIR
 
 ## Production Run Details
 
-**Run ID:** `prod_chacha12_v3_expansion`
+**Run ID:** `prod_chacha12_v4_40B`
 
 ```text
 ============================================================
 RESULTS - 50× H200 Production Hint Generation (ChaCha12)
 ============================================================
-Run ID:              prod_chacha12_v3_expansion
+Run ID:              prod_chacha12_v4_40B
 
 Database Parameters:
   n (entries):       1,834,095,877 (Active entries, V3 Schema)
@@ -40,25 +40,25 @@ Plinko Parameters:
 Hint Parameters:
   Total hints:       33,554,432 (= 2 × λ × w)
   Blocks per hint:   ~6,998 (= c / 2)
-  Hint size:         48 bytes (Padded parity)
-  Output size:       1.61 GB
+  Hint size:         40 bytes (Disk - Padding stripped) / 48 bytes (VRAM)
+  Output size:       1.34 GB
 
 Timing:
-  Wall clock time:   13.4 min (805.2s)
-  Max GPU time:      4.2 min (250.9s)
+  Wall clock time:   12.7 min (759.1s)
+  Max GPU time:      4.2 min (252.8s)
   Avg GPU time:      ~4.0 min (~240s)
 
 Per-Worker Stats:
   Workers:           50 × H200
   Hints per worker:  671,088
-  Output per worker: ~32.2 MB
+  Output per worker: ~26.8 MB
 
 Throughput:
   Per-GPU (Avg):     ~2,660 hints/sec
   Cluster Total:     ~133,000 hints/sec
 
 Cost Breakdown:
-  TOTAL COST:        ~$45.00 (Includes data replication & building)
+  TOTAL COST:        ~$45.00
 ============================================================
 ```
 
@@ -66,7 +66,7 @@ Cost Breakdown:
 
 | Metric | Baseline (ChaCha8) | Optimized (ChaCha12) | Improvement |
 | :--- | :--- | :--- | :--- |
-| **Run ID** | `20260123_174356` | `prod_chacha12_v3_expansion` | - |
+| **Run ID** | `20260123_174356` | `prod_chacha12_v4_40B` | - |
 | **Cipher** | ChaCha8 | **ChaCha12** | **Stronger** |
 | **Authentication** | Full | **Full (Data + Tag)** | **Verified** |
 | **Entry Alignment** | 48B (Unaligned loads?) | **48B (Perfect ulong2)** | **Stable** |
@@ -80,12 +80,15 @@ To address algorithmic correctness, we expanded the 40-byte entries into 48-byte
 - **Alignment:** 48 is a multiple of 16, enabling `ulong2` (128-bit) loads.
 - **Coverage:** The parity calculation now spans all 40 bytes of the original entry, meaning the client can recover and verify the Tag component.
 
-### 2. Chunked Compaction
+### 2. Output Truncation (48B -> 40B)
+While we process 48-byte chunks in VRAM for performance, the final 8 bytes are just padding. We strip these before writing to disk, resulting in a **1.34 GB** hints file that matches the 40-byte schema size perfectly.
+
+### 3. Chunked Compaction
 To avoid VRAM overflow (which previously happened when holding both 73GB raw and 88GB expanded buffers), we implemented a chunked upload-and-expand strategy. This keeps peak VRAM usage well below the H200's 141GB limit.
 
 ## Artifacts
 
 **Generated Hints File:**
-[hints.bin](./hints.bin) (1.61 GB)
+[hints.bin](./hints.bin) (1.34 GB)
 *(Locally downloaded to project root)*
 
