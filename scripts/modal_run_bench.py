@@ -540,7 +540,7 @@ def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_s
     # Verify output file
     if os.path.exists(output_path):
         file_size = os.path.getsize(output_path)
-        expected_size = hint_count * 32
+        expected_size = hint_count * 48 # Updated to 48 bytes (padded/expanded)
         print(f"\nOutput file: {output_path}")
         print(f"File size: {file_size:,} bytes ({file_size / 1e6:.2f} MB)")
         print(f"Expected: {expected_size:,} bytes")
@@ -618,7 +618,7 @@ def combine_hints(run_id: str, num_workers: int):
                 print(f"  Processed {i + 1}/{num_workers} files...")
 
     # Verify
-    total_hints = total_bytes // 32
+    total_hints = total_bytes // 48
     print()
     print(f"Combined file: {combined_path}")
     print(f"Total size: {total_bytes:,} bytes ({total_bytes / 1e9:.2f} GB)")
@@ -711,11 +711,17 @@ def main(
             for i, f in enumerate(futures):
                 result = f.get()
                 results.append(result)
-                print(f"  Worker {result['worker_id']}: {result['hints_generated']:,} hints in {result['generation_time_ms']/1000:.1f}s")
+                if "error" in result:
+                    print(f"  Worker {result['worker_id']} FAILED: {result['error']}")
+                else:
+                    print(f"  Worker {result['worker_id']}: {result['hints_generated']:,} hints in {result['generation_time_ms']/1000:.1f}s")
 
             total_time = time.time() - start_time
-            total_hints_generated = sum(r['hints_generated'] for r in results)
-            max_gen_time = max(r['generation_time_ms'] for r in results)
+            total_hints_generated = sum(r.get('hints_generated', 0) for r in results)
+            max_gen_time = max((r.get('generation_time_ms', 0) for r in results), default=0)
+
+            if total_hints_generated < full_hints:
+                print(f"WARNING: Only generated {total_hints_generated:,} hints (expected {full_hints:,})")
 
             print()
             print(f"All workers completed in {total_time:.1f}s (wall clock)")
@@ -769,7 +775,7 @@ def main(
             print(f"Data: {data_pct}% of mainnet SPLIT across {multi_gpu} workers")
             print(f"Data per worker: {data_pct/multi_gpu:.2f}% (~{data_gb/multi_gpu:.2f} GB)")
         print(f"Hints: {hint_pct}% of full = {total_hints:,} total, {hints_per_gpu:,} per GPU")
-        print(f"Params: λ=128, w=131072, 759 rounds, ChaCha8")
+        print(f"Params: λ=128, w=131072, 759 rounds, ChaCha12")
         print()
 
         # Launch all workers in parallel
@@ -832,7 +838,7 @@ def main(
             print(f"| w (chunk size)       | 131,072                         |")
             print(f"| c (set size/worker)  | {worker_set_size} (prod: 16404) |")
             print(f"| SwapOrNot rounds     | 759                             |")
-            print(f"| Cipher               | ChaCha8                         |")
+            print(f"| Cipher               | ChaCha12                         |")
             print()
             print(f"| Metric               | Value                           |")
             print(f"|----------------------|---------------------------------|")
