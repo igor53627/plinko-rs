@@ -55,12 +55,12 @@ pub struct IprfBlockKey {
 #[cfg(feature = "cuda")]
 unsafe impl DeviceRepr for IprfBlockKey {}
 
-/// Hint output (32-byte parity)
+/// Hint output (48-byte parity to cover full 40B entry + 8B padding for alignment)
 #[cfg(feature = "cuda")]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 pub struct HintOutput {
-    pub parity: [u8; 32],
+    pub parity: [u8; 48],
 }
 
 #[cfg(feature = "cuda")]
@@ -158,36 +158,54 @@ impl GpuHintGenerator {
             "hint_subsets size mismatch"
         );
 
-        // Copy data to GPU and compact immediately
-        let d_packed = {
-            // Scope for raw entries to ensure they are freed ASAP
-            let d_entries = self.device.htod_sync_copy(entries)?;
+        // Compaction: Expand 40-byte entries to 48-byte packed format (16-byte aligned)
+        // We do this in chunks to avoid OOM (cannot hold both 73GB raw + 88GB packed at once)
+        let packed_size = params.num_entries as usize * 48;
+        let mut d_packed: CudaSlice<u8> = unsafe { self.device.alloc(packed_size)? };
 
-            // Compaction: Compress 40-byte entries to 32-byte packed format
-            let packed_size = params.num_entries as usize * 32;
-            let mut d_packed: CudaSlice<u8> = unsafe { self.device.alloc(packed_size)? };
+        let chunk_count = 50_000_000; // 50M entries = 2GB raw buffer
+        let raw_chunk_size = chunk_count * 40;
+        let mut d_raw_chunk: CudaSlice<u8> = unsafe { self.device.alloc(raw_chunk_size)? };
 
-            let threads_per_block_compact = 256;
-            let num_blocks_compact = (params.num_entries as u32 + threads_per_block_compact - 1)
-                / threads_per_block_compact;
-            let cfg_compact = LaunchConfig {
-                grid_dim: (num_blocks_compact, 1, 1),
-                block_dim: (threads_per_block_compact, 1, 1),
+        let total_entries = params.num_entries as usize;
+        let mut offset = 0;
+
+        while offset < total_entries {
+            let current_count = std::cmp::min(chunk_count, total_entries - offset);
+            let current_raw_bytes = current_count * 40;
+            let current_packed_bytes = current_count * 48;
+
+            // Copy raw chunk to GPU
+            let raw_slice = &entries[offset * 40..offset * 40 + current_raw_bytes];
+            let mut d_raw_chunk_slice = d_raw_chunk.slice_mut(0..current_raw_bytes);
+            self.device
+                .htod_sync_copy_into(raw_slice, &mut d_raw_chunk_slice)?;
+
+            // Launch compaction for this chunk
+            let threads_per_block = 256;
+            let num_blocks = (current_count as u32 + threads_per_block - 1) / threads_per_block;
+            let cfg = LaunchConfig {
+                grid_dim: (num_blocks, 1, 1),
+                block_dim: (threads_per_block, 1, 1),
                 shared_mem_bytes: 0,
             };
 
+            // Destination slice in packed buffer
+            let packed_offset = offset * 48;
+            let mut packed_dst = d_packed.slice_mut(packed_offset..packed_offset + current_packed_bytes);
+
             unsafe {
                 self.kernel_compact.clone().launch(
-                    cfg_compact,
-                    (&d_entries, &mut d_packed, params.num_entries),
+                    cfg,
+                    (&mut d_raw_chunk_slice, &mut packed_dst, current_count as u64),
                 )?;
             }
-            // Synchronize to ensure compaction is done before dropping source
-            // self.device.synchronize()?; // htod and launch are already sync/ordered on stream 0
-            
-            d_packed
-            // d_entries is dropped here
-        };
+
+            offset += current_count;
+        }
+        
+        // Free raw chunk buffer explicitly (dropped at end of scope usually, but good to be clear)
+        drop(d_raw_chunk);
 
         // Optimization: Derive PRP keys on CPU to save GPU time
         // Note: For benchmarking, this is done once outside the hint generation loop
@@ -356,7 +374,7 @@ impl CpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         total_hints: u32,
-    ) -> Vec<[u8; 32]> {
+    ) -> Vec<[u8; 48]> {
         use rayon::prelude::*;
 
         let subset_bytes_per_hint = (set_size as usize + 7) / 8;
@@ -405,7 +423,7 @@ impl CpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         total_hints: u32,
-    ) -> Vec<[u8; 32]> {
+    ) -> Vec<[u8; 48]> {
         let subset_bytes_per_hint = (set_size as usize + 7) / 8;
 
         (0..total_hints as usize)
@@ -435,8 +453,8 @@ impl CpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         subset_bytes_per_hint: usize,
-    ) -> [u8; 32] {
-        let mut parity = [0u64; 4];
+    ) -> [u8; 48] {
+        let mut parity = [0u64; 6]; // 6x u64 = 48 bytes
 
         for block_idx in 0..set_size as usize {
             // Check subset membership
@@ -446,7 +464,7 @@ impl CpuHintGenerator {
                 continue;
             }
 
-            // Full iPRF inverse using ChaCha8-based SwapOrNot
+            // Full iPRF inverse using ChaCha12-based SwapOrNot
             let key = &block_keys[block_idx];
             let preimage = sn_inverse(key, hint_idx as u64, chunk_size);
 
@@ -454,21 +472,22 @@ impl CpuHintGenerator {
                 let entry_idx = block_idx as u64 * chunk_size + preimage;
                 if entry_idx < num_entries {
                     let entry_start = entry_idx as usize * ENTRY_SIZE;
-                    let entry_bytes = &entries[entry_start..entry_start + 32];
+                    let entry_bytes = &entries[entry_start..entry_start + 40]; // Read 40 bytes
 
-                    // XOR as u64s
-                    for i in 0..4 {
+                    // XOR first 5 u64s (40 bytes)
+                    for i in 0..5 {
                         let val =
                             u64::from_le_bytes(entry_bytes[i * 8..(i + 1) * 8].try_into().unwrap());
                         parity[i] ^= val;
                     }
+                    // 6th u64 is padding (0), so XOR 0 does nothing
                 }
             }
         }
 
         // Convert parity to bytes
-        let mut result = [0u8; 32];
-        for i in 0..4 {
+        let mut result = [0u8; 48];
+        for i in 0..6 {
             result[i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
         }
         result
@@ -499,12 +518,12 @@ impl SimpleCpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         total_hints: u32,
-    ) -> Vec<[u8; 32]> {
+    ) -> Vec<[u8; 48]> {
         let subset_bytes_per_hint = (set_size as usize + 7) / 8;
-        let mut hints = vec![[0u8; 32]; total_hints as usize];
+        let mut hints = vec![[0u8; 48]; total_hints as usize];
 
         for hint_idx in 0..total_hints as usize {
-            let mut parity = [0u64; 4];
+            let mut parity = [0u64; 6];
 
             for block_idx in 0..set_size as usize {
                 let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
@@ -517,9 +536,9 @@ impl SimpleCpuHintGenerator {
                 let entry_idx = block_idx * chunk_size as usize;
                 if entry_idx < num_entries as usize {
                     let entry_start = entry_idx * ENTRY_SIZE;
-                    let entry_bytes = &entries[entry_start..entry_start + 32];
+                    let entry_bytes = &entries[entry_start..entry_start + 40];
 
-                    for i in 0..4 {
+                    for i in 0..5 {
                         let val =
                             u64::from_le_bytes(entry_bytes[i * 8..(i + 1) * 8].try_into().unwrap());
                         parity[i] ^= val;
@@ -527,7 +546,7 @@ impl SimpleCpuHintGenerator {
                 }
             }
 
-            for i in 0..4 {
+            for i in 0..6 {
                 hints[hint_idx][i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
             }
         }
@@ -613,7 +632,7 @@ mod tests {
         assert_eq!(hints.len(), total_hints as usize);
         // With all-zero entries, parities should be zero
         for hint in &hints {
-            assert_eq!(*hint, [0u8; 32]);
+            assert_eq!(*hint, [0u8; 48]);
         }
     }
 

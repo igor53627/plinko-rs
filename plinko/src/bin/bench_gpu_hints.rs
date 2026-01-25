@@ -311,7 +311,7 @@ fn main() -> Result<()> {
             }
             file.flush()?;
 
-            let file_size = hints.len() * 32;
+            let file_size = hints.len() * 48;
             println!(
                 "  Saved {} hints ({} bytes, {:.2} MB)",
                 hints.len(),
