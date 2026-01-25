@@ -305,13 +305,13 @@ fn main() -> Result<()> {
             println!("Saving hints to {:?}...", output_path);
             let mut file = File::create(output_path)?;
 
-            // Write hints as raw bytes (32 bytes per hint)
+            // Write hints as raw bytes (40 bytes per hint - strip 8 bytes of padding)
             for hint in &hints {
-                file.write_all(&hint.parity)?;
+                file.write_all(&hint.parity[0..40])?;
             }
             file.flush()?;
 
-            let file_size = hints.len() * 48;
+            let file_size = hints.len() * 40;
             println!(
                 "  Saved {} hints ({} bytes, {:.2} MB)",
                 hints.len(),

@@ -540,7 +540,7 @@ def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_s
     # Verify output file
     if os.path.exists(output_path):
         file_size = os.path.getsize(output_path)
-        expected_size = hint_count * 48 # Updated to 48 bytes (padded/expanded)
+        expected_size = hint_count * 40 # 40 bytes per hint (padding stripped)
         print(f"\nOutput file: {output_path}")
         print(f"File size: {file_size:,} bytes ({file_size / 1e6:.2f} MB)")
         print(f"Expected: {expected_size:,} bytes")
@@ -618,7 +618,7 @@ def combine_hints(run_id: str, num_workers: int):
                 print(f"  Processed {i + 1}/{num_workers} files...")
 
     # Verify
-    total_hints = total_bytes // 48
+    total_hints = total_bytes // 40
     print()
     print(f"Combined file: {combined_path}")
     print(f"Total size: {total_bytes:,} bytes ({total_bytes / 1e9:.2f} GB)")
