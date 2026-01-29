@@ -231,7 +231,7 @@ The `plinko/formal/` directory contains Rocq (Coq) specifications and proofs.
 **Trust Base** (intentional axioms):
 - Crypto: AES-128 encryption, key derivation properties
 - Math: `binomial_theorem_Z` (standard combinatorial identity)
-- FFI: Rust↔Rocq refinement axioms (verified via proptest)
+- FFI: Rust-to-Rocq refinement axioms (verified via proptest)
 
 See [kani_proofs.rs](plinko/src/kani_proofs.rs) for Rust verification harnesses.
 
@@ -264,6 +264,11 @@ cd plinko/formal && make
   - [plinko_paper_part3_scheme.json](docs/plinko_paper_part3_scheme.json) - Plinko scheme details
   - [plinko_paper_part6_algorithms.json](docs/plinko_paper_part6_algorithms.json) - Pseudocode
 - **Coq Formalization**: [docs/Plinko.v](docs/Plinko.v) - Mechanized proofs and reference implementation
+- **Ops Docs**:
+  - [docs/FEATURE_FLAGS.md](docs/FEATURE_FLAGS.md)
+  - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+  - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+  - [docs/API_ENDPOINTS.md](docs/API_ENDPOINTS.md)
 
 ## References
 
