@@ -4,6 +4,7 @@ deltas/
 **/*.rs.bk
 *.swp
 .DS_Store
+.scannerwork/
 
 # Coq/Rocq build artifacts
 plinko/formal/**/*.vo
