@@ -1,6 +1,6 @@
 //! Synthetic dataset generator for testing GPU hint generation.
 //!
-//! Generates a configurable-size database with random entries in the 48-byte schema,
+//! Generates a configurable-size database with random entries in the 40-byte schema (v3),
 //! suitable for benchmarking on Modal H100/H200 GPUs.
 //!
 //! Default: 0.1% of mainnet scale (~330K accounts, ~1.4M storage slots)
@@ -8,7 +8,7 @@
 use clap::Parser;
 use eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use plinko::schema48::{AccountEntry48, CodeId, StorageEntry48, ENTRY_SIZE};
+use plinko::schema40::{AccountEntry40, CodeId, StorageEntry40, ENTRY_SIZE};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::{
@@ -126,7 +126,7 @@ fn main() -> Result<()> {
             CodeId::new(0) // EOA
         };
 
-        let entry = AccountEntry48::new(&balance_256, nonce, code_id, &address);
+        let entry = AccountEntry40::new(&balance_256, nonce, code_id, &address);
         writer.write_all(&entry.to_bytes())?;
 
         if i % 10000 == 0 {
@@ -157,7 +157,7 @@ fn main() -> Result<()> {
             rng.fill(&mut value);
         }
 
-        let entry = StorageEntry48::new(&value, &address, &slot_key);
+        let entry = StorageEntry40::new(&value, &address, &slot_key);
         writer.write_all(&entry.to_bytes())?;
 
         if i % 10000 == 0 {
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
     let meta_path = args.output_dir.join("metadata.json");
     let json = format!(
         r#"{{
-  "schema_version": 2,
+  "schema_version": 3,
   "entry_size_bytes": {},
   "synthetic": true,
   "seed": {},

@@ -25,7 +25,7 @@ use cudarc::driver::{CudaDevice, CudaFunction, CudaSlice, DeviceRepr, LaunchAsyn
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 
-use crate::schema48::ENTRY_SIZE;
+use crate::schema40::ENTRY_SIZE;
 
 /// Plinko parameters for GPU kernel
 #[cfg(feature = "cuda")]
@@ -55,12 +55,12 @@ pub struct IprfBlockKey {
 #[cfg(feature = "cuda")]
 unsafe impl DeviceRepr for IprfBlockKey {}
 
-/// Hint output (32-byte parity)
+/// Hint output (48-byte parity to cover full 40B entry + 8B padding for alignment)
 #[cfg(feature = "cuda")]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 pub struct HintOutput {
-    pub parity: [u8; 32],
+    pub parity: [u8; 48],
 }
 
 #[cfg(feature = "cuda")]
@@ -73,26 +73,17 @@ pub struct GpuHintGenerator {
     kernel: CudaFunction,
     kernel_tiled: CudaFunction,
     kernel_opt: CudaFunction,
+    kernel_compact: CudaFunction,
 }
 
 #[cfg(feature = "cuda")]
 impl GpuHintGenerator {
     /// Create a new GPU hint generator on the specified device.
-    ///
-    /// # Arguments
-    ///
-    /// * `device_ord` - CUDA device ordinal (0 for first GPU)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if CUDA initialization fails or the kernel cannot be loaded.
     pub fn new(device_ord: usize) -> Result<Self, cudarc::driver::DriverError> {
         let device = CudaDevice::new(device_ord)?;
 
-        // Load PTX compiled by build.rs
-        let ptx_path = concat!(env!("OUT_DIR"), "/hint_kernel.ptx");
-        let ptx = std::fs::read_to_string(ptx_path)
-            .expect("Failed to read hint_kernel.ptx - was it compiled?");
+        // Embed PTX at compile time
+        let ptx = include_str!(concat!(env!("OUT_DIR"), "/hint_kernel.ptx"));
 
         device.load_ptx(
             ptx.into(),
@@ -101,6 +92,7 @@ impl GpuHintGenerator {
                 "hint_gen_kernel",
                 "hint_gen_kernel_tiled",
                 "hint_gen_kernel_opt",
+                "compact_entries_kernel",
             ],
         )?;
 
@@ -113,12 +105,16 @@ impl GpuHintGenerator {
         let kernel_opt = device
             .get_func("hint_gen", "hint_gen_kernel_opt")
             .expect("Failed to get hint_gen_kernel_opt from PTX module");
+        let kernel_compact = device
+            .get_func("hint_gen", "compact_entries_kernel")
+            .expect("Failed to get compact_entries_kernel from PTX module");
 
         Ok(Self {
             device,
             kernel,
             kernel_tiled,
             kernel_opt,
+            kernel_compact,
         })
     }
 
@@ -126,7 +122,7 @@ impl GpuHintGenerator {
     ///
     /// # Arguments
     ///
-    /// * `entries` - Database entries (N × 48 bytes)
+    /// * `entries` - Database entries (N × 40 bytes)
     /// * `block_keys` - iPRF key for each block (c keys)
     /// * `hint_subsets` - Precomputed block subsets as bitsets
     /// * `params` - Plinko parameters
@@ -162,8 +158,54 @@ impl GpuHintGenerator {
             "hint_subsets size mismatch"
         );
 
-        // Copy data to GPU
-        let d_entries = self.device.htod_sync_copy(entries)?;
+        // Compaction: Expand 40-byte entries to 48-byte packed format (16-byte aligned)
+        // We do this in chunks to avoid OOM (cannot hold both 73GB raw + 88GB packed at once)
+        let packed_size = params.num_entries as usize * 48;
+        let mut d_packed: CudaSlice<u8> = unsafe { self.device.alloc(packed_size)? };
+
+        let chunk_count = 50_000_000; // 50M entries = 2GB raw buffer
+        let raw_chunk_size = chunk_count * 40;
+        let mut d_raw_chunk: CudaSlice<u8> = unsafe { self.device.alloc(raw_chunk_size)? };
+
+        let total_entries = params.num_entries as usize;
+        let mut offset = 0;
+
+        while offset < total_entries {
+            let current_count = std::cmp::min(chunk_count, total_entries - offset);
+            let current_raw_bytes = current_count * 40;
+            let current_packed_bytes = current_count * 48;
+
+            // Copy raw chunk to GPU
+            let raw_slice = &entries[offset * 40..offset * 40 + current_raw_bytes];
+            let mut d_raw_chunk_slice = d_raw_chunk.slice_mut(0..current_raw_bytes);
+            self.device
+                .htod_sync_copy_into(raw_slice, &mut d_raw_chunk_slice)?;
+
+            // Launch compaction for this chunk
+            let threads_per_block = 256;
+            let num_blocks = (current_count as u32 + threads_per_block - 1) / threads_per_block;
+            let cfg = LaunchConfig {
+                grid_dim: (num_blocks, 1, 1),
+                block_dim: (threads_per_block, 1, 1),
+                shared_mem_bytes: 0,
+            };
+
+            // Destination slice in packed buffer
+            let packed_offset = offset * 48;
+            let mut packed_dst = d_packed.slice_mut(packed_offset..packed_offset + current_packed_bytes);
+
+            unsafe {
+                self.kernel_compact.clone().launch(
+                    cfg,
+                    (&mut d_raw_chunk_slice, &mut packed_dst, current_count as u64),
+                )?;
+            }
+
+            offset += current_count;
+        }
+        
+        // Free raw chunk buffer explicitly (dropped at end of scope usually, but good to be clear)
+        drop(d_raw_chunk);
 
         // Optimization: Derive PRP keys on CPU to save GPU time
         // Note: For benchmarking, this is done once outside the hint generation loop
@@ -221,7 +263,7 @@ impl GpuHintGenerator {
                 (
                     params,
                     &d_block_keys,
-                    &d_entries,
+                    &d_packed,
                     &d_hint_subsets,
                     &mut d_output,
                 ),
@@ -244,7 +286,7 @@ impl GpuHintGenerator {
 // ChaCha8 implementation for CPU
 // ============================================================================
 
-const CHACHA_ROUNDS: usize = 8;
+const CHACHA_ROUNDS: usize = 12;
 const SN_ROUNDS: usize = 759;
 
 /// ChaCha quarter round operating on four values
@@ -261,7 +303,7 @@ fn quarter_round(a: u32, b: u32, c: u32, d: u32) -> (u32, u32, u32, u32) {
     (a, b, c, d)
 }
 
-fn chacha8_block(key: &[u32; 8], counter: u32, nonce: u32) -> [u32; 16] {
+fn chacha_block(key: &[u32; 8], counter: u32, nonce: u32) -> [u32; 16] {
     let mut s: [u32; 16] = [
         0x61707865, 0x3320646e, 0x79622d32, 0x6b206574, key[0], key[1], key[2], key[3], key[4],
         key[5], key[6], key[7], counter, nonce, 0, 0,
@@ -292,14 +334,14 @@ fn sn_inverse(key: &[u32; 8], y: u64, domain: u64) -> u64 {
     let mut val = y;
     for r in (0..SN_ROUNDS).rev() {
         // Derive round key
-        let output = chacha8_block(key, r as u32, 0);
+        let output = chacha_block(key, r as u32, 0);
         let k_i = (((output[1] as u64) << 32) | (output[0] as u64)) % domain;
 
         let partner = (k_i + domain - (val % domain)) % domain;
         let canonical = val.max(partner);
 
         // PRF bit
-        let output2 = chacha8_block(key, r as u32 | 0x80000000, canonical as u32);
+        let output2 = chacha_block(key, r as u32 | 0x80000000, canonical as u32);
         if output2[0] & 1 == 1 {
             val = partner;
         }
@@ -332,7 +374,7 @@ impl CpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         total_hints: u32,
-    ) -> Vec<[u8; 32]> {
+    ) -> Vec<[u8; 48]> {
         use rayon::prelude::*;
 
         let subset_bytes_per_hint = (set_size as usize + 7) / 8;
@@ -381,7 +423,7 @@ impl CpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         total_hints: u32,
-    ) -> Vec<[u8; 32]> {
+    ) -> Vec<[u8; 48]> {
         let subset_bytes_per_hint = (set_size as usize + 7) / 8;
 
         (0..total_hints as usize)
@@ -411,8 +453,8 @@ impl CpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         subset_bytes_per_hint: usize,
-    ) -> [u8; 32] {
-        let mut parity = [0u64; 4];
+    ) -> [u8; 48] {
+        let mut parity = [0u64; 6]; // 6x u64 = 48 bytes
 
         for block_idx in 0..set_size as usize {
             // Check subset membership
@@ -422,7 +464,7 @@ impl CpuHintGenerator {
                 continue;
             }
 
-            // Full iPRF inverse using ChaCha8-based SwapOrNot
+            // Full iPRF inverse using ChaCha12-based SwapOrNot
             let key = &block_keys[block_idx];
             let preimage = sn_inverse(key, hint_idx as u64, chunk_size);
 
@@ -430,21 +472,22 @@ impl CpuHintGenerator {
                 let entry_idx = block_idx as u64 * chunk_size + preimage;
                 if entry_idx < num_entries {
                     let entry_start = entry_idx as usize * ENTRY_SIZE;
-                    let entry_bytes = &entries[entry_start..entry_start + 32];
+                    let entry_bytes = &entries[entry_start..entry_start + 40]; // Read 40 bytes
 
-                    // XOR as u64s
-                    for i in 0..4 {
+                    // XOR first 5 u64s (40 bytes)
+                    for i in 0..5 {
                         let val =
                             u64::from_le_bytes(entry_bytes[i * 8..(i + 1) * 8].try_into().unwrap());
                         parity[i] ^= val;
                     }
+                    // 6th u64 is padding (0), so XOR 0 does nothing
                 }
             }
         }
 
         // Convert parity to bytes
-        let mut result = [0u8; 32];
-        for i in 0..4 {
+        let mut result = [0u8; 48];
+        for i in 0..6 {
             result[i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
         }
         result
@@ -475,12 +518,12 @@ impl SimpleCpuHintGenerator {
         chunk_size: u64,
         set_size: u64,
         total_hints: u32,
-    ) -> Vec<[u8; 32]> {
+    ) -> Vec<[u8; 48]> {
         let subset_bytes_per_hint = (set_size as usize + 7) / 8;
-        let mut hints = vec![[0u8; 32]; total_hints as usize];
+        let mut hints = vec![[0u8; 48]; total_hints as usize];
 
         for hint_idx in 0..total_hints as usize {
-            let mut parity = [0u64; 4];
+            let mut parity = [0u64; 6];
 
             for block_idx in 0..set_size as usize {
                 let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
@@ -493,9 +536,9 @@ impl SimpleCpuHintGenerator {
                 let entry_idx = block_idx * chunk_size as usize;
                 if entry_idx < num_entries as usize {
                     let entry_start = entry_idx * ENTRY_SIZE;
-                    let entry_bytes = &entries[entry_start..entry_start + 32];
+                    let entry_bytes = &entries[entry_start..entry_start + 40];
 
-                    for i in 0..4 {
+                    for i in 0..5 {
                         let val =
                             u64::from_le_bytes(entry_bytes[i * 8..(i + 1) * 8].try_into().unwrap());
                         parity[i] ^= val;
@@ -503,7 +546,7 @@ impl SimpleCpuHintGenerator {
                 }
             }
 
-            for i in 0..4 {
+            for i in 0..6 {
                 hints[hint_idx][i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
             }
         }
@@ -520,7 +563,7 @@ mod tests {
     fn test_chacha8_block() {
         // Test with zero key and counter to verify basic operation
         let key = [0u32; 8];
-        let output = chacha8_block(&key, 0, 0);
+        let output = chacha_block(&key, 0, 0);
 
         // ChaCha8 with zero inputs produces deterministic non-zero output
         // due to the constants in the initial state
@@ -589,7 +632,7 @@ mod tests {
         assert_eq!(hints.len(), total_hints as usize);
         // With all-zero entries, parities should be zero
         for hint in &hints {
-            assert_eq!(*hint, [0u8; 32]);
+            assert_eq!(*hint, [0u8; 48]);
         }
     }
 

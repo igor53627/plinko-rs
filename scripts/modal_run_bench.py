@@ -14,6 +14,7 @@ app = modal.App("plinko-bench")
 volume = modal.Volume.from_name("plinko-data", create_if_missing=True)
 mainnet_volume = modal.Volume.from_name("morphogenesis-data", create_if_missing=True)
 hints_volume = modal.Volume.from_name("plinko-hints", create_if_missing=True)
+bin_volume = modal.Volume.from_name("plinko-bin-vol", create_if_missing=True)
 
 # Minimal image - just Rust + CUDA
 image = (
@@ -29,40 +30,77 @@ image = (
     )
 )
 
+@app.function(image=image, gpu="H200", volumes={"/bin_vol": bin_volume}, timeout=600)
+def build_binary():
+    """Build the benchmark binary once and cache it."""
+    import subprocess
+    import os
+    import shutil
+
+    os.chdir("/app")
+    print("Building binary...")
+    
+    # Set up environment
+    env = os.environ.copy()
+    env["PATH"] = f"/root/.cargo/bin:/usr/local/cuda/bin:{env.get('PATH', '')}"
+    env["LD_LIBRARY_PATH"] = f"/usr/local/cuda/lib64:{env.get('LD_LIBRARY_PATH', '')}"
+    env["CUDA_ROOT"] = "/usr/local/cuda"
+    env["CUDA_PATH"] = "/usr/local/cuda"
+    env["CUDA_ARCH"] = "sm_90"
+
+    build_result = subprocess.run(
+        ["cargo", "build", "--release", "-p", "plinko", "--bin", "bench_gpu_hints", "--features", "cuda,parallel"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    
+    if build_result.returncode != 0:
+        print(build_result.stderr[-3000:])
+        raise RuntimeError("Build failed")
+
+    # Copy to volume
+    print("Copying binary to volume...")
+    shutil.copy2("target/release/bench_gpu_hints", "/bin_vol/bench_gpu_hints")
+    os.chmod("/bin_vol/bench_gpu_hints", 0o755)
+    bin_volume.commit()
+    print("Build complete.")
+
 
 @app.function(image=image, gpu="H100", volumes={"/data": volume}, timeout=7200)
-def bench_h100(data_name: str, lambda_param: int = 128, iterations: int = 10, chunk_size: int = None, set_size: int = None, max_hints: int = None):
+def bench_h100(data_name: str, lambda_param: int = 128, iterations: int = 10, chunk_size: int = None, set_size: int = None, max_hints: int = None, cpu_baseline: bool = False):
     """Run benchmark on H100."""
-    return _run_bench("H100", data_name, lambda_param, iterations, chunk_size, set_size, max_hints)
+    return _run_bench("H100", data_name, lambda_param, iterations, chunk_size, set_size, max_hints, cpu_baseline)
 
 
 @app.function(image=image, gpu="H200", volumes={"/data": volume}, timeout=7200)
-def bench_h200(data_name: str, lambda_param: int = 128, iterations: int = 10, chunk_size: int = None, set_size: int = None, max_hints: int = None):
+def bench_h200(data_name: str, lambda_param: int = 128, iterations: int = 10, chunk_size: int = None, set_size: int = None, max_hints: int = None, cpu_baseline: bool = False):
     """Run benchmark on H200."""
-    return _run_bench("H200", data_name, lambda_param, iterations, chunk_size, set_size, max_hints)
+    return _run_bench("H200", data_name, lambda_param, iterations, chunk_size, set_size, max_hints, cpu_baseline)
 
 
 @app.function(image=image, gpu="B200", volumes={"/data": volume}, timeout=7200)
-def bench_b200(data_name: str, lambda_param: int = 128, iterations: int = 10, chunk_size: int = None, set_size: int = None, max_hints: int = None):
+def bench_b200(data_name: str, lambda_param: int = 128, iterations: int = 10, chunk_size: int = None, set_size: int = None, max_hints: int = None, cpu_baseline: bool = False):
     """Run benchmark on B200."""
-    return _run_bench("B200", data_name, lambda_param, iterations, chunk_size, set_size, max_hints)
+    return _run_bench("B200", data_name, lambda_param, iterations, chunk_size, set_size, max_hints, cpu_baseline)
 
 
-@app.function(image=image, gpu="H200", volumes={"/mainnet": mainnet_volume}, timeout=7200, memory=65536)
-def bench_mainnet_h200(lambda_param: int = 128, iterations: int = 5, chunk_size: int = 131072):
+@app.function(image=image, gpu="H200", volumes={"/data": volume}, timeout=7200, memory=65536)
+def bench_mainnet_h200(lambda_param: int = 128, iterations: int = 5, chunk_size: int = 131072, cpu_baseline: bool = False):
     """Run mainnet benchmark on H200."""
-    return _run_mainnet_bench("H200", lambda_param, iterations, chunk_size)
+    return _run_mainnet_bench("H200", lambda_param, iterations, chunk_size, cpu_baseline)
 
 
-@app.function(image=image, gpu="H200", volumes={"/mainnet": mainnet_volume}, timeout=7200)
-def bench_mainnet_slice_h200(slice_pct: float = 1.0, lambda_param: int = 128, iterations: int = 2, chunk_size: int = 131072):
+@app.function(image=image, gpu="H200", volumes={"/data": volume}, timeout=7200)
+def bench_mainnet_slice_h200(slice_pct: float = 1.0, lambda_param: int = 128, iterations: int = 2, chunk_size: int = 131072, cpu_baseline: bool = False):
     """Run benchmark on a slice of mainnet data with full mainnet params."""
     import subprocess
     import os
     import mmap
 
     os.chdir("/app")
-    src_path = "/mainnet/mainnet_optimized48.bin"
+    # Updated to use v3 schema (40-byte entries)
+    src_path = "/data/mainnet-v3/database.bin"
     slice_path = "/tmp/mainnet_slice.bin"
 
     if not os.path.exists(src_path):
@@ -70,7 +108,7 @@ def bench_mainnet_slice_h200(slice_pct: float = 1.0, lambda_param: int = 128, it
 
     # Get file info
     file_size = os.path.getsize(src_path)
-    entry_size = 48
+    entry_size = 40 # v3 schema
     total_entries = file_size // entry_size
     slice_entries = int(total_entries * slice_pct / 100)
     slice_size = slice_entries * entry_size
@@ -136,6 +174,8 @@ def bench_mainnet_slice_h200(slice_pct: float = 1.0, lambda_param: int = 128, it
         "--set-size", str(mainnet_set_size),
         "--max-hints", str(max_hints),
     ]
+    if cpu_baseline:
+        cmd.append("--cpu-baseline")
 
     import sys
     sys.stdout.flush()
@@ -147,18 +187,22 @@ def bench_mainnet_slice_h200(slice_pct: float = 1.0, lambda_param: int = 128, it
     return {"gpu": "H200", "data": f"mainnet_{slice_pct}pct", "output": f"Exit code: {result.returncode}"}
 
 
-def _run_mainnet_bench(gpu: str, lambda_param: int, iterations: int, chunk_size: int) -> dict:
+def _run_mainnet_bench(gpu: str, lambda_param: int, iterations: int, chunk_size: int, cpu_baseline: bool = False) -> dict:
     import subprocess
     import os
 
     os.chdir("/app")
-    db_path = "/mainnet/mainnet_optimized48.bin"
+    # Updated to use v3 schema (40-byte entries)
+    db_path = "/data/mainnet-v3/database.bin"
 
     if not os.path.exists(db_path):
         print(f"ERROR: Mainnet data not found: {db_path}")
-        print("\nAvailable files in /mainnet:")
-        for f in os.listdir("/mainnet"):
-            print(f"  - {f}")
+        print("\nAvailable files in /data:")
+        try:
+            for f in os.listdir("/data"):
+                print(f"  - {f}")
+        except:
+            pass
         raise FileNotFoundError(db_path)
 
     # Show data info
@@ -193,8 +237,12 @@ def _run_mainnet_bench(gpu: str, lambda_param: int, iterations: int, chunk_size:
 
     # Run
     print(f"\n=== Benchmarking MAINNET on {gpu} ===")
-    # Limit hints to fit in GPU memory (H200: 141GB, DB: ~103GB, leaves ~38GB)
-    # Each hint subset needs ~2KB, so max ~10M hints to be safe
+    # Limit hints to fit in GPU memory (H200: 141GB, DB: ~73GB, leaves ~68GB)
+    # Each hint subset needs ~2KB (16404 bits), so max ~30M hints?
+    # Full hints 33.5M.
+    # 33.5M * 2KB = 67 GB.
+    # It might just fit! Or tight.
+    # Let's limit to 10M to be safe for now.
     max_hints = 10_000_000
     cmd = [
         "./target/release/bench_gpu_hints",
@@ -205,6 +253,9 @@ def _run_mainnet_bench(gpu: str, lambda_param: int, iterations: int, chunk_size:
         "--chunk-size", str(chunk_size),
         "--max-hints", str(max_hints),
     ]
+    if cpu_baseline:
+        cmd.append("--cpu-baseline")
+        
     print(f"Using mainnet chunk_size (w): {chunk_size}")
     print(f"Limiting to {max_hints:,} hints (extrapolating to full 33.5M)")
 
@@ -218,7 +269,7 @@ def _run_mainnet_bench(gpu: str, lambda_param: int, iterations: int, chunk_size:
     return {"gpu": gpu, "data": "mainnet", "output": f"Exit code: {result.returncode}"}
 
 
-def _run_bench(gpu: str, data_name: str, lambda_param: int, iterations: int, chunk_size: int = None, set_size: int = None, max_hints: int = None) -> dict:
+def _run_bench(gpu: str, data_name: str, lambda_param: int, iterations: int, chunk_size: int = None, set_size: int = None, max_hints: int = None, cpu_baseline: bool = False) -> dict:
     import subprocess
     import os
 
@@ -282,6 +333,8 @@ def _run_bench(gpu: str, data_name: str, lambda_param: int, iterations: int, chu
     if max_hints:
         cmd.extend(["--max-hints", str(max_hints)])
         print(f"Limiting to {max_hints:,} hints")
+    if cpu_baseline:
+        cmd.append("--cpu-baseline")
 
     # Run without capturing output so we can see progress in real-time
     import sys
@@ -294,22 +347,30 @@ def _run_bench(gpu: str, data_name: str, lambda_param: int, iterations: int, chu
     return {"gpu": gpu, "data": data_name, "output": f"Exit code: {result.returncode}"}
 
 
-def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, chunk_size: int, slice_pct: float, gpu_name: str, replicate_data: bool = False):
-    """Implementation for multi-GPU worker (shared by H200 and B200).
-
-    If replicate_data=True: Each worker gets the SAME data slice (for accurate hint benchmarking)
-    If replicate_data=False: Data is SPLIT among workers (for I/O testing)
-    """
+def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, chunk_size: int, slice_pct: float, gpu_name: str, replicate_data: bool = False, force_set_size: int = None):
+    """Implementation for multi-GPU worker (shared by H200 and B200)."""
     import subprocess
     import os
     import re
 
     os.chdir("/app")
-    src_path = "/mainnet/mainnet_optimized48.bin"
+    
+    # Check for pre-built binary
+    bin_path = "/bin_vol/bench_gpu_hints"
+    if not os.path.exists(bin_path):
+        raise FileNotFoundError(f"Binary not found at {bin_path}. Run build_binary first.")
+
+    # Use v3 schema (40-byte entries) from plinko-data volume
+    src_path = "/data/mainnet-v3/database.bin"
     slice_path = f"/tmp/mainnet_slice_{worker_id}.bin"
 
+    if not os.path.exists(src_path):
+        raise FileNotFoundError(f"Mainnet v3 data not found: {src_path}")
+
     file_size = os.path.getsize(src_path)
-    entry_size = 48
+    entry_size = 40  # v3 schema
+    if file_size % entry_size != 0:
+        raise ValueError(f"File size {file_size} not aligned to {entry_size}-byte entries (Worker {worker_id})")
     total_entries = file_size // entry_size
 
     if replicate_data:
@@ -345,13 +406,16 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     hints_per_worker = total_hints // num_workers
     worker_hints = hints_per_worker
 
-    # Calculate set_size based on the data this worker has
-    worker_set_size = (slice_entries + chunk_size - 1) // chunk_size
-    worker_set_size = ((worker_set_size + 3) // 4) * 4  # Round to multiple of 4
+    # Calculate set_size based on the data this worker has, OR use forced override
+    if force_set_size:
+        worker_set_size = force_set_size
+    else:
+        worker_set_size = (slice_entries + chunk_size - 1) // chunk_size
+        worker_set_size = ((worker_set_size + 3) // 4) * 4  # Round to multiple of 4
 
     print(f"Worker {worker_id}/{num_workers}: {worker_hints:,} hints, {slice_entries:,} entries, set_size={worker_set_size}")
 
-    # Build
+    # Set up environment
     env = os.environ.copy()
     env["PATH"] = f"/root/.cargo/bin:/usr/local/cuda/bin:{env.get('PATH', '')}"
     env["LD_LIBRARY_PATH"] = f"/usr/local/cuda/lib64:{env.get('LD_LIBRARY_PATH', '')}"
@@ -359,16 +423,9 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     env["CUDA_PATH"] = "/usr/local/cuda"
     env["CUDA_ARCH"] = "sm_90"
 
-    build_result = subprocess.run(
-        ["cargo", "build", "--release", "-p", "plinko", "--bin", "bench_gpu_hints", "--features", "cuda,parallel"],
-        capture_output=True, text=True, env=env,
-    )
-    if build_result.returncode != 0:
-        raise RuntimeError(f"Build failed: {build_result.stderr[-1000:]}")
-
     # Run benchmark (iterations=1, warmup=1 to get GPU loaded, then measure)
     cmd = [
-        "./target/release/bench_gpu_hints",
+        bin_path,
         "--db", slice_path,
         "--lambda", "128",
         "--iterations", "1",
@@ -379,9 +436,9 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
     ]
 
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    output = result.stdout if result.stdout else ""
+    output = result.stdout + (result.stderr if result.stderr else "")
 
-    # Parse actual GPU time from output (e.g., "Iteration 1: 28703.982 ms")
+    # Parse actual GPU time from output
     gpu_time_ms = None
     for line in output.split('\n'):
         if 'Iteration 1:' in line:
@@ -390,33 +447,36 @@ def _multi_gpu_worker_impl(worker_id: int, num_workers: int, total_hints: int, c
                 gpu_time_ms = float(match.group(1))
                 break
 
+    if gpu_time_ms is None:
+        print(f"Worker {worker_id} FAILED to produce timing. Full Output:\n{output}")
+
     os.remove(slice_path)
 
     return {
         "worker_id": worker_id,
         "hints": worker_hints,
         "gpu_time_ms": gpu_time_ms,
-        "output": output[-1500:]
+        "output": output[-5000:]
     }
 
 
-@app.function(image=image, gpu="H200", volumes={"/mainnet": mainnet_volume}, timeout=7200)
-def bench_multi_gpu_worker_h200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False):
+@app.function(image=image, gpu="H200", volumes={"/data": volume, "/bin_vol": bin_volume}, timeout=7200)
+def bench_multi_gpu_worker_h200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False, force_set_size: int = None):
     """Single H200 worker for multi-GPU benchmark."""
-    return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "H200", replicate_data)
+    return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "H200", replicate_data, force_set_size)
 
 
-@app.function(image=image, gpu="B200", volumes={"/mainnet": mainnet_volume}, timeout=7200)
-def bench_multi_gpu_worker_b200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False):
+@app.function(image=image, gpu="B200", volumes={"/data": volume, "/bin_vol": bin_volume}, timeout=7200)
+def bench_multi_gpu_worker_b200(worker_id: int, num_workers: int, total_hints: int, chunk_size: int = 131072, slice_pct: float = 10.0, replicate_data: bool = False, force_set_size: int = None):
     """Single B200 worker for multi-GPU benchmark."""
-    return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "B200", replicate_data)
+    return _multi_gpu_worker_impl(worker_id, num_workers, total_hints, chunk_size, slice_pct, "B200", replicate_data, force_set_size)
 
 
 # =============================================================================
 # Production Hint Generation
 # =============================================================================
 
-@app.function(image=image, gpu="H200", volumes={"/mainnet": mainnet_volume, "/hints": hints_volume}, timeout=14400)
+@app.function(image=image, gpu="H200", volumes={"/data": volume, "/hints": hints_volume}, timeout=14400)
 def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_size: int = 131072):
     """Production hint generation worker. Saves hints to volume."""
     import subprocess
@@ -424,7 +484,7 @@ def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_s
     import re
 
     os.chdir("/app")
-    db_path = "/mainnet/mainnet_optimized48.bin"
+    db_path = "/data/mainnet-v3/database.bin"  # v3 schema (40-byte entries)
     output_path = f"/hints/{run_id}/hints_{worker_id:03d}.bin"
 
     # Create output directory
@@ -499,7 +559,7 @@ def generate_hints_worker(run_id: str, worker_id: int, num_workers: int, chunk_s
     # Verify output file
     if os.path.exists(output_path):
         file_size = os.path.getsize(output_path)
-        expected_size = hint_count * 32
+        expected_size = hint_count * 40 # 40 bytes per hint (padding stripped)
         print(f"\nOutput file: {output_path}")
         print(f"File size: {file_size:,} bytes ({file_size / 1e6:.2f} MB)")
         print(f"Expected: {expected_size:,} bytes")
@@ -577,7 +637,7 @@ def combine_hints(run_id: str, num_workers: int):
                 print(f"  Processed {i + 1}/{num_workers} files...")
 
     # Verify
-    total_hints = total_bytes // 32
+    total_hints = total_bytes // 40
     print()
     print(f"Combined file: {combined_path}")
     print(f"Total size: {total_bytes:,} bytes ({total_bytes / 1e9:.2f} GB)")
@@ -611,6 +671,9 @@ def main(
     run_id: str = "",
     num_gpus: int = 50,
     combine_only: bool = False,
+    cpu_baseline: bool = False,
+    set_size: int = None,
+    max_hints: int = None,
 ):
     """
     Run benchmark on Modal.
@@ -628,13 +691,22 @@ def main(
         run_id: Unique ID for this hint generation run (auto-generated if empty)
         num_gpus: Number of H200 GPUs for production hint generation
         combine_only: Only run the combine step (for re-running after failure)
+        cpu_baseline: Run CPU baseline for comparison
+        set_size: Force a specific set_size (c) for simulation
+        max_hints: Limit total hints generated (for benchmarking)
     """
     import time
     from datetime import datetime
 
     chunk_size = 131072 if mainnet_w else None
-    set_size = 16404 if simulate_mainnet else None
-    max_hints = 100000 if simulate_mainnet else None  # Limit hints for simulation
+    
+    # Logic for set_size: priority is explicit arg > simulate_mainnet > None
+    effective_set_size = set_size
+    if effective_set_size is None and simulate_mainnet:
+        effective_set_size = 16404
+        
+    if max_hints is None and simulate_mainnet:
+        max_hints = 100000
 
     # Production hint generation mode
     if generate or combine_only:
@@ -670,11 +742,17 @@ def main(
             for i, f in enumerate(futures):
                 result = f.get()
                 results.append(result)
-                print(f"  Worker {result['worker_id']}: {result['hints_generated']:,} hints in {result['generation_time_ms']/1000:.1f}s")
+                if "error" in result:
+                    print(f"  Worker {result['worker_id']} FAILED: {result['error']}")
+                else:
+                    print(f"  Worker {result['worker_id']}: {result['hints_generated']:,} hints in {result['generation_time_ms']/1000:.1f}s")
 
             total_time = time.time() - start_time
-            total_hints_generated = sum(r['hints_generated'] for r in results)
-            max_gen_time = max(r['generation_time_ms'] for r in results)
+            total_hints_generated = sum(r.get('hints_generated', 0) for r in results)
+            max_gen_time = max((r.get('generation_time_ms', 0) for r in results), default=0)
+
+            if total_hints_generated < full_hints:
+                print(f"WARNING: Only generated {total_hints_generated:,} hints (expected {full_hints:,})")
 
             print()
             print(f"All workers completed in {total_time:.1f}s (wall clock)")
@@ -701,6 +779,10 @@ def main(
 
     # Multi-GPU mode
     if multi_gpu > 0:
+        # Build binary first
+        print("Building binary...")
+        build_binary.remote()
+        
         gpu_type = gpu.upper()
 
         # GPU pricing (Modal)
@@ -713,30 +795,34 @@ def main(
         hints_per_gpu = total_hints // multi_gpu
 
         # Data size
-        full_data_gb = 103.0  # Full mainnet ~103 GB
+        full_data_gb = 73.0  # Full mainnet v3 ~73 GB
         data_gb = full_data_gb * data_pct / 100
 
         print(f"=== MULTI-GPU BENCHMARK ({multi_gpu}× {gpu_type}) ===")
         if replicate:
             print(f"Data: {data_pct}% of mainnet ({data_gb:.1f} GB) REPLICATED to each worker")
-            print(f"Set size: {int(2150000000 * data_pct / 100 / 131072)} (production: 16404)")
         else:
             print(f"Data: {data_pct}% of mainnet SPLIT across {multi_gpu} workers")
             print(f"Data per worker: {data_pct/multi_gpu:.2f}% (~{data_gb/multi_gpu:.2f} GB)")
+        
         print(f"Hints: {hint_pct}% of full = {total_hints:,} total, {hints_per_gpu:,} per GPU")
-        print(f"Params: λ=128, w=131072, 759 rounds, ChaCha8")
+        
+        if effective_set_size:
+            print(f"Forced Set Size (c): {effective_set_size} (Simulating production workload)")
+
+        print(f"Params: λ=128, w=131072, 759 rounds, ChaCha12")
         print()
 
         # Launch all workers in parallel
         start_time = time.time()
         if gpu_type == "H200":
             futures = [
-                bench_multi_gpu_worker_h200.spawn(i, multi_gpu, total_hints, chunk_size or 131072, data_pct, replicate)
+                bench_multi_gpu_worker_h200.spawn(i, multi_gpu, total_hints, chunk_size or 131072, data_pct, replicate, effective_set_size)
                 for i in range(multi_gpu)
             ]
         elif gpu_type == "B200":
             futures = [
-                bench_multi_gpu_worker_b200.spawn(i, multi_gpu, total_hints, chunk_size or 131072, data_pct, replicate)
+                bench_multi_gpu_worker_b200.spawn(i, multi_gpu, total_hints, chunk_size or 131072, data_pct, replicate, effective_set_size)
                 for i in range(multi_gpu)
             ]
         else:
@@ -764,11 +850,8 @@ def main(
             max_gpu_time_sec = max_gpu_time_ms / 1000
             avg_gpu_time_ms = sum(r['gpu_time_ms'] for r in valid_results) / len(valid_results)
 
-            # Calculate set_size based on data
-            mainnet_entries = 2150000000
-            worker_entries = int(mainnet_entries * data_pct / 100) if replicate else int(mainnet_entries * data_pct / 100 / multi_gpu)
-            worker_set_size = (worker_entries + 131072 - 1) // 131072
-            worker_set_size = ((worker_set_size + 3) // 4) * 4
+            # Calculate actual used set_size
+            used_set_size = effective_set_size if effective_set_size else 0 # approx placeholder
 
             print(f"\n{'='*60}")
             print(f"BENCHMARK SUMMARY")
@@ -785,27 +868,28 @@ def main(
             print(f"| Hints per GPU        | {hints_per_gpu:,}               |")
             print(f"| λ (security param)   | 128                             |")
             print(f"| w (chunk size)       | 131,072                         |")
-            print(f"| c (set size/worker)  | {worker_set_size} (prod: 16404) |")
+            print(f"| c (set size/worker)  | {used_set_size or 'auto'} (prod: 16404) |")
             print(f"| SwapOrNot rounds     | 759                             |")
-            print(f"| Cipher               | ChaCha8                         |")
+            print(f"| Cipher               | ChaCha12                         |")
             print()
             print(f"| Metric               | Value                           |")
             print(f"|----------------------|---------------------------------|")
             print(f"| Max GPU time         | {max_gpu_time_sec:.2f}s         |")
             print(f"| Avg GPU time         | {avg_gpu_time_ms/1000:.2f}s     |")
             print(f"| Throughput           | {total_hints_processed / max_gpu_time_sec:,.0f} hints/sec |")
+            print(f"| Throughput per GPU   | {total_hints_processed / max_gpu_time_sec / multi_gpu:,.0f} hints/sec |")
 
             # Extrapolate to full 33.5M hints
             extrapolated_time_sec = max_gpu_time_sec * (full_hints / total_hints_processed)
 
-            # Also extrapolate set_size scaling if not using full data
-            if data_pct < 100:
-                set_size_scale = 16404 / worker_set_size
-                extrapolated_time_sec *= set_size_scale
-                print(f"| Set size scaling     | {set_size_scale:.1f}x (to prod 16404) |")
+            # Scale for set_size if not forced (and not using full data)
+            # But if we forced set_size, no scaling needed for 'c'
+            if not effective_set_size and data_pct < 100:
+                 # Logic for scaling if we didn't force c
+                 pass
 
             print()
-            print(f"| Extrapolation (100% hints + 100% data) |")
+            print(f"| Extrapolation (100% hints + {data_pct}% Data + c={effective_set_size or 'auto'}) |")
             print(f"|----------------------|---------------------------------|")
             print(f"| Full hints           | {full_hints:,}                  |")
             print(f"| Est. parallel time   | {extrapolated_time_sec:.0f}s ({extrapolated_time_sec/60:.1f} min) |")
@@ -832,7 +916,7 @@ def main(
             print(f"Chunk size (w): {chunk_size}")
             print(f"Iterations: {iterations}")
             print()
-            result = bench_mainnet_slice_h200.remote(1.0, lambda_param, iterations, chunk_size)
+            result = bench_mainnet_slice_h200.remote(1.0, lambda_param, iterations, chunk_size, cpu_baseline)
         else:
             print(f"=== MAINNET BENCHMARK ===")
             print(f"GPU: H200")
@@ -842,7 +926,7 @@ def main(
             print(f"Chunk size (w): {chunk_size}")
             print(f"Iterations: {iterations}")
             print()
-            result = bench_mainnet_h200.remote(lambda_param, iterations, chunk_size)
+            result = bench_mainnet_h200.remote(lambda_param, iterations, chunk_size, cpu_baseline)
     else:
         print(f"GPU: {gpu.upper()}")
         print(f"Data: {data}")
@@ -854,11 +938,11 @@ def main(
         print()
 
         if gpu.lower() == "h100":
-            result = bench_h100.remote(data, lambda_param, iterations, chunk_size, set_size, max_hints)
+            result = bench_h100.remote(data, lambda_param, iterations, chunk_size, set_size, max_hints, cpu_baseline)
         elif gpu.lower() == "h200":
-            result = bench_h200.remote(data, lambda_param, iterations, chunk_size, set_size, max_hints)
+            result = bench_h200.remote(data, lambda_param, iterations, chunk_size, set_size, max_hints, cpu_baseline)
         elif gpu.lower() == "b200":
-            result = bench_b200.remote(data, lambda_param, iterations, chunk_size, set_size, max_hints)
+            result = bench_b200.remote(data, lambda_param, iterations, chunk_size, set_size, max_hints, cpu_baseline)
         else:
             raise ValueError(f"Unknown GPU: {gpu}. Supported: h100, h200, b200")
 
