@@ -9,6 +9,12 @@ Quick reference for running GPU hint generation benchmarks on Modal Labs.
 unset MODAL_TOKEN_ID && unset MODAL_TOKEN_SECRET
 ```
 
+## Data Locations
+
+- **Volume:** `plinko-data`
+- **Mainnet v3 (40B):** `/mainnet-v3/database.bin` (~73 GB)
+- **Synthetic (Legacy):** `/synthetic_1pct/database.bin`
+
 ## Commands
 
 ### 2x H200 Quick Test (1% hints, full data)
@@ -91,6 +97,33 @@ modal run scripts/modal_run_bench.py --generate --num-gpus 50 --run-id my_custom
 ---
 
 ## Benchmark Reports
+
+### ChaCha8 + SHA-256 + 40B Compaction (Optimized)
+
+#### 2x H200 (4% hints)
+
+```text
+============================================================
+2× H200 Benchmark Results (Optimized 40B -> 32B Compaction)
+============================================================
+Configuration:
+  GPUs:            2× H200
+  Data:            100% mainnet (73 GB) replicated
+  Hints:           4% = 1,342,176 (671,088 per GPU)
+  set_size:        13,996 (derived from 40B entries)
+  Key derivation:  SHA-256
+  Cipher:          ChaCha8
+
+Results:
+  Worker 0:        671,088 hints in 160.21s
+  Worker 1:        671,088 hints in 191.69s
+  Throughput:      7,002 hints/sec
+============================================================
+```
+
+*Note: The 1.61× speedup comes from two factors:*
+1. *Compaction (40B -> 32B) & Alignment: ~1.37×*
+2. *Tighter Set Size (13,996 vs 16,404): ~1.17× (processing only active entries)*
 
 ### ChaCha8 + SHA-256 (Production Configuration)
 
@@ -233,10 +266,10 @@ Cost Breakdown (H200 @ $0.001261/sec):
 
 ## Comparison Summary
 
-| Config | 2x H200 (1%) | 50x H200 (100%) | Throughput |
-|--------|--------------|-----------------|------------|
-| **ChaCha8** | ~77s | 4.1 min (max GPU) | 4,331 hints/sec |
-| **ChaCha20** | ~154s | 7.6 min (max GPU) | 2,178 hints/sec |
-| **Slowdown** | 2.0× | 1.9× | 0.50× |
+| Config | 2x H200 (Throughput) | 50x H200 (Est. Time) | Speedup |
+|--------|----------------------|----------------------|---------|
+| **ChaCha8 (Opt)** | **7,002 hints/sec** | **~80s** | **1.61×** |
+| **ChaCha8** | 4,331 hints/sec | 4.1 min | 1.00× |
+| **ChaCha20** | 2,178 hints/sec | 7.6 min | 0.50× |
 
-**Recommendation:** Use ChaCha8 for production.
+**Recommendation:** Use Optimized ChaCha8 for production (40B compaction).
