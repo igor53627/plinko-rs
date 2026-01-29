@@ -1,0 +1,10 @@
+{
+  "schema_version": 3,
+  "entry_size_bytes": 40,
+  "block": 23876768,
+  "accounts": 351681953,
+  "storage_slots": 1482413924,
+  "total_entries": 1834095877,
+  "unique_bytecode_hashes": 2064516,
+  "generated_at": "2026-01-24 10:47:10"
+}

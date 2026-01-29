@@ -94,6 +94,18 @@
     "for_literature_review": "Use Part 5 (references) with Part 4 (comparisons)",
     "for_quick_summary": "Use Part 1 (metadata) only"
   },
+  "mainnet_snapshot": {
+    "schema_version": 3,
+    "entry_size_bytes": 40,
+    "block": 23876768,
+    "accounts": 351681953,
+    "storage_slots": 1482413924,
+    "total_entries": 1834095877,
+    "unique_bytecode_hashes": 2064516,
+    "generated_at": "2026-01-24 10:47:10",
+    "source": "root@hsiao:/mnt/mainnet-pir-data-v3/metadata.json",
+    "local_copy": "data/mainnet-pir-data-v3/metadata.json"
+  },
   "regression_test_data": {
     "location": "Cloudflare R2: s3://plinko-regression-data/",
     "endpoint": "https://c6ffe0823b48a4b7689d9b9e9045e465.r2.cloudflarestorage.com",

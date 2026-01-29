@@ -30,53 +30,69 @@ cargo build --release
 
 ## Output Artifacts (Extractor)
 
-The extractor produces three files:
+The extractor produces five files:
 
 ### 1. `database.bin`
-A flat binary file containing 32-byte words.
-- **Accounts**: occupy 3 consecutive entries (96 bytes).
-  - Word 0: Nonce (u64 in first 8 bytes, zero-padded)
-  - Word 1: Balance (u256, little-endian)
-  - Word 2: Bytecode Hash
-- **Storage Slots**: Each individual storage slot occupies 1 entry (32 bytes).
-  - Word 0: Storage Value
-  - *Note*: If an account has multiple storage slots (e.g., a smart contract), each slot is stored as a separate, independent entry in this flat file. The `storage-mapping.bin` allows looking up the index for any specific `(Address, SlotKey)` pair.
+A flat binary file containing **40-byte entries (schema v3)**. Each entry is either an account or a storage slot; there is **one entry per account** and **one entry per storage slot**.
 
-> **Note**: Earlier versions used 4 words per account (with a padding word). This was removed to reduce total entries N by ~12%, improving hint generation performance.
+**Account entry (40B)**:
+- Balance: 16B (lower 128 bits, little-endian)
+- Nonce: 4B (u32, little-endian)
+- CodeID: 4B (little-endian). Index into `code_store.bin` (0 = EOA, no code)
+- TAG: 8B Cuckoo fingerprint `keccak256(address)[0:8]`
+- Padding: 8B (zeroed)
+
+**Storage entry (40B)**:
+- Value: 32B (little-endian)
+- TAG: 8B Cuckoo fingerprint `keccak256(address || slot_key)[0:8]`
+
+> **Note**: Use `metadata.json` to interpret older datasets. Legacy snapshots may use schema v2 (48-byte entries) or v1 (32-byte words).
 
 ### 2. `account-mapping.bin`
 Mapping of addresses to their index in `database.bin`.
 - Format: `Address (20 bytes) || Index (4 bytes, LE)`
-- Note: `Index` points to the start of the 3-word block.
+- Note: `Index` points to the account's single entry.
 
 ### 3. `storage-mapping.bin`
 Mapping of storage slots to their index in `database.bin`.
 - Format: `Address (20 bytes) || SlotKey (32 bytes) || Index (4 bytes, LE)`
-- Note: `Index` points to the 1-word entry.
+- Note: `Index` points to the slot's single entry.
+
+### 4. `code_store.bin`
+Mapping of CodeID to bytecode hash for accounts with code.
+- Format: `[count: u32][hash0: 32B][hash1: 32B]...`
+- Note: CodeID `0` means EOA (no code). CodeID `i` maps to `hash[i-1]`.
+
+### 5. `metadata.json`
+Snapshot metadata including `schema_version`, `entry_size_bytes`, block number, entry counts, and generation timestamp.
 
 ## Client vs. Server Usage
 
 | File | Size (Mainnet) | Server Usage | Client Usage |
 | :--- | :--- | :--- | :--- |
-| **`database.bin`** | ~82 GB | **Store** (Source of Truth). Used to answer PIR queries and compute deltas. | **Stream & Discard**. Client downloads this once to generate ~200MB of local Hints (parities), then deletes the raw data. |
-| **`account-mapping.bin`** | ~7.4 GB | **Store**. Used to locate accounts when processing block updates. | **Store**. Client needs this to resolve `Address -> Index` to know which Hint allows recovering the account data. |
-| **`storage-mapping.bin`** | ~74 GB | **Store**. Used to locate storage slots when processing block updates. | **None / Optional**. Most light clients (wallets) only need Account states. If storage access is needed, a client might query this mapping remotely or store a partial index. |
+| **`database.bin`** | ~73 GB (v3) | **Store** (Source of Truth). Used to answer PIR queries and compute deltas. | **Stream & Discard**. Client downloads this once to generate ~200MB of local Hints (parities), then deletes the raw data. |
+| **`account-mapping.bin`** | ~8.4 GB | **Store**. Used to locate accounts when processing block updates. | **Store**. Client needs this to resolve `Address -> Index` to know which Hint allows recovering the account data. |
+| **`storage-mapping.bin`** | ~83 GB | **Store**. Used to locate storage slots when processing block updates. | **None / Optional**. Most light clients (wallets) only need Account states. If storage access is needed, a client might query this mapping remotely or store a partial index. |
+| **`code_store.bin`** | Varies | **Store**. Used to resolve `CodeID -> bytecode hash`. | **Optional**. Needed if the client wants bytecode hashes; otherwise not required for account balance/nonce. |
+| **`metadata.json`** | Tiny | **Store**. Snapshot metadata + schema version. | **Store**. Validates snapshot details. |
 
 These artifacts allow a PIR client to look up any account state or storage slot privately.
 
 ## Statistics (Mainnet Snapshot)
 
-*As of Block #23,237,684 (Nov 23, 2025)*
+*As of Block #23,876,768 (January 24, 2026)*
+Local snapshot metadata: `data/mainnet-pir-data-v3/metadata.json`
 
-- **Total Unique Accounts**: 330,142,988
-- **Total Storage Slots**: 1,427,085,312
-- **Total Entries (N)**: 2,417,514,276 (accounts × 3 + storage)
-- **Total Database Size**: 73 GB
-- **Total Mapping Size**: ~82 GB
+- **Total Unique Accounts**: 351,681,953
+- **Total Storage Slots**: 1,482,413,924
+- **Total Entries (N)**: 1,834,095,877 (accounts + storage)
+- **Total Database Size**: ~73 GB (40B entries)
+- **Total Mapping Size**: ~91 GB
 
 ## Regression Test Data
 
 A 3.6GB subset of Ethereum state is available on Cloudflare R2 for testing:
+> **Note**: This regression dataset is legacy. Check `metadata.json` for `schema_version` and `entry_size_bytes`.
 
 | File | Size | Description |
 |------|------|-------------|
