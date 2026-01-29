@@ -109,6 +109,24 @@ curl -O https://plinko-regression-data.53627.org/storage-mapping.bin
 curl -O https://plinko-regression-data.53627.org/metadata.json
 ```
 
+## Mainnet v3 Dataset (R2 - PIR Bucket)
+
+Mainnet v3 snapshot is uploaded to the PIR bucket at `pir.53627.org/mainnet-pir-data-v3/`.
+
+| File | Size (bytes) | Link |
+|------|--------------|------|
+| `database.bin` | 73,363,835,080 | [download](https://pir.53627.org/mainnet-pir-data-v3/database.bin) |
+| `account-mapping.bin` | 8,440,366,872 | [download](https://pir.53627.org/mainnet-pir-data-v3/account-mapping.bin) |
+| `storage-mapping.bin` | 83,015,179,744 | [download](https://pir.53627.org/mainnet-pir-data-v3/storage-mapping.bin) |
+| `code_store.bin` | 66,064,516 | [download](https://pir.53627.org/mainnet-pir-data-v3/code_store.bin) |
+| `manifest.json` | 1,124 | [download](https://pir.53627.org/mainnet-pir-data-v3/manifest.json) |
+| `metadata.json` | 237 | [download](https://pir.53627.org/mainnet-pir-data-v3/metadata.json) |
+
+```bash
+# Example: list objects with rclone (configured for R2)
+rclone ls r2:pir/mainnet-pir-data-v3
+```
+
 ## Hint Generation
 
 The `plinko` crate includes a Plinko hint generator for benchmarking:
