@@ -32,230 +32,39 @@ cargo build --release
 
 The extractor produces five files:
 
-### 1. `database.bin`
-A flat binary file containing **40-byte entries (schema v3)**. Each entry is either an account or a storage slot; there is **one entry per account** and **one entry per storage slot**.
+- `database.bin`: Flat array of 40-byte entries (v3 schema)
+- `account-mapping.bin`: `Address(20) || Index(4)`
+- `storage-mapping.bin`: `Address(20) || SlotKey(32) || Index(4)`
+- `code_store.bin`: `[count: u32][hash0: 32B]...`
+- `metadata.json`: snapshot metadata and schema version
 
-**Account entry (40B)**:
-- Balance: 16B (lower 128 bits, little-endian)
-- Nonce: 4B (u32, little-endian)
-- CodeID: 4B (little-endian). Index into `code_store.bin` (0 = EOA, no code)
-- TAG: 8B Cuckoo fingerprint `keccak256(address)[0:8]`
-- Padding: 8B (zeroed)
+Full layout details and size breakdowns: `docs/data_format.md`.
 
-**Storage entry (40B)**:
-- Value: 32B (little-endian)
-- TAG: 8B Cuckoo fingerprint `keccak256(address || slot_key)[0:8]`
+## Protocol Overview (Top-5 Features)
 
-> **Note**: Use `metadata.json` to interpret older datasets. Legacy snapshots may use schema v2 (48-byte entries) or v1 (32-byte words).
+1) O(1) hint search via iPRF
+2) Optimal query time trade-off O~(n/r)
+3) O(1) update time via XOR deltas
+4) Ethereum-scale practicality
+5) GPU-accelerated hint generation
 
-### 2. `account-mapping.bin`
-Mapping of addresses to their index in `database.bin`.
-- Format: `Address (20 bytes) || Index (4 bytes, LE)`
-- Note: `Index` points to the account's single entry.
+More detail: `docs/protocol_overview.md`.
 
-### 3. `storage-mapping.bin`
-Mapping of storage slots to their index in `database.bin`.
-- Format: `Address (20 bytes) || SlotKey (32 bytes) || Index (4 bytes, LE)`
-- Note: `Index` points to the slot's single entry.
+## Datasets
 
-### 4. `code_store.bin`
-Mapping of CodeID to bytecode hash for accounts with code.
-- Format: `[count: u32][hash0: 32B][hash1: 32B]...`
-- Note: CodeID `0` means EOA (no code). CodeID `i` maps to `hash[i-1]`.
+- Mainnet v3 snapshot + sizes: `docs/data_format.md`
+- Regression data (legacy v2): `docs/data_format.md`
 
-### 5. `metadata.json`
-Snapshot metadata including `schema_version`, `entry_size_bytes`, block number, entry counts, and generation timestamp.
+## Docs
 
-## Client vs. Server Usage
+- Protocol overview: `docs/protocol_overview.md`
+- Data format and datasets: `docs/data_format.md`
+- Hint generation: `docs/hint_generation.md`
+- Update strategy: `docs/update_strategy.md`
+- Benchmarks: `docs/benchmarks.md`
+- Verification: `docs/verification.md`
 
-| File | Size (Mainnet) | Server Usage | Client Usage |
-| :--- | :--- | :--- | :--- |
-| **`database.bin`** | ~73 GB (v3) | **Store** (Source of Truth). Used to answer PIR queries and compute deltas. | **Stream & Discard**. Client downloads this once to generate ~200MB of local Hints (parities), then deletes the raw data. |
-| **`account-mapping.bin`** | ~8.4 GB | **Store**. Used to locate accounts when processing block updates. | **Store**. Client needs this to resolve `Address -> Index` to know which Hint allows recovering the account data. |
-| **`storage-mapping.bin`** | ~83 GB | **Store**. Used to locate storage slots when processing block updates. | **None / Optional**. Most light clients (wallets) only need Account states. If storage access is needed, a client might query this mapping remotely or store a partial index. |
-| **`code_store.bin`** | Varies | **Store**. Used to resolve `CodeID -> bytecode hash`. | **Optional**. Needed if the client wants bytecode hashes; otherwise not required for account balance/nonce. |
-| **`metadata.json`** | Tiny | **Store**. Snapshot metadata + schema version. | **Store**. Validates snapshot details. |
-
-These artifacts allow a PIR client to look up any account state or storage slot privately.
-
-## Statistics (Mainnet Snapshot)
-
-*As of Block #23,876,768 (January 24, 2026)*
-Local snapshot metadata: `data/mainnet-pir-data-v3/metadata.json`
-
-- **Total Unique Accounts**: 351,681,953
-- **Total Storage Slots**: 1,482,413,924
-- **Total Entries (N)**: 1,834,095,877 (accounts + storage)
-- **Total Database Size**: ~73 GB (40B entries)
-- **Total Mapping Size**: ~91 GB
-
-## Regression Test Data
-
-A 3.6GB subset of Ethereum state is available on Cloudflare R2 for testing:
-> **Note**: This regression dataset is legacy. Check `metadata.json` for `schema_version` and `entry_size_bytes`.
-
-| File | Size | Description |
-|------|------|-------------|
-| `database.bin` | 3.6 GB | 120M entries (30M accounts + 30M storage slots) |
-| `account-mapping.bin` | 687 MB | Address -> index lookup |
-| `storage-mapping.bin` | 1.6 GB | (Address, Slot) -> index lookup |
-| `metadata.json` | 147 B | Block #23,889,314 extraction metadata |
-
-```bash
-# Download from public URL
-curl -O https://plinko-regression-data.53627.org/database.bin
-curl -O https://plinko-regression-data.53627.org/account-mapping.bin
-curl -O https://plinko-regression-data.53627.org/storage-mapping.bin
-curl -O https://plinko-regression-data.53627.org/metadata.json
-```
-
-## Mainnet v3 Dataset (R2 - PIR Bucket)
-
-Mainnet v3 snapshot is uploaded to the PIR bucket at `pir.53627.org/mainnet-pir-data-v3/`.
-
-| File | Size (bytes) | Link |
-|------|--------------|------|
-| `database.bin` | 73,363,835,080 | [download](https://pir.53627.org/mainnet-pir-data-v3/database.bin) |
-| `account-mapping.bin` | 8,440,366,872 | [download](https://pir.53627.org/mainnet-pir-data-v3/account-mapping.bin) |
-| `storage-mapping.bin` | 83,015,179,744 | [download](https://pir.53627.org/mainnet-pir-data-v3/storage-mapping.bin) |
-| `code_store.bin` | 66,064,516 | [download](https://pir.53627.org/mainnet-pir-data-v3/code_store.bin) |
-| `manifest.json` | 1,124 | [download](https://pir.53627.org/mainnet-pir-data-v3/manifest.json) |
-| `metadata.json` | 237 | [download](https://pir.53627.org/mainnet-pir-data-v3/metadata.json) |
-
-```bash
-# Example: list objects with rclone (configured for R2)
-rclone ls r2:pir/mainnet-pir-data-v3
-```
-
-## Hint Generation
-
-The `plinko` crate includes a Plinko hint generator for benchmarking:
-
-```bash
-# Build
-cd plinko && cargo build --release --bin plinko_hints
-
-# Generate hints (standard mode)
-./target/release/plinko_hints \
-  --db-path ../data/database.bin \
-  --lambda 128
-
-# Generate hints (constant-time mode for TEE)
-./target/release/plinko_hints \
-  --db-path ../data/database.bin \
-  --lambda 128 --constant-time
-```
-
-See [docs/hint_generation.md](docs/hint_generation.md) for more details.
-
-### Constant-Time Mode
-
-The `--constant-time` flag enables timing side-channel protection for TEE execution:
-
-- Uses fixed-iteration loops (MAX_PREIMAGES=512) to prevent leaking preimage counts
-- `BlockBitset` for O(1) branchless membership testing
-- `ct_xor_32_masked` for conditional XOR without control flow
-
-This mode is ~2-3x slower than the standard path but prevents timing attacks that could leak which hints contain which database entries. Note: cache side-channels are out of scope (would require ORAM).
-
-### Benchmark Results (Mainnet, λ=128, w=49177)
-
-*AMD EPYC 9375F, 1.1TB RAM*
-
-| Environment | vCPUs | Time | Throughput | XOR ops/s | Hint Storage |
-|-------------|-------|------|------------|-----------|--------------|
-| Bare metal | 64 | 22 min | 55.8 MB/s | 117M/s | 192 MB |
-| SEV-SNP TEE | 32 | 57 min | 21.5 MB/s | 45M/s | 192 MB |
-
-**SEV-SNP overhead: ~2.6x** (with half vCPUs). Normalized for vCPUs: ~1.3x.
-
-The bottleneck is memory bandwidth (~117M XOR/s), not PRF computation. Both BLAKE3 and AES-CTR modes achieve similar performance with optimal Plinko parameters (w=√N).
-
-Full benchmark results: 
-- [Hint generation benchmark](https://gist.github.com/igor53627/44f237c4f89fb6dcf20a58d71af0d048)
-- [SEV-SNP TEE benchmark](https://gist.github.com/igor53627/4c21ea3ea9d8963d4d20c9277cc45754)
-
-## Update Strategy
-
-To keep the PIR database fresh without re-downloading the entire ~175GB dataset:
-
-1.  **Initial Sync**: Client downloads the full `database.bin` snapshot (once).
-2.  **Incremental Updates**:
-    *   A separate service monitors the chain for state changes.
-    *   It publishes a compact list of delta updates for each block (see [plinko/docs/delta-format.md](plinko/docs/delta-format.md)).
-    *   **Client Update**: The Plinko client updates its local hints using the XOR property:
-        `NewHint = OldHint XOR (OldVal at Index) XOR (NewVal at Index)`
-    *   This operation is $O(1)$ per changed state entry.
-
-## iPRF Implementation
-
-The Plinko PIR scheme relies on an Invertible PRF (iPRF) built from:
-- **Swap-or-Not PRP**: Small-domain pseudorandom permutation (Morris-Rogaway 2013)
-- **PMNS**: Pseudorandom Multinomial Sampler (binary tree ball-into-bins simulation)
-
-### Implementation Parity
-
-We maintain consistency between three sources:
-
-| Component | Paper (2024-318) | Coq Formalization | Rust Implementation | Verified |
-|-----------|------------------|-------------------|---------------------|----------|
-| iPRF structure | §4.2: `iF.F(k,x) = S(P(x))` | [Plinko.v](docs/Plinko.v) `iPRF.forward` | [iprf.rs](plinko/src/iprf.rs) `Iprf::forward` | proptest |
-| iPRF inverse | §4.2: `iF.F⁻¹(k,y) = {P⁻¹(z) : z ∈ S⁻¹(y)}` | `iPRF.inverse` | `Iprf::inverse` | proptest |
-| PMNS forward | Algorithm 1 | `PMNS.forward` | `Iprf::trace_ball` | proptest |
-| PMNS inverse | Algorithm 2 | `PMNS.inverse` | `Iprf::trace_ball_inverse` | proptest |
-| Binomial sampling | §4.3: "derandomized using r as randomness" | `binomial_sample`, `binomial_sample_tee` | [binomial.rs](plinko/src/binomial.rs), `Iprf`/`IprfTee` | **Kani** + tests |
-| Swap-or-Not PRP | Referenced: Morris-Rogaway 2013 | `SwapOrNot.prp_forward/inverse` | `SwapOrNot::forward/inverse` | proptest |
-| HintInit | Fig. 7: c keys, subset sizes c/2+1 and c/2 | `hint_init`, `process_db_entry` | [plinko_hints.rs](plinko/src/bin/plinko_hints.rs) | proptest |
-| Plinko params | §3: w=√N block size | [DbSpec.v](plinko/formal/specs/DbSpec.v) | [db.rs](plinko/src/db.rs) `derive_plinko_params` | proptest |
-
-**Key design decision (binomial sampling)**: The paper specifies a derandomized Binomial(n, p; r) but not a concrete sampler. We implement:
-
-- **Standard path (`binomial_sample`)**: True Binomial(n, p) inverse-CDF sampler. Small n (<=1024) uses exact PMF recurrence O(n); large n uses binary search over CDF via regularized incomplete beta O(log n). Used by non-TEE `Iprf`.
-- **TEE path (`binomial_sample_tee`)**: Constant-time exact inverse-CDF sampler with fixed `CT_BINOMIAL_MAX_COUNT + 1` iterations, no early exit. Uses `ct_f64_le`/`ct_select_f64` from [constant_time.rs](plinko/src/constant_time.rs) for data-oblivious execution. Protocol invariant: `count <= CT_BINOMIAL_MAX_COUNT` (65536), enforced by `IprfTee::new`.
-
-Both paths implement true Binomial(n, p) sampling consistent with the formal spec. The approximation-based fallback from earlier versions has been removed.
-
-### Formal Verification
-
-The `plinko/formal/` directory contains Rocq (Coq) specifications and proofs.
-
-**Rocq Specs** (`plinko/formal/specs/`):
-- `SwapOrNotSpec.v`, `SwapOrNotSrSpec.v`: Swap-or-Not PRP and Sometimes-Recurse wrapper
-- `IprfSpec.v`: Invertible PRF combining PRP + PMNS
-- `BinomialSpec.v`, `TrueBinomialSpec.v`: Binomial sampling specifications
-
-**Rocq Proofs** (`plinko/formal/proofs/`):
-- `SwapOrNotProofs.v`: Round involution, forward/inverse identity, bijection
-- `IprfProofs.v`: iPRF partition property, inverse consistency
-
-**Trust Base** (intentional axioms):
-- Crypto: AES-128 encryption, key derivation properties
-- Math: `binomial_theorem_Z` (standard combinatorial identity)
-- FFI: Rust-to-Rocq refinement axioms (verified via proptest)
-
-See [kani_proofs.rs](plinko/src/kani_proofs.rs) for Rust verification harnesses.
-
-**Kani** (bit-precise model checking):
-- `binomial_sample`: Output bounded, matches Coq definition exactly
-
-**Proptest** (property-based testing with random keys):
-- `SwapOrNot`: Permutation correctness, `inverse(forward(x)) == x`
-- `Iprf`: `x ∈ inverse(forward(x))`, output ranges valid
-
-> Note: SwapOrNot/Iprf use AES which causes state explosion in Kani. These are verified via proptest with random keys instead.
-
-```bash
-# Run Kani proofs (requires Kani toolchain)
-cd plinko && cargo kani --tests
-
-# Run proptest harnesses
-cd plinko && cargo test --lib kani_proofs
-
-# Run Rocq proofs
-cd plinko/formal && make
-```
-
-### Documentation
+### Additional Documentation
 
 - **Paper**: [docs/2024-318.pdf](docs/2024-318.pdf) - Original academic paper
 - **Parsed Paper** (machine-readable JSON):
