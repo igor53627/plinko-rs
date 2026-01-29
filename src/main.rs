@@ -1,7 +1,7 @@
 use clap::Parser;
 use eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use plinko::schema48::{AccountEntry48, CodeStore, StorageEntry48, ENTRY_SIZE};
+use plinko::schema40::{AccountEntry40, CodeStore, StorageEntry40, ENTRY_SIZE};
 use reth_db::{
     cursor::{DbCursorRO, DbDupCursorRO},
     database::Database,
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
     let now = || chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
 
     println!("[{}] Opening database at {:?}", now(), args.db_path);
-    println!("[{}] Using 48-byte schema (v2)", now());
+    println!("[{}] Using 40-byte schema (v3)", now());
 
     // We keep the DB open, but we will open/close TXs
     let db = open_db_read_only(&args.db_path, Default::default())?;
@@ -101,7 +101,7 @@ fn main() -> Result<()> {
     drop(tx);
 
     // --- PROCESS ACCOUNTS ---
-    println!("[{}] Processing Accounts (48-byte entries)...", now());
+    println!("[{}] Processing Accounts (40-byte entries)...", now());
     let mut count_acc = 0;
     let mut total_entries = 0u64; // Now each account/storage is 1 entry (not 3)
     let mut last_acc_key = None;
@@ -167,9 +167,18 @@ fn main() -> Result<()> {
                 // Convert balance to [u8; 32] (little-endian)
                 let balance_bytes = account.balance.to_le_bytes::<32>();
 
-                // Create 48-byte account entry
+                // Guard against nonce overflow (v3 schema uses u32 for nonce)
+                if account.nonce > u32::MAX as u64 {
+                    return Err(eyre::eyre!(
+                        "Account {} nonce {} exceeds u32::MAX (v3 schema limit)",
+                        address,
+                        account.nonce
+                    ));
+                }
+
+                // Create 40-byte account entry
                 let entry =
-                    AccountEntry48::new(&balance_bytes, account.nonce, code_id, &addr_bytes);
+                    AccountEntry40::new(&balance_bytes, account.nonce, code_id, &addr_bytes);
                 writer.write_all(&entry.to_bytes())?;
             }
 
@@ -221,7 +230,7 @@ fn main() -> Result<()> {
     );
 
     // --- PROCESS STORAGE ---
-    println!("[{}] Processing Storage (48-byte entries)...", now());
+    println!("[{}] Processing Storage (40-byte entries)...", now());
     let mut count_sto = 0;
     let mut last_sto_addr = None;
 
@@ -286,8 +295,8 @@ fn main() -> Result<()> {
                 let mut slot_key = [0u8; 32];
                 slot_key.copy_from_slice(storage_entry.key.as_slice());
 
-                // Create 48-byte storage entry
-                let entry = StorageEntry48::new(&value_bytes, &addr_bytes, &slot_key);
+                // Create 40-byte storage entry
+                let entry = StorageEntry40::new(&value_bytes, &addr_bytes, &slot_key);
                 writer.write_all(&entry.to_bytes())?;
             }
 
@@ -367,7 +376,7 @@ fn main() -> Result<()> {
         let meta_path = args.output_dir.join("metadata.json");
         let json = format!(
             r#"{{
-  "schema_version": 2,
+  "schema_version": 3,
   "entry_size_bytes": {},
   "block": {},
   "accounts": {},
