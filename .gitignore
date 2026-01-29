@@ -5,6 +5,8 @@ deltas/
 *.swp
 .DS_Store
 .scannerwork/
+/bench_hints_linux_amd64
+/state-syncer-linux-amd64
 
 # Coq/Rocq build artifacts
 plinko/formal/**/*.vo
