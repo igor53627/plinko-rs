@@ -192,18 +192,23 @@ impl GpuHintGenerator {
 
             // Destination slice in packed buffer
             let packed_offset = offset * 48;
-            let mut packed_dst = d_packed.slice_mut(packed_offset..packed_offset + current_packed_bytes);
+            let mut packed_dst =
+                d_packed.slice_mut(packed_offset..packed_offset + current_packed_bytes);
 
             unsafe {
                 self.kernel_compact.clone().launch(
                     cfg,
-                    (&mut d_raw_chunk_slice, &mut packed_dst, current_count as u64),
+                    (
+                        &mut d_raw_chunk_slice,
+                        &mut packed_dst,
+                        current_count as u64,
+                    ),
                 )?;
             }
 
             offset += current_count;
         }
-        
+
         // Free raw chunk buffer explicitly (dropped at end of scope usually, but good to be clear)
         drop(d_raw_chunk);
 
@@ -570,11 +575,11 @@ mod tests {
         assert_ne!(output[0], 0);
 
         // Different counter should produce different output
-        let output2 = chacha8_block(&key, 1, 0);
+        let output2 = chacha_block(&key, 1, 0);
         assert_ne!(output, output2);
 
         // Same inputs should produce same output (determinism)
-        let output3 = chacha8_block(&key, 0, 0);
+        let output3 = chacha_block(&key, 0, 0);
         assert_eq!(output, output3);
     }
 
