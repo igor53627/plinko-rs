@@ -13,6 +13,7 @@ use std::{
     io::{BufWriter, Write},
     path::PathBuf,
 };
+use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -42,10 +43,8 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    let now = || chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-
-    println!("[{}] Opening database at {:?}", now(), args.db_path);
-    println!("[{}] Using 40-byte schema (v3)", now());
+    info!(db_path = ?args.db_path, "Opening database");
+    info!("Using 40-byte schema (v3)");
 
     // We keep the DB open, but we will open/close TXs
     let db = open_db_read_only(&args.db_path, Default::default())?;
@@ -60,10 +59,7 @@ fn main() -> Result<()> {
         let acc_map_path = args.output_dir.join("account-mapping.bin");
         let sto_map_path = args.output_dir.join("storage-mapping.bin");
 
-        println!("[{}] Writing outputs to:", now());
-        println!("  Database: {:?}", db_file_path);
-        println!("  Acc Map:  {:?}", acc_map_path);
-        println!("  Sto Map:  {:?}", sto_map_path);
+        info!(database = ?db_file_path, acc_map = ?acc_map_path, sto_map = ?sto_map_path, "Writing outputs");
 
         (
             Some(BufWriter::new(File::create(&db_file_path)?)),
@@ -71,10 +67,7 @@ fn main() -> Result<()> {
             Some(BufWriter::new(File::create(&sto_map_path)?)),
         )
     } else {
-        println!(
-            "[{}] Running in COUNT-ONLY mode. No files will be written.",
-            now()
-        );
+        info!("Running in COUNT-ONLY mode, no files will be written");
         (None, None, None)
     };
 
@@ -90,18 +83,18 @@ fn main() -> Result<()> {
     let batch_size = args.batch_size;
 
     // --- READ CHAIN INFO ---
-    println!("[{}] Reading Chain Info...", now());
+    info!("Reading chain info");
     let tx = db.tx()?;
     let last_block = tx
         .cursor_read::<tables::CanonicalHeaders>()?
         .last()?
         .map(|(num, _hash)| num)
         .unwrap_or(0);
-    println!("[{}] Database Tip: Block #{}", now(), last_block);
+    info!(last_block, "Database tip");
     drop(tx);
 
     // --- PROCESS ACCOUNTS ---
-    println!("[{}] Processing Accounts (40-byte entries)...", now());
+    info!("Processing accounts (40-byte entries)");
     let mut count_acc = 0;
     let mut total_entries = 0u64; // Now each account/storage is 1 entry (not 3)
     let mut last_acc_key = None;
@@ -221,16 +214,15 @@ fn main() -> Result<()> {
     }
 
     let account_entries = total_entries;
-    println!(
-        "[{}] Processed {} accounts ({} entries). Unique bytecode hashes: {}",
-        now(),
-        count_acc,
-        account_entries,
-        code_store.len()
+    info!(
+        accounts = count_acc,
+        entries = account_entries,
+        unique_bytecode_hashes = code_store.len(),
+        "Finished processing accounts"
     );
 
     // --- PROCESS STORAGE ---
-    println!("[{}] Processing Storage (40-byte entries)...", now());
+    info!("Processing storage (40-byte entries)");
     let mut count_sto = 0;
     let mut last_sto_addr = None;
 
@@ -329,23 +321,21 @@ fn main() -> Result<()> {
     }
 
     pb.finish_and_clear();
-    println!(
-        "[{}] Done! Acc: {}, Sto: {}, Total Entries: {}",
-        now(),
-        count_acc,
-        count_sto,
-        total_entries
+    info!(
+        accounts = count_acc,
+        storage_slots = count_sto,
+        total_entries,
+        "Extraction complete"
     );
 
     // Calculate sizes
     let db_size_bytes = total_entries * ENTRY_SIZE as u64;
     let db_size_gb = db_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    println!(
-        "[{}] Database size: {} entries × {} bytes = {:.2} GB",
-        now(),
+    info!(
         total_entries,
-        ENTRY_SIZE,
-        db_size_gb
+        entry_size = ENTRY_SIZE,
+        size_gb = format_args!("{:.2}", db_size_gb),
+        "Database size"
     );
 
     if let Some(mut writer) = db_writer {
@@ -361,18 +351,18 @@ fn main() -> Result<()> {
     // --- WRITE CODE STORE ---
     if !args.count_only && !code_store.is_empty() {
         let code_store_path = args.output_dir.join("code_store.bin");
-        println!("[{}] Writing code store: {:?}", now(), code_store_path);
-        std::fs::write(&code_store_path, code_store.to_bytes())?;
-        println!(
-            "[{}] Code store: {} unique bytecode hashes ({} bytes)",
-            now(),
-            code_store.len(),
-            4 + code_store.len() * 32
+        info!(
+            path = ?code_store_path,
+            unique_hashes = code_store.len(),
+            bytes = 4 + code_store.len() * 32,
+            "Writing code store"
         );
+        std::fs::write(&code_store_path, code_store.to_bytes())?;
     }
 
     // --- WRITE METADATA ---
     if !args.count_only {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let meta_path = args.output_dir.join("metadata.json");
         let json = format!(
             r#"{{
@@ -391,12 +381,12 @@ fn main() -> Result<()> {
             count_sto,
             total_entries,
             code_store.len(),
-            now()
+            now
         );
         std::fs::write(meta_path, json)?;
     }
 
-    println!("[{}] Extraction complete.", now());
+    info!("All done");
 
     Ok(())
 }
