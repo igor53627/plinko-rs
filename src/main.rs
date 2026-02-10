@@ -1,3 +1,10 @@
+//! Reth state extraction pipeline.
+//!
+//! Reads Ethereum account and storage state from a Reth database and writes
+//! a flat binary dataset (v3 / 40-byte schema) suitable for Plinko PIR queries.
+//! Outputs: `database.bin`, `account-mapping.bin`, `storage-mapping.bin`,
+//! `code_store.bin`, and `metadata.json`.
+
 use clap::Parser;
 use eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
