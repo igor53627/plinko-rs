@@ -12,21 +12,30 @@ use super::Args;
 
 /// Database geometry parameters computed from args and DB size.
 pub struct Geometry {
+    /// Number of real entries in the database file.
     pub n_entries: usize,
+    /// Effective entry count after padding (always a multiple of `w`).
     pub n_effective: usize,
+    /// Entries per block.
     pub w: usize,
+    /// Number of blocks (`n_effective / w`), guaranteed even.
     pub c: usize,
+    /// Number of zero-padding entries appended to reach `n_effective`.
     #[allow(dead_code)]
     pub pad_entries: usize,
 }
 
 /// Hint count parameters.
 pub struct HintParams {
+    /// Number of regular hints (`lambda * w`).
     pub num_regular: usize,
+    /// Number of backup hints (defaults to `num_regular`).
     pub num_backup: usize,
+    /// `num_regular + num_backup`.
     pub total_hints: usize,
 }
 
+/// Return type for [`init_hints`]: `(regular_hints, regular_blocks, backup_hints, backup_blocks)`.
 pub type HintInitOutput = (
     Vec<RegularHint>,
     Vec<Vec<usize>>,
