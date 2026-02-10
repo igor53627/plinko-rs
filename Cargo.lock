@@ -5138,6 +5138,8 @@ dependencies = [
  "rayon",
  "sha2 0.10.9",
  "tiny-keccak",
+ "tracing",
+ "tracing-subscriber 0.3.20",
 ]
 
 [[package]]
