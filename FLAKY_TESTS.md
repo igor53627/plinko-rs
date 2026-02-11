@@ -6,7 +6,7 @@
 - `gpu.rs:573` — `chacha8_block(&key, 1, 0)` (now `chacha_block`)
 - `gpu.rs:577` — `chacha8_block(&key, 0, 0)` (now `chacha_block`)
 
-This prevented **all** tests from compiling, breaking CI for 15+ consecutive runs since at least Jan 24, 2025.
+This prevented **all** tests from compiling, and was observed to break CI in recent runs.
 
 **Fix**: Renamed both references to `chacha_block` to match the current function name.
 
