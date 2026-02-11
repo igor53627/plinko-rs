@@ -8,6 +8,14 @@ This project is primarily CLI-driven. Typical flows are:
 cargo build --release
 ```
 
+## Estimate Resource Cost (Optional Preflight)
+
+```bash
+cd plinko && cargo build --release --bin cost_estimate
+./target/release/cost_estimate --mainnet
+./target/release/cost_estimate --entries 100000000 --gpus 2 --tee --json
+```
+
 ## Extract State
 
 ```bash
