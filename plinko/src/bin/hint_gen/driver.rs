@@ -169,7 +169,7 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
                 .map_err(|_| eyre::eyre!("invalid hex in --seed at position {}", i * 2))?;
         }
         if args.print_seed {
-            println!("Using provided seed: 0x{}", hex_clean);
+            eprintln!("Using provided seed: 0x{}", hex_clean);
         }
         Ok(seed)
     } else {
@@ -177,7 +177,7 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
         rand::thread_rng().fill_bytes(&mut seed);
         if args.print_seed {
             let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
-            println!("Generated seed: 0x{}", hex);
+            eprintln!("Generated seed: 0x{}", hex);
         }
         Ok(seed)
     }
