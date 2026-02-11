@@ -8,7 +8,7 @@ use memmap2::MmapOptions;
 use plinko::iprf::{Iprf, IprfTee};
 use std::fs::File;
 use std::time::Instant;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use hint_gen::*;
 
@@ -52,18 +52,27 @@ fn main() -> eyre::Result<()> {
     let master_seed = parse_or_generate_seed(&args)?;
     let start = Instant::now();
 
-    info!(count = geom.c, "[1/4] Generating iPRF keys");
+    info!(step = "1/4", count = geom.c, "Generating iPRF keys");
     let block_keys = derive_block_keys(&master_seed, geom.c);
 
-    info!(count = params.num_regular, "[2/4] Initializing regular hints");
-    info!(count = params.num_backup, "[3/4] Initializing backup hints");
+    info!(
+        step = "2/4",
+        count = params.num_regular,
+        "Initializing regular hints"
+    );
+    info!(
+        step = "3/4",
+        count = params.num_backup,
+        "Initializing backup hints"
+    );
     let (mut regular_hints, regular_hint_blocks, mut backup_hints, backup_hint_blocks) =
         init_hints(&master_seed, geom.c, &params);
 
     info!(
+        step = "4/4",
         n_effective = geom.n_effective,
         constant_time = args.constant_time,
-        "[4/4] Streaming database"
+        "Streaming database"
     );
 
     let pb = ProgressBar::new(geom.n_effective as u64);

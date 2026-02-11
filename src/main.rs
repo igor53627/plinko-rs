@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     info!(db_path = ?args.db_path, "Opening database");
-    info!("Using 40-byte schema (v3)");
+    info!(schema_version = 3, entry_size_bytes = 40, "Using schema");
 
     // We keep the DB open, but we will open/close TXs
     let db = open_db_read_only(&args.db_path, Default::default())?;
@@ -94,7 +94,7 @@ fn main() -> Result<()> {
     drop(tx);
 
     // --- PROCESS ACCOUNTS ---
-    info!("Processing accounts (40-byte entries)");
+    info!(entry_size_bytes = 40, "Processing accounts");
     let mut count_acc = 0;
     let mut total_entries = 0u64; // Now each account/storage is 1 entry (not 3)
     let mut last_acc_key = None;
@@ -222,7 +222,7 @@ fn main() -> Result<()> {
     );
 
     // --- PROCESS STORAGE ---
-    info!("Processing storage (40-byte entries)");
+    info!(entry_size_bytes = 40, "Processing storage");
     let mut count_sto = 0;
     let mut last_sto_addr = None;
 
