@@ -11,7 +11,7 @@ cargo build --release
 ## Estimate Resource Cost (Optional Preflight)
 
 ```bash
-cd plinko && cargo build --release --bin cost_estimate
+cargo build --release --manifest-path plinko/Cargo.toml --bin cost_estimate
 ./target/release/cost_estimate --mainnet
 ./target/release/cost_estimate --entries 100000000 --gpus 2 --tee --json
 ```
