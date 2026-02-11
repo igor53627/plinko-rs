@@ -148,6 +148,14 @@ fn main() -> eyre::Result<()> {
     let num_backup = num_regular; // default: same as regular
     let total_hints = checked_add(num_regular, num_backup, "total_hints")?;
 
+    if capacity < entries {
+        return Err(eyre!(
+            "derived capacity ({}) is smaller than entries ({})",
+            capacity,
+            entries
+        ));
+    }
+
     // --- Storage estimates ---
     let db_size = checked_mul(entries, ENTRY_SIZE, "database_bytes")?;
     // Regular hints: each is subset_seed(32B) + parity(32B) = 64 bytes
@@ -174,15 +182,12 @@ fn main() -> eyre::Result<()> {
     };
     let cpu_time_secs = db_size_mb / cpu_throughput;
 
-    if !gpu_time_secs.is_finite()
-        || !gpu_cost.is_finite()
-        || !cpu_throughput.is_finite()
-        || !cpu_time_secs.is_finite()
-    {
-        return Err(eyre!(
-            "computed non-finite estimates; reduce input magnitudes and retry"
-        ));
-    }
+    ensure_finite(&[
+        ("gpu_time_secs", gpu_time_secs),
+        ("gpu_cost", gpu_cost),
+        ("cpu_throughput", cpu_throughput),
+        ("cpu_time_secs", cpu_time_secs),
+    ])?;
 
     // --- Memory estimates ---
     let vram_per_gpu = checked_mul(entries, GPU_ENTRY_SIZE, "vram_per_gpu_bytes")?; // expanded entries in VRAM
@@ -228,7 +233,7 @@ fn main() -> eyre::Result<()> {
     if args.json {
         print_json(&estimate)?;
     } else {
-        print_table(&estimate);
+        print_table(&estimate)?;
     }
 
     Ok(())
@@ -242,6 +247,33 @@ fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
 fn checked_add(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
     a.checked_add(b)
         .ok_or_else(|| eyre!("overflow while computing {}", label))
+}
+
+fn ensure_finite(values: &[(&str, f64)]) -> eyre::Result<()> {
+    for (name, value) in values {
+        if !value.is_finite() {
+            return Err(eyre!(
+                "computed non-finite value for {} ({}); reduce input magnitudes and retry",
+                name,
+                value
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn compute_overhead_pct(entries: u64, capacity: u64) -> eyre::Result<f64> {
+    if entries == 0 {
+        return Err(eyre!("entries must be > 0"));
+    }
+    let overhead_entries = capacity.checked_sub(entries).ok_or_else(|| {
+        eyre!(
+            "capacity ({}) is smaller than entries ({})",
+            capacity,
+            entries
+        )
+    })?;
+    Ok(100.0 * overhead_entries as f64 / entries as f64)
 }
 
 fn fmt_bytes(bytes: u64) -> String {
@@ -276,12 +308,9 @@ fn fmt_count(n: u64) -> String {
     }
 }
 
-fn print_table(estimate: &CostEstimate) {
-    let overhead_entries = estimate
-        .parameters
-        .capacity
-        .saturating_sub(estimate.parameters.entries);
-    let overhead_pct = 100.0 * overhead_entries as f64 / estimate.parameters.entries as f64;
+fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
+    let overhead_pct =
+        compute_overhead_pct(estimate.parameters.entries, estimate.parameters.capacity)?;
 
     println!("Plinko Cost Estimate");
     println!("====================");
@@ -410,6 +439,7 @@ fn print_table(estimate: &CostEstimate) {
         "  Host RAM:           {} (DB mmap + hints)",
         fmt_bytes(estimate.memory.host_ram_bytes)
     );
+    Ok(())
 }
 
 fn print_json(estimate: &CostEstimate) -> eyre::Result<()> {
@@ -447,5 +477,17 @@ mod tests {
     fn clap_rejects_zero_cpu_vcpus() {
         let args = Args::try_parse_from(["cost_estimate", "--entries", "1", "--cpu-vcpus", "0"]);
         assert!(args.is_err());
+    }
+
+    #[test]
+    fn ensure_finite_rejects_infinity() {
+        let result = ensure_finite(&[("x", f64::INFINITY)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compute_overhead_pct_rejects_invalid_capacity() {
+        let result = compute_overhead_pct(10, 9);
+        assert!(result.is_err());
     }
 }
