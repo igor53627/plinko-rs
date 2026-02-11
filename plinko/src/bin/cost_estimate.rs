@@ -14,6 +14,10 @@ const MAINNET_ENTRIES: u64 = 1_830_000_000;
 
 /// v3 schema entry size (bytes)
 const ENTRY_SIZE: u64 = 40;
+const ACCOUNT_MAP_ENTRY_SIZE: u64 = 24;
+const STORAGE_MAP_ENTRY_SIZE: u64 = 56;
+const HINT_SEED_SIZE: u64 = 32;
+const HINT_PARITY_SIZE: u64 = 32;
 
 // --- Measured throughput constants ---
 
@@ -34,6 +38,8 @@ const DEFAULT_GPU_HOURLY_RATE: f64 = 3.50;
 
 /// Expanded entry size in GPU VRAM (48 bytes, v2/GPU-optimized layout)
 const GPU_ENTRY_SIZE: u64 = 48;
+const BLOCK_KEY_SIZE: u64 = 32;
+const HINT_OUTPUT_SIZE: u64 = 48;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -43,7 +49,11 @@ const GPU_ENTRY_SIZE: u64 = 48;
 )]
 struct Args {
     /// Total database entries (accounts + storage slots)
-    #[arg(long, value_parser = value_parser!(u64).range(1..))]
+    #[arg(
+        long,
+        conflicts_with = "mainnet",
+        value_parser = value_parser!(u64).range(1..)
+    )]
     entries: Option<u64>,
 
     /// Use mainnet preset (1.83B entries)
@@ -95,6 +105,8 @@ struct CostEstimate {
 #[derive(Serialize)]
 struct Parameters {
     entries: u64,
+    estimated_accounts: u64,
+    estimated_storage_slots: u64,
     lambda: u64,
     chunk_size: u64,
     set_size: u64,
@@ -107,6 +119,8 @@ struct Parameters {
 #[derive(Serialize)]
 struct Storage {
     database_bytes: u64,
+    account_mapping_bytes: u64,
+    storage_mapping_bytes: u64,
     regular_hint_bytes: u64,
     backup_hint_bytes: u64,
     hint_storage_bytes: u64,
@@ -132,7 +146,11 @@ struct CpuCompute {
 
 #[derive(Serialize)]
 struct Memory {
-    vram_per_gpu_bytes: u64,
+    vram_packed_db_bytes: u64,
+    vram_block_keys_bytes: u64,
+    vram_subsets_bytes: u64,
+    vram_output_bytes: u64,
+    vram_total_bytes: u64,
     host_ram_bytes: u64,
 }
 
@@ -140,9 +158,11 @@ fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     let entries = match (args.entries, args.mainnet) {
-        (Some(n), _) => n,
+        (Some(n), false) => n,
         (None, true) => MAINNET_ENTRIES,
         (None, false) => return Err(eyre!("specify --entries <N> or --mainnet")),
+        // clap `conflicts_with` should reject this before runtime.
+        (Some(_), true) => unreachable!("--entries and --mainnet are mutually exclusive"),
     };
 
     // --- Parameter derivation ---
@@ -162,12 +182,44 @@ fn main() -> eyre::Result<()> {
 
     // --- Storage estimates ---
     let db_size = checked_mul(entries, ENTRY_SIZE, "database_bytes")?;
+    let (estimated_accounts, estimated_storage_slots) = if args.mainnet {
+        (30_000_000_u64, 1_800_000_000_u64)
+    } else {
+        // Non-mainnet heuristic: ~1.7% accounts, remainder storage slots.
+        let estimated_accounts = (entries as f64 * 0.017).ceil() as u64;
+        let estimated_storage_slots = entries.saturating_sub(estimated_accounts);
+        (estimated_accounts, estimated_storage_slots)
+    };
+    let account_mapping_bytes = checked_mul(
+        estimated_accounts,
+        ACCOUNT_MAP_ENTRY_SIZE,
+        "account_mapping_bytes",
+    )?;
+    let storage_mapping_bytes = checked_mul(
+        estimated_storage_slots,
+        STORAGE_MAP_ENTRY_SIZE,
+        "storage_mapping_bytes",
+    )?;
     // Regular hints: each is subset_seed(32B) + parity(32B) = 64 bytes
-    let regular_hint_bytes = checked_mul(num_regular, 64, "regular_hint_bytes")?;
+    let regular_hint_bytes = checked_mul(
+        num_regular,
+        HINT_SEED_SIZE + HINT_PARITY_SIZE,
+        "regular_hint_bytes",
+    )?;
     // Backup hints: each is subset_seed(32B) + parity_in(32B) + parity_out(32B) = 96 bytes
-    let backup_hint_bytes = checked_mul(num_backup, 96, "backup_hint_bytes")?;
+    let backup_hint_bytes = checked_mul(
+        num_backup,
+        HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE,
+        "backup_hint_bytes",
+    )?;
     let hint_storage = checked_add(regular_hint_bytes, backup_hint_bytes, "hint_storage_bytes")?;
-    let total_storage = checked_add(db_size, hint_storage, "total_storage_bytes")?;
+    let data_storage = checked_add(
+        db_size,
+        account_mapping_bytes,
+        "database_and_account_mapping",
+    )?;
+    let data_storage = checked_add(data_storage, storage_mapping_bytes, "database_and_mappings")?;
+    let total_storage = checked_add(data_storage, hint_storage, "total_storage_bytes")?;
 
     // --- GPU compute estimates ---
     let gpu_throughput = GPU_HINTS_PER_SEC * args.gpus as f64;
@@ -194,12 +246,25 @@ fn main() -> eyre::Result<()> {
     ])?;
 
     // --- Memory estimates ---
-    let vram_per_gpu = checked_mul(entries, GPU_ENTRY_SIZE, "vram_per_gpu_bytes")?; // expanded entries in VRAM
+    let vram_packed_db = checked_mul(entries, GPU_ENTRY_SIZE, "vram_packed_db_bytes")?;
+    let subset_bytes_per_hint = c
+        .checked_add(7)
+        .ok_or_else(|| eyre!("overflow while computing subset_bytes_per_hint"))?
+        / 8;
+    let vram_block_keys = checked_mul(c, BLOCK_KEY_SIZE, "vram_block_keys_bytes")?;
+    let vram_subsets = checked_mul(total_hints, subset_bytes_per_hint, "vram_subsets_bytes")?;
+    let vram_output = checked_mul(total_hints, HINT_OUTPUT_SIZE, "vram_output_bytes")?;
+    let vram_total = checked_add(vram_packed_db, vram_block_keys, "vram_total_with_keys")?;
+    let vram_total = checked_add(vram_total, vram_subsets, "vram_total_with_subsets")?;
+    let vram_total = checked_add(vram_total, vram_output, "vram_total_bytes")?;
+
     let host_ram = checked_add(db_size, hint_storage, "host_ram_bytes")?; // mmap'd DB + hint arrays
 
     let estimate = CostEstimate {
         parameters: Parameters {
             entries,
+            estimated_accounts,
+            estimated_storage_slots,
             lambda: args.lambda,
             chunk_size: w,
             set_size: c,
@@ -210,6 +275,8 @@ fn main() -> eyre::Result<()> {
         },
         storage: Storage {
             database_bytes: db_size,
+            account_mapping_bytes,
+            storage_mapping_bytes,
             regular_hint_bytes,
             backup_hint_bytes,
             hint_storage_bytes: hint_storage,
@@ -229,7 +296,11 @@ fn main() -> eyre::Result<()> {
             time_secs: cpu_time_secs,
         },
         memory: Memory {
-            vram_per_gpu_bytes: vram_per_gpu,
+            vram_packed_db_bytes: vram_packed_db,
+            vram_block_keys_bytes: vram_block_keys,
+            vram_subsets_bytes: vram_subsets,
+            vram_output_bytes: vram_output,
+            vram_total_bytes: vram_total,
             host_ram_bytes: host_ram,
         },
     };
@@ -339,6 +410,16 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
         estimate.parameters.entries,
         fmt_count(estimate.parameters.entries)
     );
+    println!(
+        "  Accounts (est.):    {:<14} ({})",
+        estimate.parameters.estimated_accounts,
+        fmt_count(estimate.parameters.estimated_accounts)
+    );
+    println!(
+        "  Storage slots est.: {:<14} ({})",
+        estimate.parameters.estimated_storage_slots,
+        fmt_count(estimate.parameters.estimated_storage_slots)
+    );
     println!("  Lambda:             {}", estimate.parameters.lambda);
     println!(
         "  Chunk size (w):     {:<14} ({})",
@@ -377,6 +458,18 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     println!(
         "  database.bin:       {}",
         fmt_bytes(estimate.storage.database_bytes)
+    );
+    println!(
+        "  account-mapping.bin:{} ({} x {}B)",
+        fmt_bytes(estimate.storage.account_mapping_bytes),
+        fmt_count(estimate.parameters.estimated_accounts),
+        ACCOUNT_MAP_ENTRY_SIZE
+    );
+    println!(
+        "  storage-mapping.bin:{} ({} x {}B)",
+        fmt_bytes(estimate.storage.storage_mapping_bytes),
+        fmt_count(estimate.parameters.estimated_storage_slots),
+        STORAGE_MAP_ENTRY_SIZE
     );
     println!(
         "  Regular hints:      {} ({} x 64B)",
@@ -448,9 +541,28 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     println!("Memory");
     println!("------");
     println!(
-        "  VRAM per GPU:       {} (entries x {}B expanded)",
-        fmt_bytes(estimate.memory.vram_per_gpu_bytes),
+        "  VRAM packed DB:     {} (entries x {}B expanded)",
+        fmt_bytes(estimate.memory.vram_packed_db_bytes),
         GPU_ENTRY_SIZE
+    );
+    println!(
+        "  VRAM block keys:    {} ({} x {}B)",
+        fmt_bytes(estimate.memory.vram_block_keys_bytes),
+        fmt_count(estimate.parameters.set_size),
+        BLOCK_KEY_SIZE
+    );
+    println!(
+        "  VRAM subsets:       {} (hints x ceil(c/8))",
+        fmt_bytes(estimate.memory.vram_subsets_bytes)
+    );
+    println!(
+        "  VRAM output:        {} (hints x {}B)",
+        fmt_bytes(estimate.memory.vram_output_bytes),
+        HINT_OUTPUT_SIZE
+    );
+    println!(
+        "  VRAM total/GPU:     {}",
+        fmt_bytes(estimate.memory.vram_total_bytes)
     );
     println!(
         "  Host RAM:           {} (DB mmap + hints)",
@@ -481,6 +593,12 @@ mod tests {
     #[test]
     fn clap_rejects_zero_entries() {
         let args = Args::try_parse_from(["cost_estimate", "--entries", "0"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_entries_with_mainnet() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "1", "--mainnet"]);
         assert!(args.is_err());
     }
 
@@ -568,6 +686,8 @@ mod tests {
         let estimate = CostEstimate {
             parameters: Parameters {
                 entries: 10,
+                estimated_accounts: 0,
+                estimated_storage_slots: 0,
                 lambda: 128,
                 chunk_size: 1,
                 set_size: 1,
@@ -578,6 +698,8 @@ mod tests {
             },
             storage: Storage {
                 database_bytes: 0,
+                account_mapping_bytes: 0,
+                storage_mapping_bytes: 0,
                 regular_hint_bytes: 0,
                 backup_hint_bytes: 0,
                 hint_storage_bytes: 0,
@@ -597,7 +719,11 @@ mod tests {
                 time_secs: 0.0,
             },
             memory: Memory {
-                vram_per_gpu_bytes: 0,
+                vram_packed_db_bytes: 0,
+                vram_block_keys_bytes: 0,
+                vram_subsets_bytes: 0,
+                vram_output_bytes: 0,
+                vram_total_bytes: 0,
                 host_ram_bytes: 0,
             },
         };
