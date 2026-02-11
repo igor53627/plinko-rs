@@ -27,6 +27,11 @@ jobs:
       - name: Run plinko tests
         run: cargo test --manifest-path plinko/Cargo.toml
 
+      - name: Smoke test cost estimator binary
+        run: |
+          cargo run --manifest-path plinko/Cargo.toml --bin cost_estimate -- --entries 1000 > /dev/null
+          cargo run --manifest-path plinko/Cargo.toml --bin cost_estimate -- --entries 1000 --json > /dev/null
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
