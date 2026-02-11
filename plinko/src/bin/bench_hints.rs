@@ -1,3 +1,8 @@
+//! Standalone benchmark for Plinko hint generation throughput.
+//!
+//! Memory-maps a database file, simulates per-row scalar XOR updates into a
+//! hint store sized at `sqrt(N)`, and reports wall-clock time and MB/s.
+
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;

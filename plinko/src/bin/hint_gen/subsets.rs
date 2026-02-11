@@ -1,8 +1,14 @@
+//! Block subset computation for regular and backup hints.
+
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 use crate::hint_gen::keys::random_subset;
 
+/// Computes the sorted block indices for a regular hint.
+///
+/// The regular subset contains `c/2 + 1` blocks chosen pseudorandomly
+/// from `[0, c)` using the given seed.
 pub fn compute_regular_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
     let regular_subset_size = c / 2 + 1;
     let mut rng = ChaCha20Rng::from_seed(*seed);
@@ -11,6 +17,10 @@ pub fn compute_regular_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
     blocks
 }
 
+/// Computes the sorted block indices for a backup hint.
+///
+/// The backup subset contains `c/2` blocks chosen pseudorandomly
+/// from `[0, c)` using the given seed.
 pub fn compute_backup_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
     let backup_subset_size = c / 2;
     let mut rng = ChaCha20Rng::from_seed(*seed);
@@ -26,6 +36,7 @@ pub fn block_in_subset(blocks: &[usize], block: usize) -> bool {
     blocks.binary_search(&block).is_ok()
 }
 
+/// XORs `src` into `dst` in place (32-byte words).
 pub fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
     for i in 0..32 {
         dst[i] ^= src[i];
