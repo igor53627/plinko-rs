@@ -1,381 +1,606 @@
-//! Cost Attribution Estimator for Plinko PIR
+//! Cost attribution estimator for Plinko PIR deployments.
 //!
-//! Estimates resource costs (storage, GPU compute, CPU compute, memory) for a
-//! given database size and security configuration. Uses measured benchmark
-//! constants from production runs — no CUDA dependency required.
-//!
-//! Usage:
-//!   cargo run -p plinko --bin cost_estimate -- --mainnet
-//!   cargo run -p plinko --bin cost_estimate -- --entries 100000000 --gpus 2
+//! Estimates resource costs by component: storage, GPU compute, CPU compute,
+//! and memory requirements. Uses measured throughput constants from production
+//! benchmarks — no CUDA dependency required.
 
-use clap::Parser;
+use clap::{value_parser, Parser};
+use eyre::eyre;
 use plinko::db::derive_plinko_params;
+use serde::Serialize;
 
-/// Measured GPU throughput: 3,012 hints/sec per H200 at production set_size (c=16404).
-/// Source: docs/BENCHMARK_RESULTS.md — "Interleaved + High Occupancy" kernel.
-const GPU_HINTS_PER_SEC_H200: f64 = 3_012.0;
-
-/// Measured CPU throughput for hint generation: 55.8 MB/s on bare-metal 64-core.
-/// This is the rate at which the CPU streams through the database file during
-/// hint accumulation (XOR parity computation).
-const CPU_THROUGHPUT_MBPS_BARE: f64 = 55.8;
-
-/// TEE (Trusted Execution Environment) overhead multiplier.
-/// CPU throughput under TEE is bare-metal throughput / TEE_OVERHEAD_FACTOR.
-const TEE_OVERHEAD_FACTOR: f64 = 2.6;
-
-/// V3 schema entry size (40 bytes per entry).
-const ENTRY_SIZE_V3: u64 = 40;
-
-/// GPU-expanded entry size (48 bytes, aligned for coalesced memory access).
-const ENTRY_SIZE_GPU: u64 = 48;
-
-/// Mainnet entry count (~1.83 billion entries, as extracted from Reth).
-/// Source: docs/perf_kanban.md, scripts/modal_bench_mainnet.py
+/// Mainnet v3 dataset: ~330M accounts + ~1.5B storage slots
 const MAINNET_ENTRIES: u64 = 1_830_000_000;
 
-/// Default security parameter lambda.
-const DEFAULT_LAMBDA: u64 = 128;
+/// v3 schema entry size (bytes)
+const ENTRY_SIZE: u64 = 40;
 
-/// Modal H200 GPU hourly rate (USD).
-/// Source: scripts/modal_run_bench.py gpu_prices dict.
-const DEFAULT_GPU_HOURLY_RATE: f64 = 4.89;
+// --- Measured throughput constants ---
 
-/// Hint parity size in bytes (32 bytes = 256 bits).
-/// Each regular hint stores a 32-byte parity. Each backup hint stores two
-/// 32-byte parities (parity_in + parity_out) plus a 32-byte subset seed.
-const HINT_PARITY_SIZE: u64 = 32;
+/// GPU hint generation throughput: hints/sec per H200 GPU
+/// Source: production benchmarks on Modal H200 instances
+const GPU_HINTS_PER_SEC: f64 = 3_012.0;
 
-/// Subset seed size stored per hint (32 bytes).
-const HINT_SEED_SIZE: u64 = 32;
+/// CPU hint generation throughput: MB/s on bare metal (64-core)
+/// Source: production benchmarks
+const CPU_THROUGHPUT_MBPS: f64 = 55.8;
+const BASELINE_CPU_VCPUS: u64 = 64;
 
-/// Account mapping entry size: 20B address + 4B index = 24 bytes.
-const ACCOUNT_MAP_ENTRY_SIZE: u64 = 24;
+/// TEE overhead multiplier (SGX/TDX constant-time mode)
+const TEE_OVERHEAD: f64 = 2.6;
 
-/// Storage mapping entry size: 20B address + 32B slot key + 4B index = 56 bytes.
-const STORAGE_MAP_ENTRY_SIZE: u64 = 56;
+/// Default GPU hourly rate (H200 on Modal/cloud)
+const DEFAULT_GPU_HOURLY_RATE: f64 = 3.50;
+
+/// Expanded entry size in GPU VRAM (48 bytes, v2/GPU-optimized layout)
+const GPU_ENTRY_SIZE: u64 = 48;
 
 #[derive(Parser, Debug)]
 #[command(
     author,
     version,
-    about = "Estimate Plinko PIR resource costs by component"
+    about = "Estimate resource costs for a Plinko PIR deployment"
 )]
 struct Args {
-    /// Number of database entries (mutually exclusive with --mainnet)
-    #[arg(long, conflicts_with = "mainnet")]
+    /// Total database entries (accounts + storage slots)
+    #[arg(long, value_parser = value_parser!(u64).range(1..))]
     entries: Option<u64>,
 
-    /// Use mainnet preset (~1.83B entries)
-    #[arg(long)]
+    /// Use mainnet preset (1.83B entries)
+    #[arg(long, default_value_t = false)]
     mainnet: bool,
 
-    /// Security parameter lambda
-    #[arg(long, default_value_t = DEFAULT_LAMBDA)]
+    /// Security parameter (lambda)
+    #[arg(long, default_value_t = 128)]
     lambda: u64,
 
-    /// Number of GPUs for parallel hint generation
-    #[arg(long, default_value_t = 1)]
+    /// Number of GPUs
+    #[arg(long, default_value_t = 1, value_parser = value_parser!(u64).range(1..))]
     gpus: u64,
 
-    /// GPU hourly rate in USD (default: Modal H200 at $4.89/hr)
-    #[arg(long, default_value_t = DEFAULT_GPU_HOURLY_RATE)]
+    /// GPU hourly rate in USD
+    #[arg(
+        long,
+        default_value_t = DEFAULT_GPU_HOURLY_RATE,
+        value_parser = parse_non_negative_f64
+    )]
     gpu_hourly_rate: f64,
 
-    /// Apply TEE overhead to CPU estimate
-    #[arg(long)]
+    /// Number of CPU vCPUs for throughput scaling
+    #[arg(
+        long,
+        default_value_t = BASELINE_CPU_VCPUS,
+        value_parser = value_parser!(u64).range(1..)
+    )]
+    cpu_vcpus: u64,
+
+    /// Apply TEE (SGX/TDX) overhead to CPU estimates
+    #[arg(long, default_value_t = false)]
     tee: bool,
 
     /// Output as JSON instead of human-readable table
-    #[arg(long)]
+    #[arg(long, default_value_t = false)]
     json: bool,
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    const TB: f64 = GB * 1024.0;
-    let b = bytes as f64;
-    if b >= TB {
-        format!("{:.2} TB", b / TB)
-    } else if b >= GB {
-        format!("{:.2} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.2} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.2} KB", b / KB)
+#[derive(Serialize)]
+struct CostEstimate {
+    parameters: Parameters,
+    storage: Storage,
+    gpu_compute: GpuCompute,
+    cpu_compute: CpuCompute,
+    memory: Memory,
+}
+
+#[derive(Serialize)]
+struct Parameters {
+    entries: u64,
+    lambda: u64,
+    chunk_size: u64,
+    set_size: u64,
+    capacity: u64,
+    total_hints: u64,
+    regular_hints: u64,
+    backup_hints: u64,
+}
+
+#[derive(Serialize)]
+struct Storage {
+    database_bytes: u64,
+    regular_hint_bytes: u64,
+    backup_hint_bytes: u64,
+    hint_storage_bytes: u64,
+    total_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct GpuCompute {
+    gpus: u64,
+    throughput_hints_per_sec: f64,
+    time_secs: f64,
+    cost_usd: f64,
+    hourly_rate_usd: f64,
+}
+
+#[derive(Serialize)]
+struct CpuCompute {
+    tee: bool,
+    vcpus: u64,
+    throughput_mbps: f64,
+    time_secs: f64,
+}
+
+#[derive(Serialize)]
+struct Memory {
+    vram_per_gpu_bytes: u64,
+    host_ram_bytes: u64,
+}
+
+fn main() -> eyre::Result<()> {
+    let args = Args::parse();
+
+    let entries = match (args.entries, args.mainnet) {
+        (Some(n), _) => n,
+        (None, true) => MAINNET_ENTRIES,
+        (None, false) => return Err(eyre!("specify --entries <N> or --mainnet")),
+    };
+
+    // --- Parameter derivation ---
+    let (w, c) = derive_plinko_params(entries);
+    let capacity = checked_mul(w, c, "capacity")?;
+    let num_regular = checked_mul(args.lambda, w, "num_regular")?;
+    let num_backup = num_regular; // default: same as regular
+    let total_hints = checked_add(num_regular, num_backup, "total_hints")?;
+
+    if capacity < entries {
+        return Err(eyre!(
+            "derived capacity ({}) is smaller than entries ({})",
+            capacity,
+            entries
+        ));
+    }
+
+    // --- Storage estimates ---
+    let db_size = checked_mul(entries, ENTRY_SIZE, "database_bytes")?;
+    // Regular hints: each is subset_seed(32B) + parity(32B) = 64 bytes
+    let regular_hint_bytes = checked_mul(num_regular, 64, "regular_hint_bytes")?;
+    // Backup hints: each is subset_seed(32B) + parity_in(32B) + parity_out(32B) = 96 bytes
+    let backup_hint_bytes = checked_mul(num_backup, 96, "backup_hint_bytes")?;
+    let hint_storage = checked_add(regular_hint_bytes, backup_hint_bytes, "hint_storage_bytes")?;
+    let total_storage = checked_add(db_size, hint_storage, "total_storage_bytes")?;
+
+    // --- GPU compute estimates ---
+    let gpu_throughput = GPU_HINTS_PER_SEC * args.gpus as f64;
+    let gpu_time_secs = total_hints as f64 / gpu_throughput;
+    let gpu_time_hours = gpu_time_secs / 3600.0;
+    let gpu_cost = gpu_time_hours * args.gpus as f64 * args.gpu_hourly_rate;
+
+    // --- CPU compute estimates ---
+    let db_size_mb = db_size as f64 / (1024.0 * 1024.0);
+    let scaled_cpu_throughput =
+        CPU_THROUGHPUT_MBPS * (args.cpu_vcpus as f64 / BASELINE_CPU_VCPUS as f64);
+    let cpu_throughput = if args.tee {
+        scaled_cpu_throughput / TEE_OVERHEAD
     } else {
-        format!("{} B", bytes)
+        scaled_cpu_throughput
+    };
+    let cpu_time_secs = db_size_mb / cpu_throughput;
+
+    ensure_finite(&[
+        ("gpu_time_secs", gpu_time_secs),
+        ("gpu_cost", gpu_cost),
+        ("cpu_throughput", cpu_throughput),
+        ("cpu_time_secs", cpu_time_secs),
+    ])?;
+
+    // --- Memory estimates ---
+    let vram_per_gpu = checked_mul(entries, GPU_ENTRY_SIZE, "vram_per_gpu_bytes")?; // expanded entries in VRAM
+    let host_ram = checked_add(db_size, hint_storage, "host_ram_bytes")?; // mmap'd DB + hint arrays
+
+    let estimate = CostEstimate {
+        parameters: Parameters {
+            entries,
+            lambda: args.lambda,
+            chunk_size: w,
+            set_size: c,
+            capacity,
+            total_hints,
+            regular_hints: num_regular,
+            backup_hints: num_backup,
+        },
+        storage: Storage {
+            database_bytes: db_size,
+            regular_hint_bytes,
+            backup_hint_bytes,
+            hint_storage_bytes: hint_storage,
+            total_bytes: total_storage,
+        },
+        gpu_compute: GpuCompute {
+            gpus: args.gpus,
+            throughput_hints_per_sec: GPU_HINTS_PER_SEC,
+            time_secs: gpu_time_secs,
+            cost_usd: gpu_cost,
+            hourly_rate_usd: args.gpu_hourly_rate,
+        },
+        cpu_compute: CpuCompute {
+            tee: args.tee,
+            vcpus: args.cpu_vcpus,
+            throughput_mbps: cpu_throughput,
+            time_secs: cpu_time_secs,
+        },
+        memory: Memory {
+            vram_per_gpu_bytes: vram_per_gpu,
+            host_ram_bytes: host_ram,
+        },
+    };
+
+    if args.json {
+        print_json(&estimate)?;
+    } else {
+        print_table(&estimate)?;
+    }
+
+    Ok(())
+}
+
+fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
+    a.checked_mul(b)
+        .ok_or_else(|| eyre!("overflow while computing {}", label))
+}
+
+fn checked_add(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
+    a.checked_add(b)
+        .ok_or_else(|| eyre!("overflow while computing {}", label))
+}
+
+fn parse_non_negative_f64(raw: &str) -> Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| format!("invalid float value: {}", raw))?;
+    if !value.is_finite() {
+        return Err("value must be finite".to_string());
+    }
+    if value < 0.0 {
+        return Err("value must be >= 0".to_string());
+    }
+    Ok(value)
+}
+
+fn ensure_finite(values: &[(&str, f64)]) -> eyre::Result<()> {
+    for (name, value) in values {
+        if !value.is_finite() {
+            return Err(eyre!(
+                "computed non-finite value for {} ({}); reduce input magnitudes and retry",
+                name,
+                value
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn compute_overhead_pct(entries: u64, capacity: u64) -> eyre::Result<f64> {
+    if entries == 0 {
+        return Err(eyre!("entries must be > 0"));
+    }
+    let overhead_entries = capacity.checked_sub(entries).ok_or_else(|| {
+        eyre!(
+            "capacity ({}) is smaller than entries ({})",
+            capacity,
+            entries
+        )
+    })?;
+    Ok(100.0 * overhead_entries as f64 / entries as f64)
+}
+
+fn fmt_bytes(bytes: u64) -> String {
+    let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if gb >= 1.0 {
+        format!("{:.2} GB", gb)
+    } else {
+        let mb = bytes as f64 / (1024.0 * 1024.0);
+        format!("{:.2} MB", mb)
     }
 }
 
-fn format_duration(secs: f64) -> String {
-    if secs < 60.0 {
+fn fmt_duration(secs: f64) -> String {
+    if secs >= 3600.0 {
+        format!("{:.1}h", secs / 3600.0)
+    } else if secs >= 60.0 {
+        format!("{:.1}m", secs / 60.0)
+    } else {
         format!("{:.1}s", secs)
-    } else if secs < 3600.0 {
-        format!("{:.1} min", secs / 60.0)
-    } else {
-        let hours = secs / 3600.0;
-        format!("{:.2} hr", hours)
     }
 }
 
-fn format_count(n: u64) -> String {
+fn fmt_count(n: u64) -> String {
     if n >= 1_000_000_000 {
-        format!("{:.3}B", n as f64 / 1e9)
+        format!("{:.2}B", n as f64 / 1_000_000_000.0)
     } else if n >= 1_000_000 {
-        format!("{:.2}M", n as f64 / 1e6)
+        format!("{:.2}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1e3)
+        format!("{:.1}K", n as f64 / 1_000.0)
     } else {
         format!("{}", n)
     }
 }
 
-fn main() {
-    let args = Args::parse();
+fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
+    let overhead_pct =
+        compute_overhead_pct(estimate.parameters.entries, estimate.parameters.capacity)?;
 
-    let entries = if args.mainnet {
-        MAINNET_ENTRIES
-    } else if let Some(e) = args.entries {
-        if e == 0 {
-            eprintln!("Error: --entries must be > 0");
-            std::process::exit(1);
-        }
-        e
-    } else {
-        eprintln!("Error: specify --entries <N> or --mainnet");
-        std::process::exit(1);
-    };
-
-    // --- Parameter derivation (reuses crate logic) ---
-    let (w, c) = derive_plinko_params(entries);
-    let lambda = args.lambda;
-    let num_regular = lambda * w;
-    let num_backup = num_regular; // default: backup = regular
-    let total_hints = num_regular + num_backup;
-    let blocks_per_regular = c / 2 + 1;
-    let blocks_per_backup = c / 2;
-
-    // --- Storage ---
-    let db_size = entries * ENTRY_SIZE_V3;
-
-    // Regular hints: seed (32B) + parity (32B) = 64B each
-    let regular_hint_storage = num_regular * (HINT_SEED_SIZE + HINT_PARITY_SIZE);
-    // Backup hints: seed (32B) + parity_in (32B) + parity_out (32B) = 96B each
-    let backup_hint_storage = num_backup * (HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE);
-    let total_hint_storage = regular_hint_storage + backup_hint_storage;
-
-    // Mapping files (mainnet approximation: ~1.7% accounts, ~98.3% storage slots)
-    // For non-mainnet, we estimate proportionally.
-    let (num_accounts, num_storage_slots) = if args.mainnet {
-        // Mainnet: ~30M accounts, ~1.8B storage slots
-        (30_000_000u64, 1_800_000_000u64)
-    } else {
-        // Rough heuristic: ~1.7% accounts, rest storage
-        let accts = (entries as f64 * 0.017).ceil() as u64;
-        let slots = entries.saturating_sub(accts);
-        (accts, slots)
-    };
-    let account_map_size = num_accounts * ACCOUNT_MAP_ENTRY_SIZE;
-    let storage_map_size = num_storage_slots * STORAGE_MAP_ENTRY_SIZE;
-
-    // --- GPU Compute ---
-    let gpu_time_secs = total_hints as f64 / (GPU_HINTS_PER_SEC_H200 * args.gpus as f64);
-    let gpu_hours = args.gpus as f64 * (gpu_time_secs / 3600.0);
-    let gpu_cost = gpu_hours * args.gpu_hourly_rate;
-
-    // --- CPU Compute ---
-    let cpu_throughput = if args.tee {
-        CPU_THROUGHPUT_MBPS_BARE / TEE_OVERHEAD_FACTOR
-    } else {
-        CPU_THROUGHPUT_MBPS_BARE
-    };
-    let db_size_mb = db_size as f64 / (1024.0 * 1024.0);
-    let cpu_time_secs = db_size_mb / cpu_throughput;
-
-    // --- Memory ---
-    // GPU VRAM layout (from gpu.rs):
-    //   1. Packed DB: num_entries * 48B (40B entries expanded to 48B aligned)
-    //   2. Block keys: set_size * 32B (IprfBlockKey = 8 * u32)
-    //   3. Hint subsets: total_hints * ceil(set_size / 8) bytes (bitset, 1 bit per block)
-    //   4. Hint output: total_hints * 48B (HintOutput parity buffer)
-    let vram_packed_db = entries * ENTRY_SIZE_GPU;
-    let subset_bytes_per_hint = (c + 7) / 8;
-    let vram_block_keys = c * 32;
-    let vram_subsets = total_hints * subset_bytes_per_hint;
-    let vram_output = total_hints * 48;
-    let vram_total = vram_packed_db + vram_block_keys + vram_subsets + vram_output;
-
-    // Host RAM: mmap'd database + hint arrays in memory
-    let ram_db = db_size; // mmap'd, but counts toward resident memory
-    let ram_regular = num_regular * (HINT_SEED_SIZE + HINT_PARITY_SIZE);
-    let ram_backup = num_backup * (HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE);
-    let ram_total = ram_db + ram_regular + ram_backup;
-
-    if args.json {
-        print_json(
-            entries, w, c, lambda, num_regular, num_backup, total_hints,
-            blocks_per_regular, blocks_per_backup,
-            db_size, regular_hint_storage, backup_hint_storage, total_hint_storage,
-            account_map_size, storage_map_size,
-            gpu_time_secs, gpu_hours, gpu_cost, &args,
-            cpu_throughput, cpu_time_secs,
-            vram_packed_db, vram_block_keys, vram_subsets, vram_output, vram_total,
-            ram_db, ram_total,
-        );
-    } else {
-        print_table(
-            entries, w, c, lambda, num_regular, num_backup, total_hints,
-            blocks_per_regular, blocks_per_backup,
-            db_size, regular_hint_storage, backup_hint_storage, total_hint_storage,
-            account_map_size, storage_map_size, num_accounts, num_storage_slots,
-            gpu_time_secs, gpu_hours, gpu_cost, &args,
-            cpu_throughput, cpu_time_secs,
-            vram_packed_db, vram_block_keys, vram_subsets, vram_output, vram_total,
-            ram_db, ram_total,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn print_table(
-    entries: u64, w: u64, c: u64, lambda: u64,
-    num_regular: u64, num_backup: u64, total_hints: u64,
-    blocks_per_regular: u64, blocks_per_backup: u64,
-    db_size: u64, regular_hint_storage: u64, backup_hint_storage: u64,
-    total_hint_storage: u64,
-    account_map_size: u64, storage_map_size: u64,
-    num_accounts: u64, num_storage_slots: u64,
-    gpu_time_secs: f64, gpu_hours: f64, gpu_cost: f64, args: &Args,
-    cpu_throughput: f64, cpu_time_secs: f64,
-    vram_packed_db: u64, vram_block_keys: u64, vram_subsets: u64,
-    vram_output: u64, vram_total: u64,
-    ram_db: u64, ram_total: u64,
-) {
-    println!("Plinko PIR Cost Estimate");
-    println!("========================");
+    println!("Plinko Cost Estimate");
+    println!("====================");
     println!();
-
-    // Parameters
     println!("Parameters");
     println!("----------");
-    println!("  Entries (N):           {:>14}  ({})", format_count(entries), entries);
-    println!("  Chunk size (w):        {:>14}  (2^{})", format_count(w), (w as f64).log2().round() as u32);
-    println!("  Set size (c):          {:>14}", format_count(c));
-    println!("  Lambda:                {:>14}", lambda);
-    println!("  Regular hints:         {:>14}  (lambda * w)", format_count(num_regular));
-    println!("  Backup hints:          {:>14}  (lambda * w)", format_count(num_backup));
-    println!("  Total hints:           {:>14}  (2 * lambda * w)", format_count(total_hints));
-    println!("  Blocks/regular hint:   {:>14}  (c/2 + 1)", blocks_per_regular);
-    println!("  Blocks/backup hint:    {:>14}  (c/2)", blocks_per_backup);
+    println!(
+        "  Entries (N):        {:<14} ({})",
+        estimate.parameters.entries,
+        fmt_count(estimate.parameters.entries)
+    );
+    println!("  Lambda:             {}", estimate.parameters.lambda);
+    println!(
+        "  Chunk size (w):     {:<14} ({})",
+        estimate.parameters.chunk_size,
+        fmt_count(estimate.parameters.chunk_size)
+    );
+    println!(
+        "  Set size (c):       {:<14} ({})",
+        estimate.parameters.set_size,
+        fmt_count(estimate.parameters.set_size)
+    );
+    println!(
+        "  Capacity (w*c):     {:<14} ({}, overhead {:.1}%)",
+        estimate.parameters.capacity,
+        fmt_count(estimate.parameters.capacity),
+        overhead_pct
+    );
+    println!(
+        "  Regular hints:      {:<14} ({})",
+        estimate.parameters.regular_hints,
+        fmt_count(estimate.parameters.regular_hints)
+    );
+    println!(
+        "  Backup hints:       {:<14} ({})",
+        estimate.parameters.backup_hints,
+        fmt_count(estimate.parameters.backup_hints)
+    );
+    println!(
+        "  Total hints:        {:<14} ({})",
+        estimate.parameters.total_hints,
+        fmt_count(estimate.parameters.total_hints)
+    );
     println!();
-
-    // Storage
     println!("Storage");
     println!("-------");
-    println!("  database.bin:          {:>14}  ({} entries * {}B)", format_bytes(db_size), format_count(entries), ENTRY_SIZE_V3);
-    println!("  account-mapping.bin:   {:>14}  ({} accounts * {}B)", format_bytes(account_map_size), format_count(num_accounts), ACCOUNT_MAP_ENTRY_SIZE);
-    println!("  storage-mapping.bin:   {:>14}  ({} slots * {}B)", format_bytes(storage_map_size), format_count(num_storage_slots), STORAGE_MAP_ENTRY_SIZE);
-    println!("  Regular hint storage:  {:>14}  ({} * {}B)", format_bytes(regular_hint_storage), format_count(num_regular), HINT_SEED_SIZE + HINT_PARITY_SIZE);
-    println!("  Backup hint storage:   {:>14}  ({} * {}B)", format_bytes(backup_hint_storage), format_count(num_backup), HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE);
-    println!("  Total hint storage:    {:>14}", format_bytes(total_hint_storage));
-    println!("  ─────────────────────────────────────");
-    println!("  Total storage:         {:>14}", format_bytes(db_size + account_map_size + storage_map_size + total_hint_storage));
+    println!(
+        "  database.bin:       {}",
+        fmt_bytes(estimate.storage.database_bytes)
+    );
+    println!(
+        "  Regular hints:      {} ({} x 64B)",
+        fmt_bytes(estimate.storage.regular_hint_bytes),
+        fmt_count(estimate.parameters.regular_hints)
+    );
+    println!(
+        "  Backup hints:       {} ({} x 96B)",
+        fmt_bytes(estimate.storage.backup_hint_bytes),
+        fmt_count(estimate.parameters.backup_hints)
+    );
+    println!(
+        "  Total hint storage: {}",
+        fmt_bytes(estimate.storage.hint_storage_bytes)
+    );
+    println!(
+        "  Total storage:      {}",
+        fmt_bytes(estimate.storage.total_bytes)
+    );
     println!();
-
-    // GPU Compute
     println!("GPU Compute (H200)");
     println!("------------------");
-    println!("  Throughput:            {:>14}  hints/sec/GPU", format_count(GPU_HINTS_PER_SEC_H200 as u64));
-    println!("  GPUs:                  {:>14}", args.gpus);
-    println!("  Wall-clock time:       {:>14}", format_duration(gpu_time_secs));
-    println!("  GPU-hours:             {:>14.2} hr", gpu_hours);
-    println!("  Rate:                  {:>14}", format!("${:.2}/GPU-hr", args.gpu_hourly_rate));
-    println!("  Total GPU cost:        {:>14}", format!("${:.2}", gpu_cost));
+    println!("  GPUs:               {}", estimate.gpu_compute.gpus);
+    println!(
+        "  Throughput:         {:.0} hints/sec/GPU",
+        GPU_HINTS_PER_SEC
+    );
+    println!(
+        "  Total hints:        {}",
+        fmt_count(estimate.parameters.total_hints)
+    );
+    println!(
+        "  Estimated time:     {}",
+        fmt_duration(estimate.gpu_compute.time_secs)
+    );
+    println!(
+        "  Estimated cost:     ${:.2} (@ ${:.2}/GPU-hr)",
+        estimate.gpu_compute.cost_usd, estimate.gpu_compute.hourly_rate_usd
+    );
     println!();
-
-    // CPU Compute
-    let mode = if args.tee { "TEE" } else { "bare metal" };
-    println!("CPU Compute (64-core, {})", mode);
-    println!("----------------------------");
-    println!("  Throughput:            {:>14.1} MB/s", cpu_throughput);
-    if args.tee {
-        println!("  TEE overhead:          {:>14.1}x", TEE_OVERHEAD_FACTOR);
-    }
-    println!("  Database scan time:    {:>14}", format_duration(cpu_time_secs));
+    println!(
+        "CPU Compute ({})",
+        if estimate.cpu_compute.tee {
+            "TEE mode"
+        } else {
+            "bare metal"
+        }
+    );
+    println!("------------------");
+    println!(
+        "  Throughput:         {:.1} MB/s ({}-vCPU{})",
+        estimate.cpu_compute.throughput_mbps,
+        estimate.cpu_compute.vcpus,
+        if estimate.cpu_compute.tee {
+            ", TEE 2.6x overhead"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "  Database size:      {}",
+        fmt_bytes(estimate.storage.database_bytes)
+    );
+    println!(
+        "  Estimated time:     {}",
+        fmt_duration(estimate.cpu_compute.time_secs)
+    );
     println!();
-
-    // Memory
     println!("Memory");
     println!("------");
-    println!("  GPU VRAM (packed DB):  {:>14}  ({} * {}B)", format_bytes(vram_packed_db), format_count(entries), ENTRY_SIZE_GPU);
-    println!("  GPU VRAM (block keys): {:>14}  ({} * 32B)", format_bytes(vram_block_keys), format_count(c));
-    println!("  GPU VRAM (subsets):    {:>14}  (bitset, ceil(c/8) per hint)", format_bytes(vram_subsets));
-    println!("  GPU VRAM (output):     {:>14}  ({} * 48B)", format_bytes(vram_output), format_count(total_hints));
-    println!("  GPU VRAM total:        {:>14}", format_bytes(vram_total));
-    println!("  Host RAM (DB mmap):    {:>14}", format_bytes(ram_db));
-    println!("  Host RAM total:        {:>14}", format_bytes(ram_total));
+    println!(
+        "  VRAM per GPU:       {} (entries x {}B expanded)",
+        fmt_bytes(estimate.memory.vram_per_gpu_bytes),
+        GPU_ENTRY_SIZE
+    );
+    println!(
+        "  Host RAM:           {} (DB mmap + hints)",
+        fmt_bytes(estimate.memory.host_ram_bytes)
+    );
+    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn print_json(
-    entries: u64, w: u64, c: u64, lambda: u64,
-    num_regular: u64, num_backup: u64, total_hints: u64,
-    blocks_per_regular: u64, blocks_per_backup: u64,
-    db_size: u64, regular_hint_storage: u64, backup_hint_storage: u64,
-    total_hint_storage: u64,
-    account_map_size: u64, storage_map_size: u64,
-    gpu_time_secs: f64, gpu_hours: f64, gpu_cost: f64, args: &Args,
-    cpu_throughput: f64, cpu_time_secs: f64,
-    vram_packed_db: u64, vram_block_keys: u64, vram_subsets: u64,
-    vram_output: u64, vram_total: u64,
-    ram_db: u64, ram_total: u64,
-) {
-    // Hand-rolled JSON to avoid adding serde dependency
-    println!("{{");
-    println!("  \"parameters\": {{");
-    println!("    \"entries\": {},", entries);
-    println!("    \"chunk_size_w\": {},", w);
-    println!("    \"set_size_c\": {},", c);
-    println!("    \"lambda\": {},", lambda);
-    println!("    \"num_regular\": {},", num_regular);
-    println!("    \"num_backup\": {},", num_backup);
-    println!("    \"total_hints\": {},", total_hints);
-    println!("    \"blocks_per_regular\": {},", blocks_per_regular);
-    println!("    \"blocks_per_backup\": {}", blocks_per_backup);
-    println!("  }},");
-    println!("  \"storage_bytes\": {{");
-    println!("    \"database_bin\": {},", db_size);
-    println!("    \"account_mapping\": {},", account_map_size);
-    println!("    \"storage_mapping\": {},", storage_map_size);
-    println!("    \"regular_hints\": {},", regular_hint_storage);
-    println!("    \"backup_hints\": {},", backup_hint_storage);
-    println!("    \"total_hints\": {},", total_hint_storage);
-    println!("    \"total\": {}", db_size + account_map_size + storage_map_size + total_hint_storage);
-    println!("  }},");
-    println!("  \"gpu_compute\": {{");
-    println!("    \"throughput_hints_per_sec_per_gpu\": {},", GPU_HINTS_PER_SEC_H200 as u64);
-    println!("    \"num_gpus\": {},", args.gpus);
-    println!("    \"wall_clock_secs\": {:.1},", gpu_time_secs);
-    println!("    \"gpu_hours\": {:.2},", gpu_hours);
-    println!("    \"rate_per_gpu_hour_usd\": {:.2},", args.gpu_hourly_rate);
-    println!("    \"total_cost_usd\": {:.2}", gpu_cost);
-    println!("  }},");
-    println!("  \"cpu_compute\": {{");
-    println!("    \"throughput_mbps\": {:.1},", cpu_throughput);
-    println!("    \"tee\": {},", args.tee);
-    println!("    \"scan_time_secs\": {:.1}", cpu_time_secs);
-    println!("  }},");
-    println!("  \"memory_bytes\": {{");
-    println!("    \"vram_packed_db\": {},", vram_packed_db);
-    println!("    \"vram_block_keys\": {},", vram_block_keys);
-    println!("    \"vram_subsets\": {},", vram_subsets);
-    println!("    \"vram_output\": {},", vram_output);
-    println!("    \"vram_total\": {},", vram_total);
-    println!("    \"ram_db_mmap\": {},", ram_db);
-    println!("    \"ram_total\": {}", ram_total);
-    println!("  }}");
-    println!("}}");
+fn print_json(estimate: &CostEstimate) -> eyre::Result<()> {
+    println!("{}", serde_json::to_string_pretty(estimate)?);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_mul_overflow_is_error() {
+        assert!(checked_mul(u64::MAX, 2, "x").is_err());
+    }
+
+    #[test]
+    fn checked_add_overflow_is_error() {
+        assert!(checked_add(u64::MAX, 1, "x").is_err());
+    }
+
+    #[test]
+    fn clap_rejects_zero_entries() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "0"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_zero_gpus() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "1", "--gpus", "0"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_zero_cpu_vcpus() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "1", "--cpu-vcpus", "0"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_negative_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "-0.01",
+        ]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_nan_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "NaN",
+        ]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_infinite_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "inf",
+        ]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_accepts_positive_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "3.5",
+        ])
+        .expect("valid positive hourly rate should parse");
+        assert_eq!(args.gpu_hourly_rate, 3.5);
+    }
+
+    #[test]
+    fn ensure_finite_rejects_infinity() {
+        let result = ensure_finite(&[("x", f64::INFINITY)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compute_overhead_pct_rejects_invalid_capacity() {
+        let result = compute_overhead_pct(10, 9);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compute_overhead_pct_rejects_zero_entries() {
+        let result = compute_overhead_pct(0, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn print_table_propagates_overhead_error() {
+        let estimate = CostEstimate {
+            parameters: Parameters {
+                entries: 10,
+                lambda: 128,
+                chunk_size: 1,
+                set_size: 1,
+                capacity: 9,
+                total_hints: 0,
+                regular_hints: 0,
+                backup_hints: 0,
+            },
+            storage: Storage {
+                database_bytes: 0,
+                regular_hint_bytes: 0,
+                backup_hint_bytes: 0,
+                hint_storage_bytes: 0,
+                total_bytes: 0,
+            },
+            gpu_compute: GpuCompute {
+                gpus: 1,
+                throughput_hints_per_sec: GPU_HINTS_PER_SEC,
+                time_secs: 0.0,
+                cost_usd: 0.0,
+                hourly_rate_usd: 0.0,
+            },
+            cpu_compute: CpuCompute {
+                tee: false,
+                vcpus: BASELINE_CPU_VCPUS,
+                throughput_mbps: 0.0,
+                time_secs: 0.0,
+            },
+            memory: Memory {
+                vram_per_gpu_bytes: 0,
+                host_ram_bytes: 0,
+            },
+        };
+        assert!(print_table(&estimate).is_err());
+    }
 }
