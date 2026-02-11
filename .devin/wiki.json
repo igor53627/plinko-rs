@@ -27,6 +27,10 @@
     {
       "content": "Formal verification status (Dec 2025): Core properties proven (SR bijection, iPRF partition, binomial range). Intentional axioms: crypto (AES-128, key derivation), math (binomial_theorem_Z), FFI (Rust refinement). One Admitted proof: hint_init_backup_streaming_eq_batch in HintInitSim.v (fold equivalence, no crypto assumptions).",
       "author": "maintainer"
+    },
+    {
+      "content": "The plinko crate now includes a cost-estimation CLI binary (`cost_estimate`) for preflight capacity/cost planning. CI smoke-tests it in `.github/workflows/ci.yml`, and usage is documented in `README.md` and `docs/DEPLOYMENT.md`.",
+      "author": "maintainer"
     }
   ],
   "pages": [
