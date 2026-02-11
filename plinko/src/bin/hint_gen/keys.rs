@@ -1,7 +1,12 @@
+//! Key derivation and pseudorandom subset sampling for hint generation.
+
 use plinko::iprf::PrfKey128;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
+/// Derives one 128-bit IPRF key per block from the master seed.
+///
+/// Each key is the first 16 bytes of `SHA-256(master_seed || "block_key" || block_idx_le)`.
 pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     let mut keys = Vec::with_capacity(c);
     for block_idx in 0..c {
@@ -17,6 +22,9 @@ pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     keys
 }
 
+/// Derives a 32-byte subset seed for the given label and index.
+///
+/// Computed as `SHA-256(master_seed || label || idx_le)`.
 pub fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(master_seed);
@@ -28,6 +36,7 @@ pub fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8
     seed
 }
 
+/// Samples `size` distinct indices from `[0, total)` using Fisher-Yates via `rand`.
 pub fn random_subset(rng: &mut ChaCha20Rng, size: usize, total: usize) -> Vec<usize> {
     use rand::seq::index::sample;
     sample(rng, total, size).into_vec()
