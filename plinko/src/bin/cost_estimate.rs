@@ -59,7 +59,11 @@ struct Args {
     gpus: u64,
 
     /// GPU hourly rate in USD
-    #[arg(long, default_value_t = DEFAULT_GPU_HOURLY_RATE)]
+    #[arg(
+        long,
+        default_value_t = DEFAULT_GPU_HOURLY_RATE,
+        value_parser = parse_non_negative_f64
+    )]
     gpu_hourly_rate: f64,
 
     /// Number of CPU vCPUs for throughput scaling
@@ -247,6 +251,19 @@ fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
 fn checked_add(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
     a.checked_add(b)
         .ok_or_else(|| eyre!("overflow while computing {}", label))
+}
+
+fn parse_non_negative_f64(raw: &str) -> Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| format!("invalid float value: {}", raw))?;
+    if !value.is_finite() {
+        return Err("value must be finite".to_string());
+    }
+    if value < 0.0 {
+        return Err("value must be >= 0".to_string());
+    }
+    Ok(value)
 }
 
 fn ensure_finite(values: &[(&str, f64)]) -> eyre::Result<()> {
@@ -480,6 +497,18 @@ mod tests {
     }
 
     #[test]
+    fn clap_rejects_negative_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "-0.01",
+        ]);
+        assert!(args.is_err());
+    }
+
+    #[test]
     fn ensure_finite_rejects_infinity() {
         let result = ensure_finite(&[("x", f64::INFINITY)]);
         assert!(result.is_err());
@@ -489,5 +518,52 @@ mod tests {
     fn compute_overhead_pct_rejects_invalid_capacity() {
         let result = compute_overhead_pct(10, 9);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn compute_overhead_pct_rejects_zero_entries() {
+        let result = compute_overhead_pct(0, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn print_table_propagates_overhead_error() {
+        let estimate = CostEstimate {
+            parameters: Parameters {
+                entries: 10,
+                lambda: 128,
+                chunk_size: 1,
+                set_size: 1,
+                capacity: 9,
+                total_hints: 0,
+                regular_hints: 0,
+                backup_hints: 0,
+            },
+            storage: Storage {
+                database_bytes: 0,
+                regular_hint_bytes: 0,
+                backup_hint_bytes: 0,
+                hint_storage_bytes: 0,
+                total_bytes: 0,
+            },
+            gpu_compute: GpuCompute {
+                gpus: 1,
+                throughput_hints_per_sec: GPU_HINTS_PER_SEC,
+                time_secs: 0.0,
+                cost_usd: 0.0,
+                hourly_rate_usd: 0.0,
+            },
+            cpu_compute: CpuCompute {
+                tee: false,
+                vcpus: BASELINE_CPU_VCPUS,
+                throughput_mbps: 0.0,
+                time_secs: 0.0,
+            },
+            memory: Memory {
+                vram_per_gpu_bytes: 0,
+                host_ram_bytes: 0,
+            },
+        };
+        assert!(print_table(&estimate).is_err());
     }
 }
