@@ -116,9 +116,7 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
         } else {
             info!(
                 n_entries,
-                w,
-                pad_entries,
-                "N not divisible by w, padding with dummy entries"
+                w, pad_entries, "N not divisible by w, padding with dummy entries"
             );
         }
     }
@@ -171,7 +169,7 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
                 .map_err(|_| eyre::eyre!("invalid hex in --seed at position {}", i * 2))?;
         }
         if args.print_seed {
-            info!(seed = %format_args!("0x{}", hex_clean), "Using provided seed");
+            println!("Using provided seed: 0x{}", hex_clean);
         }
         Ok(seed)
     } else {
@@ -179,7 +177,7 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
         rand::thread_rng().fill_bytes(&mut seed);
         if args.print_seed {
             let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
-            info!(seed = %format_args!("0x{}", hex), "Generated seed");
+            println!("Generated seed: 0x{}", hex);
         }
         Ok(seed)
     }
