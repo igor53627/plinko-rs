@@ -620,6 +620,13 @@ mod tests {
     }
 
     #[test]
+    fn heuristic_mapping_split_handles_u64_max() {
+        let entries = u64::MAX;
+        let (accounts, storage_slots) = estimate_mapping_counts(entries, false);
+        assert_eq!(accounts + storage_slots, entries);
+    }
+
+    #[test]
     fn storage_and_vram_totals_include_all_components() {
         let entries = 1_000_u64;
         let lambda = 16_u64;
