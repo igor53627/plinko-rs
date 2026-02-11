@@ -52,9 +52,9 @@ These files ensure previously-discovered failure cases are replayed on every run
 
 | Test | Tolerance | Risk | Rationale |
 |------|-----------|------|-----------|
-| `test_distribution_mean` | |mean - 50.0| < 2.0 | Very Low | Uses deterministic PRF sequence (`i * golden_ratio`), not random; 10,000 samples |
+| `test_distribution_mean` | \|mean - 50.0\| < 2.0 | Very Low | Uses deterministic PRF sequence (`i * golden_ratio`), not random; 10,000 samples |
 | `test_full_support` | count_seen >= 15/21 | Very Low | Deterministic PRF sequence; 100,000 iterations over domain [0,20] |
-| `test_tee_distribution_mean` | |mean - 50.0| < 2.0 | Very Low | Same deterministic sequence as above |
+| `test_tee_distribution_mean` | \|mean - 50.0\| < 2.0 | Very Low | Same deterministic sequence as above |
 | `test_tee_full_support` | count_seen >= 15/21 | Very Low | Same deterministic sequence as above |
 
 These tests **appear** statistical but use a deterministic pseudo-random sequence (`i.wrapping_mul(0x9E3779B97F4A7C15)` — the golden ratio constant). This makes them fully reproducible and non-flaky.
