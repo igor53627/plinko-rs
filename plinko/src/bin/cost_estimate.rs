@@ -9,8 +9,14 @@ use eyre::eyre;
 use plinko::db::derive_plinko_params;
 use serde::Serialize;
 
-/// Mainnet v3 dataset: ~330M accounts + ~1.5B storage slots
-const MAINNET_ENTRIES: u64 = 1_830_000_000;
+/// Mainnet v3 snapshot counts (docs/plinko_paper_index.json).
+const MAINNET_ACCOUNTS: u64 = 351_681_953;
+const MAINNET_STORAGE_SLOTS: u64 = 1_482_413_924;
+const MAINNET_ENTRIES: u64 = MAINNET_ACCOUNTS + MAINNET_STORAGE_SLOTS;
+
+/// Heuristic split for non-mainnet inputs: ceil(entries * 1.7%).
+const ACCOUNT_SPLIT_NUMERATOR: u128 = 17;
+const ACCOUNT_SPLIT_DENOMINATOR: u128 = 1_000;
 
 /// v3 schema entry size (bytes)
 const ENTRY_SIZE: u64 = 40;
@@ -182,14 +188,8 @@ fn main() -> eyre::Result<()> {
 
     // --- Storage estimates ---
     let db_size = checked_mul(entries, ENTRY_SIZE, "database_bytes")?;
-    let (estimated_accounts, estimated_storage_slots) = if args.mainnet {
-        (30_000_000_u64, 1_800_000_000_u64)
-    } else {
-        // Non-mainnet heuristic: ~1.7% accounts, remainder storage slots.
-        let estimated_accounts = (entries as f64 * 0.017).ceil() as u64;
-        let estimated_storage_slots = entries.saturating_sub(estimated_accounts);
-        (estimated_accounts, estimated_storage_slots)
-    };
+    let (estimated_accounts, estimated_storage_slots) =
+        estimate_mapping_counts(entries, args.mainnet);
     let account_mapping_bytes = checked_mul(
         estimated_accounts,
         ACCOUNT_MAP_ENTRY_SIZE,
@@ -322,6 +322,19 @@ fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
 fn checked_add(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
     a.checked_add(b)
         .ok_or_else(|| eyre!("overflow while computing {}", label))
+}
+
+fn estimate_mapping_counts(entries: u64, mainnet: bool) -> (u64, u64) {
+    if mainnet {
+        return (MAINNET_ACCOUNTS, MAINNET_STORAGE_SLOTS);
+    }
+
+    let numerator = entries as u128 * ACCOUNT_SPLIT_NUMERATOR;
+    let estimated_accounts_u128 =
+        (numerator + (ACCOUNT_SPLIT_DENOMINATOR - 1)) / ACCOUNT_SPLIT_DENOMINATOR;
+    let estimated_accounts = estimated_accounts_u128 as u64;
+    let estimated_storage_slots = entries.saturating_sub(estimated_accounts);
+    (estimated_accounts, estimated_storage_slots)
 }
 
 fn parse_non_negative_f64(raw: &str) -> Result<f64, String> {
@@ -588,6 +601,95 @@ mod tests {
     #[test]
     fn checked_add_overflow_is_error() {
         assert!(checked_add(u64::MAX, 1, "x").is_err());
+    }
+
+    #[test]
+    fn mainnet_mapping_split_matches_snapshot() {
+        let (accounts, storage_slots) = estimate_mapping_counts(MAINNET_ENTRIES, true);
+        assert_eq!(accounts, MAINNET_ACCOUNTS);
+        assert_eq!(storage_slots, MAINNET_STORAGE_SLOTS);
+        assert_eq!(accounts + storage_slots, MAINNET_ENTRIES);
+    }
+
+    #[test]
+    fn heuristic_mapping_split_preserves_total_entries() {
+        let entries = 101;
+        let (accounts, storage_slots) = estimate_mapping_counts(entries, false);
+        assert_eq!(accounts, 2); // ceil(101 * 1.7%) == 2
+        assert_eq!(accounts + storage_slots, entries);
+    }
+
+    #[test]
+    fn storage_and_vram_totals_include_all_components() {
+        let entries = 1_000_u64;
+        let lambda = 16_u64;
+        let (w, c) = derive_plinko_params(entries);
+        let num_regular = checked_mul(lambda, w, "num_regular").expect("regular count");
+        let total_hints = checked_mul(num_regular, 2, "total_hints").expect("total hints");
+
+        let db_size = checked_mul(entries, ENTRY_SIZE, "database_bytes").expect("db");
+        let (accounts, storage_slots) = estimate_mapping_counts(entries, false);
+        let account_bytes =
+            checked_mul(accounts, ACCOUNT_MAP_ENTRY_SIZE, "account_mapping_bytes").expect("acct");
+        let storage_bytes = checked_mul(
+            storage_slots,
+            STORAGE_MAP_ENTRY_SIZE,
+            "storage_mapping_bytes",
+        )
+        .expect("storage");
+        let regular_hint_bytes = checked_mul(
+            num_regular,
+            HINT_SEED_SIZE + HINT_PARITY_SIZE,
+            "regular_hint_bytes",
+        )
+        .expect("regular_hint_bytes");
+        let backup_hint_bytes = checked_mul(
+            num_regular,
+            HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE,
+            "backup_hint_bytes",
+        )
+        .expect("backup_hint_bytes");
+        let hint_storage = checked_add(regular_hint_bytes, backup_hint_bytes, "hint_storage_bytes")
+            .expect("hints");
+        let total_storage = checked_add(
+            checked_add(
+                checked_add(db_size, account_bytes, "db+acct").expect("db+acct"),
+                storage_bytes,
+                "db+maps",
+            )
+            .expect("db+maps"),
+            hint_storage,
+            "total_storage",
+        )
+        .expect("total_storage");
+        assert_eq!(
+            total_storage,
+            db_size + account_bytes + storage_bytes + hint_storage
+        );
+
+        let subset_bytes_per_hint = (c + 7) / 8;
+        let vram_packed_db =
+            checked_mul(entries, GPU_ENTRY_SIZE, "vram_packed_db").expect("packed");
+        let vram_block_keys = checked_mul(c, BLOCK_KEY_SIZE, "vram_block_keys").expect("keys");
+        let vram_subsets =
+            checked_mul(total_hints, subset_bytes_per_hint, "vram_subsets").expect("subsets");
+        let vram_output =
+            checked_mul(total_hints, HINT_OUTPUT_SIZE, "vram_output").expect("output");
+        let vram_total = checked_add(
+            checked_add(
+                checked_add(vram_packed_db, vram_block_keys, "vram_with_keys").expect("keys"),
+                vram_subsets,
+                "vram_with_subsets",
+            )
+            .expect("subsets"),
+            vram_output,
+            "vram_total",
+        )
+        .expect("vram_total");
+        assert_eq!(
+            vram_total,
+            vram_packed_db + vram_block_keys + vram_subsets + vram_output
+        );
     }
 
     #[test]
