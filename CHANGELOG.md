@@ -12,8 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - CUDA kernel (`hint_kernel.cu`) with ChaCha12 block cipher and SwapOrNot iPRF
   - `GpuHintGenerator` using cudarc for GPU execution
   - Warp-level parallelism: warp shuffle broadcasts block keys (32x fewer memory reads), ballot sync skips unneeded blocks
-  - Parallel CPU baseline (`CpuHintGenerator`) with full ChaCha8 iPRF and rayon parallelism for accurate GPU speedup comparison
-  - Evolved cipher from AES-128 (software S-box bottleneck) to ChaCha8 (33x speedup) to ChaCha12 (enhanced security)
+  - Parallel CPU baseline (`CpuHintGenerator`) with ChaCha12-based iPRF and rayon parallelism for accurate GPU speedup comparison
+  - Evolved cipher from AES-128 (software S-box bottleneck) through ChaCha8 experiments to ChaCha12 (current implementation, enhanced security)
   - `gen_synthetic` binary for generating test datasets
   - `bench_gpu_hints` binary for GPU vs CPU benchmarking
   - Modal scripts for H100/H200 distributed benchmarking with multi-GPU sharding
@@ -24,7 +24,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Reduced nonce from 8B (u64) to 4B (u32) - sufficient for 4B transactions
   - Mainnet footprint: 103 GB -> 86 GB; 12% faster GPU hint generation
   - Chunked VRAM upload: 48B expansion during upload to include Tag in parity, avoids VRAM overflow
-  - Reverted ulong2 vectorized loads due to XID 13 misalignment crashes on H200
 - **Documentation restructuring**
   - Split README into focused subdocs (ops, benchmarks, architecture)
   - Added ops docs and PIR dataset links for mainnet v3 data
@@ -101,7 +100,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- **iPRF cipher**: Upgraded from AES-128 to ChaCha12 for GPU-native ARX operations and improved security margin
+- **iPRF cipher**: Upgraded from AES-128 to ChaCha12 for GPU-native ARX operations and improved security margin; applies to both `GpuHintGenerator` and `CpuHintGenerator`
 - **VRAM layout**: On-the-fly compaction strips Tag/Padding during upload, then chunked 48B expansion ensures Tag is included in parity computation
 - **Modal scripts**: Updated for v3 schema with robust builder pattern and multi-GPU sharding support
 - **iPRF**: `Iprf` and `IprfTee` now use `SwapOrNotSr`/`SwapOrNotSrTee` instead of plain `SwapOrNot` for full-domain security
