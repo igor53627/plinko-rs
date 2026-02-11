@@ -174,6 +174,16 @@ fn main() -> eyre::Result<()> {
     };
     let cpu_time_secs = db_size_mb / cpu_throughput;
 
+    if !gpu_time_secs.is_finite()
+        || !gpu_cost.is_finite()
+        || !cpu_throughput.is_finite()
+        || !cpu_time_secs.is_finite()
+    {
+        return Err(eyre!(
+            "computed non-finite estimates; reduce input magnitudes and retry"
+        ));
+    }
+
     // --- Memory estimates ---
     let vram_per_gpu = checked_mul(entries, GPU_ENTRY_SIZE, "vram_per_gpu_bytes")?; // expanded entries in VRAM
     let host_ram = checked_add(db_size, hint_storage, "host_ram_bytes")?; // mmap'd DB + hint arrays
@@ -267,8 +277,11 @@ fn fmt_count(n: u64) -> String {
 }
 
 fn print_table(estimate: &CostEstimate) {
-    let overhead_pct = 100.0 * (estimate.parameters.capacity - estimate.parameters.entries) as f64
-        / estimate.parameters.entries as f64;
+    let overhead_entries = estimate
+        .parameters
+        .capacity
+        .saturating_sub(estimate.parameters.entries);
+    let overhead_pct = 100.0 * overhead_entries as f64 / estimate.parameters.entries as f64;
 
     println!("Plinko Cost Estimate");
     println!("====================");
@@ -402,4 +415,37 @@ fn print_table(estimate: &CostEstimate) {
 fn print_json(estimate: &CostEstimate) -> eyre::Result<()> {
     println!("{}", serde_json::to_string_pretty(estimate)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_mul_overflow_is_error() {
+        assert!(checked_mul(u64::MAX, 2, "x").is_err());
+    }
+
+    #[test]
+    fn checked_add_overflow_is_error() {
+        assert!(checked_add(u64::MAX, 1, "x").is_err());
+    }
+
+    #[test]
+    fn clap_rejects_zero_entries() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "0"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_zero_gpus() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "1", "--gpus", "0"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_zero_cpu_vcpus() {
+        let args = Args::try_parse_from(["cost_estimate", "--entries", "1", "--cpu-vcpus", "0"]);
+        assert!(args.is_err());
+    }
 }
