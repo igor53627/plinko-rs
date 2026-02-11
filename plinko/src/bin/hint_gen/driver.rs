@@ -35,7 +35,7 @@ pub struct HintParams {
     pub total_hints: usize,
 }
 
-/// Return type for [`init_hints`]: `(regular_hints, regular_blocks, backup_hints, backup_blocks)`.
+/// Return type for [`init_hints`]: `(regular_hints, regular_hint_blocks, backup_hints, backup_hint_blocks)`.
 pub type HintInitOutput = (
     Vec<RegularHint>,
     Vec<Vec<usize>>,
