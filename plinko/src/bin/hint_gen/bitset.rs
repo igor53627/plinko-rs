@@ -1,9 +1,14 @@
+/// A packed bitset over block indices, designed for constant-time membership
+/// queries that avoid data-dependent branching.
 pub struct BlockBitset {
+    /// Packed 64-bit words storing one bit per block index.
     bits: Vec<u64>,
+    /// Total number of blocks this bitset covers.
     num_blocks: usize,
 }
 
 impl BlockBitset {
+    /// Creates a new all-zeros bitset that can hold `num_blocks` bits.
     pub fn new(num_blocks: usize) -> Self {
         let num_words = num_blocks.div_ceil(64);
         Self {
@@ -12,6 +17,7 @@ impl BlockBitset {
         }
     }
 
+    /// Builds a bitset with the given block indices set to 1.
     pub fn from_sorted_blocks(blocks: &[usize], num_blocks: usize) -> Self {
         let mut bitset = Self::new(num_blocks);
         for &block in blocks {
@@ -22,6 +28,7 @@ impl BlockBitset {
         bitset
     }
 
+    /// Returns 1 if `block` is in the set, 0 otherwise, in constant time.
     #[inline]
     pub fn contains_ct(&self, block: usize) -> u64 {
         if block >= self.num_blocks {

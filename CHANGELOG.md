@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **GPU-accelerated hint generation**: CUDA kernel for massively parallel hint computation
+  - CUDA kernel (`hint_kernel.cu`) with ChaCha12 block cipher and SwapOrNot iPRF
+  - `GpuHintGenerator` using cudarc for GPU execution
+  - Warp-level parallelism: warp shuffle broadcasts block keys (32x fewer memory reads), ballot sync skips unneeded blocks
+  - Parallel CPU baseline (`CpuHintGenerator`) with ChaCha12-based iPRF and rayon parallelism for accurate GPU speedup comparison
+  - Evolved cipher from AES-128 (software S-box bottleneck) through ChaCha8 experiments to ChaCha12 (current implementation)
+  - `gen_synthetic` binary for generating test datasets
+  - `bench_gpu_hints` binary for GPU vs CPU benchmarking
+  - Modal scripts for H100/H200 distributed benchmarking with multi-GPU sharding
+  - Production benchmarks: ~133-175k hints/sec on 50x H200 GPUs
+- **Schema v3 (40-byte entries)**: 17% storage reduction over 48-byte schema
+  - `AccountEntry40`: Balance(16) + Nonce(4) + CodeID(4) + TAG(8) + Pad(8)
+  - `StorageEntry40`: Value(32) + TAG(8) - no padding needed
+  - Reduced nonce from 8B (u64) to 4B (u32); supports per-account nonce values up to `2^32 - 1`
+  - Mainnet footprint: 103 GB -> 86 GB; 12% faster GPU hint generation
+  - Chunked VRAM upload: 48B expansion during upload to include Tag in parity, avoids VRAM overflow
+- **Documentation restructuring**
+  - Split README into focused subdocs (ops, benchmarks, architecture)
+  - Added ops docs and PIR dataset links for mainnet v3 data
+  - GPU benchmark notes and expansion strategy documentation
 - **Repository rename and crate move**: consolidated `state-syncer` into the `plinko` crate
   - Workspace now uses `plinko` for hint generation and iPRF/CT primitives
   - Docker artifacts updated to build/run `plinko` instead of `state-syncer`
@@ -80,6 +100,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **iPRF cipher**: Upgraded from AES-128 to ChaCha12 for GPU-native ARX operations; applies to both `GpuHintGenerator` and `CpuHintGenerator`
+- **VRAM layout**: On-the-fly compaction strips Tag/Padding during upload, then chunked 48B expansion ensures Tag is included in parity computation
+- **Modal scripts**: Updated for v3 schema with robust builder pattern and multi-GPU sharding support
 - **iPRF**: `Iprf` and `IprfTee` now use `SwapOrNotSr`/`SwapOrNotSrTee` instead of plain `SwapOrNot` for full-domain security
 - **Hint storage**: Hints now store a 32-byte seed instead of explicit block lists, significantly reducing memory footprint
 - **Block count (c)**: Auto-bumped to even if odd (required for security proof); hard assertion enforced in production mode
@@ -89,5 +112,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Schema v3 alignment**: Corrected ENTRY_SIZE and alignment for 40-byte schema in CUDA kernel
+- **VRAM correctness**: Switched from 32B compaction to 48B expansion to ensure Tag is included in hint parity (algorithmic correctness fix)
+- **H200 stability**: Reverted ulong2 vectorized loads that caused XID 13 misalignment crashes on H200
 - **SR round counts**: Implemented paper-faithful per-stage epsilon-budget schedule (Morris-Rogaway Section 5, Strategy 1) for provable 128-bit security; previous heuristic had no proven bound
 - Block count evenness now properly enforced for Plinko security proof compliance
+
+### Removed
+
+- `.beads` directory (unused build artifact)
+- `analyze_storage_values.rs` (unused analysis tool)
+- Legacy documentation binaries; archived into `docs/archive/`
+- SonarQube scanner work artifacts (added to `.gitignore`)
