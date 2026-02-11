@@ -509,6 +509,43 @@ mod tests {
     }
 
     #[test]
+    fn clap_rejects_nan_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "NaN",
+        ]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_rejects_infinite_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "inf",
+        ]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn clap_accepts_positive_gpu_hourly_rate() {
+        let args = Args::try_parse_from([
+            "cost_estimate",
+            "--entries",
+            "1",
+            "--gpu-hourly-rate",
+            "3.5",
+        ])
+        .expect("valid positive hourly rate should parse");
+        assert_eq!(args.gpu_hourly_rate, 3.5);
+    }
+
+    #[test]
     fn ensure_finite_rejects_infinity() {
         let result = ensure_finite(&[("x", f64::INFINITY)]);
         assert!(result.is_err());
