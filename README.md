@@ -28,6 +28,13 @@ cargo build --release
 - `--output-dir`: Output directory (default: `data`).
 - `--limit`: (Optional) Limit the number of accounts/slots extracted (for testing).
 
+### Cost Estimator CLI
+
+```bash
+cargo run -p plinko --bin cost_estimate -- --mainnet
+cargo run -p plinko --bin cost_estimate -- --entries 100000000 --gpus 2 --tee --json
+```
+
 ## Output Artifacts (Extractor)
 
 The extractor produces five files:
