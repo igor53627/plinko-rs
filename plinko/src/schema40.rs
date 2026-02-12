@@ -435,7 +435,10 @@ mod tests {
             BALANCE_SIZE + NONCE_SIZE + CODE_ID_SIZE + TAG_SIZE + ACCOUNT_PADDING_SIZE,
             ENTRY_SIZE
         );
-        assert_eq!(STORAGE_VALUE_SIZE + TAG_SIZE + STORAGE_PADDING_SIZE, ENTRY_SIZE);
+        assert_eq!(
+            STORAGE_VALUE_SIZE + TAG_SIZE + STORAGE_PADDING_SIZE,
+            ENTRY_SIZE
+        );
         assert_eq!(std::mem::size_of::<AccountEntry40>(), ENTRY_SIZE);
         assert_eq!(std::mem::size_of::<StorageEntry40>(), ENTRY_SIZE);
     }
