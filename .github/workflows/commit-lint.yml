@@ -1,0 +1,53 @@
+name: Commit Lint
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit messages
+        run: |
+          TYPES="feat|fix|perf|docs|chore|ci|test|refactor|style|build|revert"
+          failed=0
+
+          for sha in $(git log --format='%H' origin/main..HEAD); do
+            msg=$(git log -1 --format='%s' "$sha")
+
+            # Skip exempted messages
+            if echo "$msg" | grep -qE '^Merge |^(fixup|squash)! |^bd sync'; then
+              continue
+            fi
+
+            # Check format
+            if ! echo "$msg" | grep -qE "^($TYPES)(\([a-zA-Z0-9_/ -]+\))?!?: .+"; then
+              echo "FAIL: $sha"
+              echo "  $msg"
+              echo "  Expected: <type>[(<scope>)][!]: <description>"
+              failed=1
+              continue
+            fi
+
+            # Check length
+            len=${#msg}
+            if [ "$len" -gt 72 ]; then
+              echo "FAIL: $sha"
+              echo "  Subject is $len chars (max 72): $msg"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -eq 1 ]; then
+            echo ""
+            echo "Allowed types: feat, fix, perf, docs, chore, ci, test, refactor, style, build, revert"
+            exit 1
+          fi
+
+          echo "All commit messages are valid."

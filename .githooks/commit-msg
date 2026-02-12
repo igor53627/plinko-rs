@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# commit-msg hook: validates Conventional Commits format.
+#
+# Allowed types: feat, fix, perf, docs, chore, ci, test, refactor, style, build, revert
+# Format:        <type>[(<scope>)][!]: <description>
+# Subject line:  max 72 characters
+#
+# Exemptions: merge commits, fixup/squash prefixes, "bd sync" messages.
+
+set -euo pipefail
+
+commit_msg_file="$1"
+msg=$(head -1 "$commit_msg_file")
+
+# --- Exemptions ---
+
+# Merge commits
+if echo "$msg" | grep -qE '^Merge '; then
+  exit 0
+fi
+
+# Fixup / squash commits (used during interactive rebase)
+if echo "$msg" | grep -qE '^(fixup|squash)! '; then
+  exit 0
+fi
+
+# bd sync automated messages
+if echo "$msg" | grep -qE '^bd sync'; then
+  exit 0
+fi
+
+# --- Validation ---
+
+TYPES="feat|fix|perf|docs|chore|ci|test|refactor|style|build|revert"
+
+# Check Conventional Commits format: type[(scope)][!]: description
+if ! echo "$msg" | grep -qE "^($TYPES)(\([a-zA-Z0-9_/ -]+\))?!?: .+"; then
+  echo "ERROR: commit message does not follow Conventional Commits format."
+  echo ""
+  echo "  Expected: <type>[(<scope>)][!]: <description>"
+  echo "  Types:    feat, fix, perf, docs, chore, ci, test, refactor, style, build, revert"
+  echo ""
+  echo "  Examples:"
+  echo "    feat: add new hints generator"
+  echo "    fix(iprf): correct domain size"
+  echo "    docs: update README"
+  echo ""
+  echo "  Got: $msg"
+  exit 1
+fi
+
+# Check subject line length (max 72 chars)
+len=${#msg}
+if [ "$len" -gt 72 ]; then
+  echo "ERROR: commit subject line is $len characters (max 72)."
+  echo ""
+  echo "  Subject: $msg"
+  exit 1
+fi
