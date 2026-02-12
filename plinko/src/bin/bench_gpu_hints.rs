@@ -8,10 +8,8 @@
 
 use clap::Parser;
 use eyre::Result;
-use plinko::db::{Database40, derive_plinko_params};
+use plinko::db::{derive_plinko_params, Database40};
 use plinko::schema40::ENTRY_SIZE;
-use std::fs::File;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -83,27 +81,31 @@ fn main() -> Result<()> {
     println!();
 
     // Load database or generate synthetic
-    let (num_entries, chunk_size, set_size, entries_vec, entries_slice) = if let Some(n) = args.synthetic_entries {
-        println!("Mode: Synthetic In-Memory ({} entries)", n);
-        
-        let (w, c) = derive_plinko_params(n);
+    let (num_entries, chunk_size, set_size, entries_vec, entries_slice) =
+        if let Some(n) = args.synthetic_entries {
+            println!("Mode: Synthetic In-Memory ({} entries)", n);
 
-        let total_bytes = n as usize * ENTRY_SIZE;
-        println!("Allocating {:.2} GB for database...", total_bytes as f64 / 1e9);
-        
-        // Allocate and fill with pattern to avoid zero-page optimizations
-        let mut v = vec![0xAAu8; total_bytes];
-        // Ensure vector is actually substantiated in memory
-        v[0] = 0x01;
-        v[total_bytes - 1] = 0x02;
+            let (w, c) = derive_plinko_params(n);
 
-        (n, w, c, Some(v), None) // Return ownership of vec in Option to keep it alive
-    } else {
-        let path = args.db.as_ref().unwrap();
-        println!("Loading database: {:?}", path);
-        let db = Database40::load(path)?;
-        (db.num_entries, db.chunk_size, db.set_size, None, Some(db)) // Keep db alive
-    };
+            let total_bytes = n as usize * ENTRY_SIZE;
+            println!(
+                "Allocating {:.2} GB for database...",
+                total_bytes as f64 / 1e9
+            );
+
+            // Allocate and fill with pattern to avoid zero-page optimizations
+            let mut v = vec![0xAAu8; total_bytes];
+            // Ensure vector is actually substantiated in memory
+            v[0] = 0x01;
+            v[total_bytes - 1] = 0x02;
+
+            (n, w, c, Some(v), None) // Return ownership of vec in Option to keep it alive
+        } else {
+            let path = args.db.as_ref().unwrap();
+            println!("Loading database: {:?}", path);
+            let db = Database40::load(path)?;
+            (db.num_entries, db.chunk_size, db.set_size, None, Some(db)) // Keep db alive
+        };
 
     // Use override chunk_size if provided, otherwise use derived value
     let (chunk_size, mut set_size) = if let Some(w) = args.chunk_size {
@@ -169,6 +171,7 @@ fn main() -> Result<()> {
         .min(remaining_hints);
 
     // Apply max_hints limit if specified (for benchmarking)
+    #[allow(unused_variables)]
     let (total_hints, hints_scale_factor) = if let Some(max) = args.max_hints {
         if max == 0 {
             return Err(eyre::eyre!("max_hints must be > 0"));
@@ -235,7 +238,7 @@ fn main() -> Result<()> {
     // For now, we generate synthetic subsets for range 0..total_hints, which
     // is consistent with the GPU generating hints 0..total_hints locally.
     // The GPU kernel will apply hint_start offset for the iPRF value.
-    let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+    let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
     let mut hint_subsets = vec![0u8; total_hints as usize * subset_bytes_per_hint];
 
     // Fill with pattern: each hint includes ~50% of blocks
@@ -250,13 +253,15 @@ fn main() -> Result<()> {
         }
     }
 
-
     // Store GPU mean time for speedup comparison
     #[allow(unused_mut)]
     let mut gpu_mean_time: Option<f64> = None;
 
     #[cfg(feature = "cuda")]
     {
+        use std::fs::File;
+        use std::io::Write;
+
         println!("Initializing GPU...");
         let gpu = GpuHintGenerator::new(0)?;
         println!("  Device: {}", gpu.device_name());
@@ -288,7 +293,10 @@ fn main() -> Result<()> {
             let start = Instant::now();
             let hints = gpu.generate_hints(entries, &gpu_block_keys, &hint_subsets, params)?;
             let elapsed = start.elapsed();
-            println!("GPU generate_hints completed in {:.3}s", elapsed.as_secs_f64());
+            println!(
+                "GPU generate_hints completed in {:.3}s",
+                elapsed.as_secs_f64()
+            );
 
             println!(
                 "  Generation time: {:.3} s ({} hints)",
