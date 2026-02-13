@@ -171,7 +171,6 @@ fn main() -> Result<()> {
         .min(remaining_hints);
 
     // Apply max_hints limit if specified (for benchmarking)
-    #[allow(unused_variables)]
     let (total_hints, hints_scale_factor) = if let Some(max) = args.max_hints {
         if max == 0 {
             return Err(eyre::eyre!("max_hints must be > 0"));
@@ -188,6 +187,8 @@ fn main() -> Result<()> {
     } else {
         (hint_count, 1.0)
     };
+    #[cfg(not(feature = "cuda"))]
+    let _hints_scale_factor = hints_scale_factor;
 
     // Production mode check
     let production_mode = args.output.is_some();
@@ -254,7 +255,7 @@ fn main() -> Result<()> {
     }
 
     // Store GPU mean time for speedup comparison
-    #[allow(unused_mut)]
+    #[cfg(feature = "cuda")]
     let mut gpu_mean_time: Option<f64> = None;
 
     #[cfg(feature = "cuda")]
@@ -421,6 +422,7 @@ fn main() -> Result<()> {
             hints.len()
         );
 
+        #[cfg(feature = "cuda")]
         if let Some(gpu_mean) = gpu_mean_time {
             let speedup = elapsed.as_secs_f64() / gpu_mean;
             println!("GPU speedup: {:.1}x", speedup);
