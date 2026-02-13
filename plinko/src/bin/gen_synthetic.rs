@@ -16,6 +16,7 @@ use std::{
     io::{BufWriter, Write},
     path::PathBuf,
 };
+use tracing::{info, debug};
 
 /// Mainnet scale (approximate as of 2024)
 const MAINNET_ACCOUNTS: u64 = 330_000_000;
@@ -54,6 +55,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
 
     // Calculate counts based on scale or explicit values
@@ -67,20 +69,20 @@ fn main() -> Result<()> {
     let total_bytes = total_entries * ENTRY_SIZE as u64;
     let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
 
-    println!("Synthetic Dataset Generator");
-    println!("===========================");
-    println!("Scale: {:.3}% of mainnet", args.scale_percent);
-    println!("Accounts: {}", num_accounts);
-    println!("Storage slots: {}", num_storage);
-    println!("Total entries: {}", total_entries);
-    println!("Total size: {:.2} MB ({} bytes)", total_mb, total_bytes);
-    println!("Seed: {}", args.seed);
-    println!();
+    info!(
+        scale_percent = format_args!("{:.3}", args.scale_percent),
+        accounts = num_accounts,
+        storage_slots = num_storage,
+        total_entries,
+        size_mb = format_args!("{:.2}", total_mb),
+        seed = args.seed,
+        "Synthetic dataset generator"
+    );
 
     // Create output directory
     std::fs::create_dir_all(&args.output_dir)?;
     let db_path = args.output_dir.join("database.bin");
-    println!("Writing to: {:?}", db_path);
+    info!(path = ?db_path, "Writing database");
 
     // Initialize RNG
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -101,7 +103,7 @@ fn main() -> Result<()> {
     );
 
     // Generate accounts
-    println!("Generating {} accounts...", num_accounts);
+    info!(count = num_accounts, "Generating accounts");
     for i in 0..num_accounts {
         // Random address
         let mut address = [0u8; 20];
@@ -135,7 +137,7 @@ fn main() -> Result<()> {
     }
 
     // Generate storage slots
-    println!("Generating {} storage slots...", num_storage);
+    info!(count = num_storage, "Generating storage slots");
     for i in 0..num_storage {
         // Random address (for TAG)
         let mut address = [0u8; 20];
@@ -194,10 +196,12 @@ fn main() -> Result<()> {
     );
     std::fs::write(&meta_path, json)?;
 
-    println!();
-    println!("Generated:");
-    println!("  Database: {:?} ({:.2} MB)", db_path, total_mb);
-    println!("  Metadata: {:?}", meta_path);
+    info!(
+        db_path = ?db_path,
+        db_size_mb = format_args!("{:.2}", total_mb),
+        meta_path = ?meta_path,
+        "Generated"
+    );
 
     // Print Plinko params preview
     let target_chunk = ((4.0 * total_entries as f64).sqrt()) as u64;
@@ -208,14 +212,12 @@ fn main() -> Result<()> {
     let set_size = total_entries.div_ceil(chunk_size);
     let set_size = set_size.div_ceil(4) * 4;
 
-    println!();
-    println!("Plinko parameters:");
-    println!("  chunk_size (w): {}", chunk_size);
-    println!("  set_size (c): {}", set_size);
-    println!(
-        "  capacity: {} (overhead: {:.2}%)",
-        chunk_size * set_size,
-        100.0 * (chunk_size * set_size - total_entries) as f64 / total_entries as f64
+    debug!(
+        w = chunk_size,
+        c = set_size,
+        capacity = chunk_size * set_size,
+        overhead_pct = format_args!("{:.2}", 100.0 * (chunk_size * set_size - total_entries) as f64 / total_entries as f64),
+        "Plinko parameters"
     );
 
     Ok(())
