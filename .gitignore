@@ -29,3 +29,5 @@ tmp/synthetic_test/
 hints_combined.bin
 hints.bin
 hints.bin
+__pycache__/
+*.pyc
