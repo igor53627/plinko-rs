@@ -330,8 +330,7 @@ fn estimate_mapping_counts(entries: u64, mainnet: bool) -> (u64, u64) {
     }
 
     let numerator = entries as u128 * ACCOUNT_SPLIT_NUMERATOR;
-    let estimated_accounts_u128 =
-        (numerator + (ACCOUNT_SPLIT_DENOMINATOR - 1)) / ACCOUNT_SPLIT_DENOMINATOR;
+    let estimated_accounts_u128 = numerator.div_ceil(ACCOUNT_SPLIT_DENOMINATOR);
     let estimated_accounts = estimated_accounts_u128 as u64;
     let estimated_storage_slots = entries.saturating_sub(estimated_accounts);
     (estimated_accounts, estimated_storage_slots)
