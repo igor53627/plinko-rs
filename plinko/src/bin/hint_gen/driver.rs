@@ -4,7 +4,7 @@ use crate::hint_gen::{
     compute_backup_blocks, compute_regular_blocks, derive_subset_seed, BackupHint, RegularHint,
     SEED_LABEL_BACKUP, SEED_LABEL_REGULAR, WORD_SIZE,
 };
-use plinko::iprf::{PrfKey128, MAX_PREIMAGES};
+use plinko::iprf::MAX_PREIMAGES;
 use rand::RngCore;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -231,16 +231,12 @@ pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> Hint
 }
 
 /// Print final results summary.
-#[allow(clippy::too_many_arguments)]
 pub fn print_results(
     duration: Duration,
     file_len: usize,
     regular_hints: &[RegularHint],
     backup_hints: &[BackupHint],
     params: &HintParams,
-    _block_keys: &[PrfKey128],
-    _w: usize,
-    _c: usize,
 ) {
     let throughput_mb = (file_len as f64 / 1024.0 / 1024.0) / duration.as_secs_f64();
 
