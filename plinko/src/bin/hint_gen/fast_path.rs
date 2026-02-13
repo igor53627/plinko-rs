@@ -1,8 +1,21 @@
+//! Non-constant-time (fast) hint processing path.
+//!
+//! Iterates over every database entry, resolves IPRF preimages to determine
+//! which hints each entry contributes to, and XORs the entry into the
+//! appropriate parity accumulators. This path leaks the access pattern
+//! through data-dependent branches and is suitable only when timing
+//! side-channels are not a concern.
+
 use plinko::iprf::Iprf;
 
 use crate::hint_gen::subsets::{block_in_subset, xor_32};
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
 
+/// Processes all database entries through the fast (non-CT) path.
+///
+/// For each entry at logical index `i`, computes the IPRF inverse to find
+/// the set of hint indices, then XORs the entry into the matching regular
+/// or backup hint parity accumulator based on block membership.
 #[allow(clippy::too_many_arguments)]
 pub fn process_entries_fast(
     db_bytes: &[u8],

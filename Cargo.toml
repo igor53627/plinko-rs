@@ -28,7 +28,7 @@ byteorder = "1.5"
 chrono = "0.4"
 
 # Local crates
-plinko = { path = "plinko" }
+plinko = { path = "plinko", default-features = false }
 
 [workspace]
 members = ["plinko"]
