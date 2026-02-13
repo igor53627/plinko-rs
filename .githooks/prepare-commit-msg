@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# prepare-commit-msg hook: normalizes commit messages before the
+# commit-msg validator runs. Fixes common formatting issues in-place
+# so contributors don't have to re-commit.
+#
+# Normalizations applied (to subject line only):
+#   1. Lowercase the type prefix        (Feat: -> feat:)
+#   2. Expand type aliases               (feature -> feat, bugfix/hotfix -> fix, doc -> docs)
+#   3. Insert space after colon if missing (feat:add -> feat: add)
+#   4. Lowercase first word of description (feat: Add -> feat: add)
+#   5. Truncate subject to 72 chars       (adds ... when truncated)
+#
+# Exemptions: merge commits, fixup!/squash! prefixes, "bd sync" messages.
+
+set -euo pipefail
+
+commit_msg_file="$1"
+msg=$(head -1 "$commit_msg_file")
+
+# --- Exemptions (must match commit-msg hook) ---
+
+if echo "$msg" | grep -qE '^Merge '; then
+  exit 0
+fi
+
+if echo "$msg" | grep -qE '^(fixup|squash)! '; then
+  exit 0
+fi
+
+if echo "$msg" | grep -qE '^bd sync'; then
+  exit 0
+fi
+
+# --- Normalization ---
+
+# Preserve the rest of the file (body/trailers after the first line)
+rest=$(tail -n +2 "$commit_msg_file") || true
+
+# 1. Lowercase type prefix (everything before the first colon, paren, or bang)
+#    Handles: Feat: -> feat:, CHORE(scope): -> chore(scope):
+#    Uses awk for portable lowercase (no GNU sed \L dependency)
+msg=$(echo "$msg" | awk '{
+  match($0, /^[A-Za-z]+/)
+  if (RSTART == 1) {
+    prefix = substr($0, 1, RLENGTH)
+    rest = substr($0, RLENGTH + 1)
+    print tolower(prefix) rest
+  } else {
+    print
+  }
+}')
+
+# 2. Expand type aliases
+msg=$(echo "$msg" | sed -E 's/^feature([(:!])/feat\1/')
+msg=$(echo "$msg" | sed -E 's/^(bugfix|hotfix)([(:!])/fix\2/')
+msg=$(echo "$msg" | sed -E 's/^doc([(:!])/docs\1/')
+
+# 3. Fix missing space after colon: "feat:add" -> "feat: add"
+msg=$(echo "$msg" | sed -E 's/^([a-z]+(\([a-zA-Z0-9_/ -]+\))?!?:)([^ ])/\1 \3/')
+
+# 4. Lowercase first letter of description
+#    "feat: Add thing" -> "feat: add thing"
+if echo "$msg" | grep -qE '^[a-z]+(\([a-zA-Z0-9_/ -]+\))?!?: [A-Z]'; then
+  # Split at ": " after the type/scope prefix, lowercase the first char after it
+  prefix="${msg%%: *}: "
+  desc="${msg#*: }"
+  first_char=$(echo "${desc:0:1}" | tr '[:upper:]' '[:lower:]')
+  msg="${prefix}${first_char}${desc:1}"
+fi
+
+# 5. Truncate subject to 72 chars with ellipsis
+len=${#msg}
+if [ "$len" -gt 72 ]; then
+  msg="${msg:0:69}..."
+fi
+
+# Write normalized message back
+{
+  echo "$msg"
+  if [ -n "$rest" ]; then
+    echo "$rest"
+  fi
+} > "$commit_msg_file"

@@ -174,7 +174,8 @@ This repo enforces [Conventional Commits](https://www.conventionalcommits.org/).
 
 - **Format**: `<type>[(<scope>)][!]: <description>` (max 72 chars)
 - **Types**: `feat`, `fix`, `perf`, `docs`, `chore`, `ci`, `test`, `refactor`, `style`, `build`, `revert`
-- **Hook**: `.githooks/commit-msg` validates locally; run `scripts/setup-hooks.sh` to enable
+- **Normalizer**: `.githooks/prepare-commit-msg` auto-fixes common issues before validation (lowercase type, expand aliases like `feature`->`feat`, insert missing space after colon, lowercase description start, truncate to 72 chars)
+- **Validator**: `.githooks/commit-msg` validates locally; run `scripts/setup-hooks.sh` to enable
 - **CI**: `.github/workflows/commit-lint.yml` validates all PR commits
 - **Exemptions**: merge commits, `fixup!`/`squash!` prefixes, `bd sync` messages
 
