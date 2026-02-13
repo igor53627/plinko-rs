@@ -356,17 +356,23 @@ fn sn_inverse(key: &[u32; 8], y: u64, domain: u64) -> u64 {
 
 /// CPU hint generator with full ChaCha8-based iPRF
 pub struct CpuHintGenerator {
-    #[allow(dead_code)]
+    #[cfg(feature = "parallel")]
     parallel: bool,
 }
 
 impl CpuHintGenerator {
     pub fn new() -> Self {
-        Self { parallel: true }
+        Self {
+            #[cfg(feature = "parallel")]
+            parallel: true,
+        }
     }
 
     pub fn new_serial() -> Self {
-        Self { parallel: false }
+        Self {
+            #[cfg(feature = "parallel")]
+            parallel: false,
+        }
     }
 
     /// Generate hints using CPU with full ChaCha8 iPRF.

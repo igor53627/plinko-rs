@@ -175,15 +175,6 @@ fn sr_num_stages(n0: u64) -> usize {
     count
 }
 
-/// Conservative round count per Morris-Rogaway Section 5, Strategy 1.
-///
-/// Uses DEFAULT_SECURITY_BITS (128-bit security) and computes per-stage
-/// round count based on equal error budget distribution.
-#[allow(dead_code)]
-fn sr_t_rounds(n: u64, n0: u64) -> usize {
-    sr_t_rounds_with_security(n, n0, DEFAULT_SECURITY_BITS)
-}
-
 /// Round count with explicit security parameter.
 ///
 /// For λ-bit security (distinguishing advantage ε = 2^(-λ)):
@@ -561,8 +552,6 @@ pub const MAX_PREIMAGES: usize = 512;
 /// fixed iteration counts to prevent timing side-channels.
 /// Uses SwapOrNotSrTee for full-domain PRP security.
 pub struct IprfTee {
-    #[allow(dead_code)]
-    key: PrfKey128,
     cipher: Aes128,
     prp: SwapOrNotSrTee,
     domain: u64,
@@ -598,7 +587,6 @@ impl IprfTee {
         let prp = SwapOrNotSrTee::new(prp_key, n);
 
         Self {
-            key,
             cipher,
             prp,
             domain: n,
@@ -758,8 +746,6 @@ impl IprfTee {
 ///
 /// Uses SwapOrNotSr for full-domain PRP security (secure even when all N elements queried).
 pub struct Iprf {
-    #[allow(dead_code)]
-    key: PrfKey128,
     cipher: Aes128,
     prp: SwapOrNotSr,
     domain: u64,
@@ -788,7 +774,6 @@ impl Iprf {
         let prp = SwapOrNotSr::new(prp_key, n);
 
         Self {
-            key,
             cipher,
             prp,
             domain: n,
