@@ -11,6 +11,7 @@ pub mod constant_time;
 pub mod db;
 pub mod gpu;
 pub mod iprf;
+pub mod protocol;
 pub mod schema40;
 pub mod schema48;
 
