@@ -248,12 +248,17 @@ pub fn print_results(
         .iter()
         .filter(|h| h.parity.iter().any(|&b| b != 0))
         .count();
+    let zero_regular_seeds = regular_hints
+        .iter()
+        .filter(|h| h.subset_seed.iter().all(|&b| b == 0))
+        .count();
 
     info!(
         duration_secs = format_args!("{:.2}", duration.as_secs_f64()),
         throughput_mb_s = format_args!("{:.2}", throughput_mb),
         non_zero_regular,
         total_regular = params.num_regular,
+        zero_regular_seeds,
         "Results"
     );
 
@@ -266,10 +271,15 @@ pub fn print_results(
             .iter()
             .filter(|h| h.parity_out.iter().any(|&b| b != 0))
             .count();
+        let zero_backup_seeds = backup_hints
+            .iter()
+            .filter(|h| h.subset_seed.iter().all(|&b| b == 0))
+            .count();
         info!(
             non_zero_parity_in = non_zero_backup_in,
             non_zero_parity_out = non_zero_backup_out,
             total_backup = params.num_backup,
+            zero_backup_seeds,
             "Backup hint results"
         );
     }

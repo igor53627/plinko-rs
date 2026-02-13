@@ -284,53 +284,6 @@ fn binomial_inverse_ct(n: u64, p: f64, u: f64) -> u64 {
     ct_select_u64(found, result, n)
 }
 
-/// Lanczos approximation for log-gamma function.
-///
-/// # Note
-/// This function is currently unused after the single-loop optimization in
-/// `binomial_inverse_ct`, but is kept for reference and potential future use
-/// (e.g., mode-based numerical stability approaches).
-///
-/// # Precondition
-/// x >= 1.0 (enforced by debug_assert in TEE contexts).
-///
-/// # CT Safety
-/// This function has no branches or data-dependent indexing on x.
-/// The loop iterates a fixed 8 times regardless of input.
-#[allow(dead_code)]
-#[inline]
-fn lgamma_approx(x: f64) -> f64 {
-    use std::f64::consts::PI;
-
-    debug_assert!(
-        x >= 1.0,
-        "lgamma_approx: x={} must be >= 1.0 for CT-safe execution",
-        x
-    );
-
-    let g = 7.0;
-    let coeffs = [
-        0.999_999_999_999_809_9,
-        676.5203681218851,
-        -1259.1392167224028,
-        771.323_428_777_653_1,
-        -176.615_029_162_140_6,
-        12.507343278686905,
-        -0.13857109526572012,
-        9.984_369_578_019_572e-6,
-        1.5056327351493116e-7,
-    ];
-
-    let x = x - 1.0;
-    let mut sum = coeffs[0];
-    for (i, &c) in coeffs.iter().enumerate().skip(1) {
-        sum += c / (x + i as f64);
-    }
-
-    let t = x + g + 0.5;
-    0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

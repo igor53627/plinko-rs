@@ -50,7 +50,6 @@ pub struct Args {
 /// subset of blocks, keyed by `subset_seed`.
 pub struct RegularHint {
     /// Seed that deterministically defines which blocks belong to this hint's subset.
-    #[allow(dead_code)]
     pub subset_seed: [u8; 32],
     /// XOR accumulator over all entries in the subset.
     pub parity: [u8; 32],
@@ -60,7 +59,6 @@ pub struct RegularHint {
 /// its complement "out", maintaining separate XOR parities for each half.
 pub struct BackupHint {
     /// Seed that deterministically defines the in/out partition.
-    #[allow(dead_code)]
     pub subset_seed: [u8; 32],
     /// XOR parity over entries whose block is *in* the subset.
     pub parity_in: [u8; 32],
