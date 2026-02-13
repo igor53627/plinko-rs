@@ -1,3 +1,9 @@
+//! Plinko PIR hint generation coordinator.
+//!
+//! Orchestrates the offline phase of the Plinko PIR scheme: derives keys,
+//! computes block subsets, and accumulates XOR parities over the database to
+//! produce regular and backup hints that a client stores for online queries.
+
 pub mod bitset;
 pub mod ct_path;
 pub mod driver;
