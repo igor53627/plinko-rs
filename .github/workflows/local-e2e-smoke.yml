@@ -1,0 +1,38 @@
+name: Local E2E Smoke
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    name: Fast/CT Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plinko
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Run local e2e smoke
+        env:
+          ACCOUNTS: "2"
+          STORAGE: "2"
+          LAMBDA: "1"
+          ENTRIES_PER_BLOCK: "2"
+        run: ./scripts/local_e2e_hint_pipeline.sh
