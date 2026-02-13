@@ -405,15 +405,15 @@ fn main() -> Result<()> {
         let cpu = plinko::gpu::CpuHintGenerator::new();
 
         let start = Instant::now();
-        let hints = cpu.generate_hints(
+        let hints = cpu.generate_hints(plinko::gpu::CpuHintInput {
             entries,
-            &block_keys,
-            &hint_subsets,
+            block_keys: &block_keys,
+            hint_subsets: &hint_subsets,
             num_entries,
             chunk_size,
             set_size,
             total_hints,
-        );
+        });
         let elapsed = start.elapsed();
 
         println!(

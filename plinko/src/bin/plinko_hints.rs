@@ -106,15 +106,17 @@ fn main() -> eyre::Result<()> {
             .collect();
 
         hint_gen::ct_path::process_entries_ct(
-            db_bytes,
-            geom.n_entries,
-            geom.n_effective,
-            geom.w,
-            params.num_regular,
-            params.num_backup,
-            &block_iprfs_ct,
-            &regular_bitsets,
-            &backup_bitsets,
+            hint_gen::ct_path::CtProcessInput {
+                db_bytes,
+                n_entries: geom.n_entries,
+                n_effective: geom.n_effective,
+                w: geom.w,
+                num_regular: params.num_regular,
+                num_backup: params.num_backup,
+                block_iprfs_ct: &block_iprfs_ct,
+                regular_bitsets: &regular_bitsets,
+                backup_bitsets: &backup_bitsets,
+            },
             &mut regular_hints,
             &mut backup_hints,
             |i| pb.set_position(i as u64),
@@ -126,16 +128,17 @@ fn main() -> eyre::Result<()> {
             .collect();
 
         hint_gen::fast_path::process_entries_fast(
-            db_bytes,
-            geom.n_entries,
-            geom.n_effective,
-            geom.w,
-            geom.c,
-            params.num_regular,
-            params.num_backup,
-            &block_iprfs,
-            &regular_hint_blocks,
-            &backup_hint_blocks,
+            hint_gen::fast_path::FastProcessInput {
+                db_bytes,
+                n_entries: geom.n_entries,
+                n_effective: geom.n_effective,
+                w: geom.w,
+                num_regular: params.num_regular,
+                num_backup: params.num_backup,
+                block_iprfs: &block_iprfs,
+                regular_hint_blocks: &regular_hint_blocks,
+                backup_hint_blocks: &backup_hint_blocks,
+            },
             &mut regular_hints,
             &mut backup_hints,
             |i| pb.set_position(i as u64),
@@ -145,16 +148,7 @@ fn main() -> eyre::Result<()> {
     pb.finish_with_message("Done");
 
     let duration = start.elapsed();
-    print_results(
-        duration,
-        file_len,
-        &regular_hints,
-        &backup_hints,
-        &params,
-        &block_keys,
-        geom.w,
-        geom.c,
-    );
+    print_results(duration, file_len, &regular_hints, &backup_hints, &params);
 
     Ok(())
 }

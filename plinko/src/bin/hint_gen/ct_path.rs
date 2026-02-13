@@ -4,60 +4,64 @@ use plinko::iprf::IprfTee;
 use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
 
+/// Immutable inputs for constant-time hint processing.
+pub struct CtProcessInput<'a> {
+    pub db_bytes: &'a [u8],
+    pub n_entries: usize,
+    pub n_effective: usize,
+    pub w: usize,
+    pub num_regular: usize,
+    pub num_backup: usize,
+    pub block_iprfs_ct: &'a [IprfTee],
+    pub regular_bitsets: &'a [BlockBitset],
+    pub backup_bitsets: &'a [BlockBitset],
+}
+
 /// Process database entries in constant-time for TEE execution.
 ///
 /// # Safety Requirements
 /// - `num_backup` must be >= 1 (CT indexing clamps to index 0 for dummy access)
 /// - `backup_bitsets` and `backup_hints` must have at least 1 element
-#[allow(clippy::too_many_arguments)]
 pub fn process_entries_ct(
-    db_bytes: &[u8],
-    n_entries: usize,
-    n_effective: usize,
-    w: usize,
-    num_regular: usize,
-    num_backup: usize,
-    block_iprfs_ct: &[IprfTee],
-    regular_bitsets: &[BlockBitset],
-    backup_bitsets: &[BlockBitset],
+    input: CtProcessInput<'_>,
     regular_hints: &mut [RegularHint],
     backup_hints: &mut [BackupHint],
     progress_callback: impl Fn(usize),
 ) {
     assert!(
-        num_backup >= 1 && !backup_bitsets.is_empty() && !backup_hints.is_empty(),
+        input.num_backup >= 1 && !input.backup_bitsets.is_empty() && !backup_hints.is_empty(),
         "CT path requires at least 1 backup hint for safe dummy indexing"
     );
-    for i in 0..n_effective {
-        let block = i / w;
-        let offset = i % w;
+    for i in 0..input.n_effective {
+        let block = i / input.w;
+        let offset = i % input.w;
 
-        let entry: [u8; 32] = if i < n_entries {
+        let entry: [u8; 32] = if i < input.n_entries {
             let entry_offset = i * WORD_SIZE;
-            db_bytes[entry_offset..entry_offset + WORD_SIZE]
+            input.db_bytes[entry_offset..entry_offset + WORD_SIZE]
                 .try_into()
                 .unwrap()
         } else {
             [0u8; 32]
         };
 
-        let (indices, count) = block_iprfs_ct[block].inverse_ct(offset as u64);
+        let (indices, count) = input.block_iprfs_ct[block].inverse_ct(offset as u64);
 
         for (t, &idx) in indices.iter().enumerate() {
             let in_range = ct_lt_u64(t as u64, count as u64);
 
             let j = idx as usize;
 
-            let is_regular = ct_lt_u64(j as u64, num_regular as u64);
-            let backup_idx = j.wrapping_sub(num_regular);
-            let is_valid_backup = ct_lt_u64(backup_idx as u64, num_backup as u64);
+            let is_regular = ct_lt_u64(j as u64, input.num_regular as u64);
+            let backup_idx = j.wrapping_sub(input.num_regular);
+            let is_valid_backup = ct_lt_u64(backup_idx as u64, input.num_backup as u64);
             let is_backup = (1 - is_regular) & is_valid_backup;
 
             let regular_idx = ct_select_usize(is_regular, j, 0);
-            let in_regular_subset = regular_bitsets[regular_idx].contains_ct(block);
+            let in_regular_subset = input.regular_bitsets[regular_idx].contains_ct(block);
 
             let backup_idx_clamped = ct_select_usize(is_valid_backup, backup_idx, 0);
-            let in_backup_subset = backup_bitsets[backup_idx_clamped].contains_ct(block);
+            let in_backup_subset = input.backup_bitsets[backup_idx_clamped].contains_ct(block);
 
             let update_regular = in_range & is_regular & in_regular_subset;
             let update_backup_in = in_range & is_backup & in_backup_subset;

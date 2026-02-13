@@ -354,7 +354,19 @@ fn sn_inverse(key: &[u32; 8], y: u64, domain: u64) -> u64 {
     val
 }
 
-/// CPU hint generator with full ChaCha8-based iPRF
+/// Inputs for CPU hint generation paths.
+#[derive(Clone, Copy)]
+pub struct CpuHintInput<'a> {
+    pub entries: &'a [u8],
+    pub block_keys: &'a [[u32; 8]],
+    pub hint_subsets: &'a [u8],
+    pub num_entries: u64,
+    pub chunk_size: u64,
+    pub set_size: u64,
+    pub total_hints: u32,
+}
+
+/// CPU hint generator with full ChaCha8-based iPRF.
 pub struct CpuHintGenerator {
     #[cfg(feature = "parallel")]
     parallel: bool,
@@ -377,116 +389,62 @@ impl CpuHintGenerator {
 
     /// Generate hints using CPU with full ChaCha8 iPRF.
     #[cfg(feature = "parallel")]
-    #[allow(clippy::too_many_arguments)]
-    pub fn generate_hints(
-        &self,
-        entries: &[u8],
-        block_keys: &[[u32; 8]],
-        hint_subsets: &[u8],
-        num_entries: u64,
-        chunk_size: u64,
-        set_size: u64,
-        total_hints: u32,
-    ) -> Vec<[u8; 48]> {
+    pub fn generate_hints(&self, input: CpuHintInput<'_>) -> Vec<[u8; 48]> {
         use rayon::prelude::*;
 
-        let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
+        let subset_bytes_per_hint = (input.set_size as usize).div_ceil(8);
 
         if self.parallel {
-            (0..total_hints as usize)
+            (0..input.total_hints as usize)
                 .into_par_iter()
-                .map(|hint_idx| {
-                    self.compute_hint(
-                        hint_idx,
-                        entries,
-                        block_keys,
-                        hint_subsets,
-                        num_entries,
-                        chunk_size,
-                        set_size,
-                        subset_bytes_per_hint,
-                    )
-                })
+                .map(|hint_idx| self.compute_hint(hint_idx, input, subset_bytes_per_hint))
                 .collect()
         } else {
-            (0..total_hints as usize)
-                .map(|hint_idx| {
-                    self.compute_hint(
-                        hint_idx,
-                        entries,
-                        block_keys,
-                        hint_subsets,
-                        num_entries,
-                        chunk_size,
-                        set_size,
-                        subset_bytes_per_hint,
-                    )
-                })
+            (0..input.total_hints as usize)
+                .map(|hint_idx| self.compute_hint(hint_idx, input, subset_bytes_per_hint))
                 .collect()
         }
     }
 
     #[cfg(not(feature = "parallel"))]
-    #[allow(clippy::too_many_arguments)]
-    pub fn generate_hints(
-        &self,
-        entries: &[u8],
-        block_keys: &[[u32; 8]],
-        hint_subsets: &[u8],
-        num_entries: u64,
-        chunk_size: u64,
-        set_size: u64,
-        total_hints: u32,
-    ) -> Vec<[u8; 48]> {
-        let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
+    pub fn generate_hints(&self, input: CpuHintInput<'_>) -> Vec<[u8; 48]> {
+        let subset_bytes_per_hint = (input.set_size as usize).div_ceil(8);
 
-        (0..total_hints as usize)
-            .map(|hint_idx| {
-                self.compute_hint(
-                    hint_idx,
-                    entries,
-                    block_keys,
-                    hint_subsets,
-                    num_entries,
-                    chunk_size,
-                    set_size,
-                    subset_bytes_per_hint,
-                )
-            })
+        (0..input.total_hints as usize)
+            .map(|hint_idx| self.compute_hint(hint_idx, input, subset_bytes_per_hint))
             .collect()
     }
 
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     fn compute_hint(
         &self,
         hint_idx: usize,
-        entries: &[u8],
-        block_keys: &[[u32; 8]],
-        hint_subsets: &[u8],
-        num_entries: u64,
-        chunk_size: u64,
-        set_size: u64,
+        input: CpuHintInput<'_>,
         subset_bytes_per_hint: usize,
     ) -> [u8; 48] {
         let mut parity = [0u64; 6]; // 6x u64 = 48 bytes
 
-        for (block_idx, key) in block_keys.iter().enumerate().take(set_size as usize) {
+        for (block_idx, key) in input
+            .block_keys
+            .iter()
+            .enumerate()
+            .take(input.set_size as usize)
+        {
             // Check subset membership
             let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
             let bit_mask = 1u8 << (block_idx % 8);
-            if (hint_subsets[byte_idx] & bit_mask) == 0 {
+            if (input.hint_subsets[byte_idx] & bit_mask) == 0 {
                 continue;
             }
 
             // Full iPRF inverse using ChaCha12-based SwapOrNot
-            let preimage = sn_inverse(key, hint_idx as u64, chunk_size);
+            let preimage = sn_inverse(key, hint_idx as u64, input.chunk_size);
 
-            if preimage < chunk_size {
-                let entry_idx = block_idx as u64 * chunk_size + preimage;
-                if entry_idx < num_entries {
+            if preimage < input.chunk_size {
+                let entry_idx = block_idx as u64 * input.chunk_size + preimage;
+                if entry_idx < input.num_entries {
                     let entry_start = entry_idx as usize * ENTRY_SIZE;
-                    let entry_bytes = &entries[entry_start..entry_start + 40]; // Read 40 bytes
+                    let entry_bytes = &input.entries[entry_start..entry_start + 40]; // Read 40 bytes
 
                     // XOR first 5 u64s (40 bytes)
                     for i in 0..5 {
@@ -522,36 +480,26 @@ impl SimpleCpuHintGenerator {
         Self
     }
 
-    /// Generate hints using simplified CPU (no iPRF, just XOR first entry per block)
-    #[allow(clippy::too_many_arguments)]
-    pub fn generate_hints(
-        &self,
-        entries: &[u8],
-        _block_keys: &[[u32; 8]],
-        hint_subsets: &[u8],
-        num_entries: u64,
-        chunk_size: u64,
-        set_size: u64,
-        total_hints: u32,
-    ) -> Vec<[u8; 48]> {
-        let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
-        let mut hints = vec![[0u8; 48]; total_hints as usize];
+    /// Generate hints using simplified CPU (no iPRF, just XOR first entry per block).
+    pub fn generate_hints(&self, input: CpuHintInput<'_>) -> Vec<[u8; 48]> {
+        let subset_bytes_per_hint = (input.set_size as usize).div_ceil(8);
+        let mut hints = vec![[0u8; 48]; input.total_hints as usize];
 
         for (hint_idx, hint) in hints.iter_mut().enumerate() {
             let mut parity = [0u64; 6];
 
-            for block_idx in 0..set_size as usize {
+            for block_idx in 0..input.set_size as usize {
                 let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
                 let bit_mask = 1u8 << (block_idx % 8);
-                if (hint_subsets[byte_idx] & bit_mask) == 0 {
+                if (input.hint_subsets[byte_idx] & bit_mask) == 0 {
                     continue;
                 }
 
                 // Simplified: just XOR the first entry in each block
-                let entry_idx = block_idx * chunk_size as usize;
-                if entry_idx < num_entries as usize {
+                let entry_idx = block_idx * input.chunk_size as usize;
+                if entry_idx < input.num_entries as usize {
                     let entry_start = entry_idx * ENTRY_SIZE;
-                    let entry_bytes = &entries[entry_start..entry_start + 40];
+                    let entry_bytes = &input.entries[entry_start..entry_start + 40];
 
                     for i in 0..5 {
                         let val =
@@ -640,15 +588,15 @@ mod tests {
         let subset_bytes = (set_size as usize + 7) / 8;
         let hint_subsets = vec![0xFFu8; total_hints as usize * subset_bytes];
 
-        let hints = gen.generate_hints(
-            &entries,
-            &block_keys,
-            &hint_subsets,
+        let hints = gen.generate_hints(CpuHintInput {
+            entries: &entries,
+            block_keys: &block_keys,
+            hint_subsets: &hint_subsets,
             num_entries,
             chunk_size,
             set_size,
             total_hints,
-        );
+        });
 
         assert_eq!(hints.len(), total_hints as usize);
         // With all-zero entries, parities should be zero
@@ -688,25 +636,25 @@ mod tests {
         let subset_bytes = (set_size as usize + 7) / 8;
         let hint_subsets = vec![0xFFu8; total_hints as usize * subset_bytes];
 
-        let hints1 = gen.generate_hints(
-            &entries,
-            &block_keys,
-            &hint_subsets,
+        let hints1 = gen.generate_hints(CpuHintInput {
+            entries: &entries,
+            block_keys: &block_keys,
+            hint_subsets: &hint_subsets,
             num_entries,
             chunk_size,
             set_size,
             total_hints,
-        );
+        });
 
-        let hints2 = gen_serial.generate_hints(
-            &entries,
-            &block_keys,
-            &hint_subsets,
+        let hints2 = gen_serial.generate_hints(CpuHintInput {
+            entries: &entries,
+            block_keys: &block_keys,
+            hint_subsets: &hint_subsets,
             num_entries,
             chunk_size,
             set_size,
             total_hints,
-        );
+        });
 
         assert_eq!(hints1.len(), total_hints as usize);
         assert_eq!(
