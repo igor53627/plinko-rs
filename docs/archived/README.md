@@ -7,3 +7,4 @@
 | File | Status | Replaced By |
 |------|--------|-------------|
 | `data-oblivious-iprf-tee.md` | Implemented (PR #67) | [constant_time_mode.md](../constant_time_mode.md) |
+| `FLAKY_TESTS.md` | Incident note (archived) | N/A |
