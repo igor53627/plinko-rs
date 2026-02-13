@@ -8,58 +8,72 @@ use memmap2::MmapOptions;
 use plinko::iprf::{Iprf, IprfTee};
 use std::fs::File;
 use std::time::Instant;
+use tracing::{debug, info};
 
 use hint_gen::*;
 
 fn main() -> eyre::Result<()> {
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     validate_args(&args)?;
 
-    println!("Plinko PIR Hint Generator (Paper-compliant)");
-    println!("============================================");
-    println!("Database: {:?}", args.db_path);
+    info!(db_path = ?args.db_path, "Plinko PIR Hint Generator (paper-compliant)");
 
     let file = File::open(&args.db_path)?;
     let file_len = file.metadata()?.len() as usize;
-    println!(
-        "DB Size: {:.2} GB",
-        file_len as f64 / 1024.0 / 1024.0 / 1024.0
+    info!(
+        size_gb = format_args!("{:.2}", file_len as f64 / 1024.0 / 1024.0 / 1024.0),
+        "Database loaded"
     );
 
     let mmap = unsafe { MmapOptions::new().map(&file)? };
     let db_bytes: &[u8] = &mmap;
 
     let geom = compute_geometry(db_bytes.len(), &args)?;
-    println!("Total Entries (N): {}", geom.n_entries);
+    info!(n_entries = geom.n_entries, "Total entries");
 
-    println!("\nPlinko Parameters:");
-    println!("  Entries per block (w): {}", geom.w);
-    println!("  Number of blocks (c): {}", geom.c);
-    println!("  Lambda: {}", args.lambda);
+    debug!(
+        w = geom.w,
+        c = geom.c,
+        lambda = args.lambda,
+        "Plinko parameters"
+    );
 
     let params = HintParams::from_args(&args, geom.w);
     if args.constant_time {
         validate_hint_params(&params, geom.w)?;
     }
-    println!("\nHint Structure:");
-    println!("  Regular hints: {}", params.num_regular);
-    println!("  Backup hints: {}", params.num_backup);
+    debug!(
+        regular = params.num_regular,
+        backup = params.num_backup,
+        "Hint structure"
+    );
 
     let master_seed = parse_or_generate_seed(&args)?;
     let start = Instant::now();
 
-    println!("\n[1/4] Generating {} iPRF keys...", geom.c);
+    info!(step = "1/4", count = geom.c, "Generating iPRF keys");
     let block_keys = derive_block_keys(&master_seed, geom.c);
 
-    println!("[2/4] Initializing {} regular hints...", params.num_regular);
-    println!("[3/4] Initializing {} backup hints...", params.num_backup);
+    info!(
+        step = "2/4",
+        count = params.num_regular,
+        "Initializing regular hints"
+    );
+    info!(
+        step = "3/4",
+        count = params.num_backup,
+        "Initializing backup hints"
+    );
     let (mut regular_hints, regular_hint_blocks, mut backup_hints, backup_hint_blocks) =
         init_hints(&master_seed, geom.c, &params);
 
-    println!("[4/4] Streaming database ({} entries)...", geom.n_effective);
-    if args.constant_time {
-        println!("  [CT MODE] Using constant-time implementation for TEE");
-    }
+    info!(
+        step = "4/4",
+        n_effective = geom.n_effective,
+        constant_time = args.constant_time,
+        "Streaming database"
+    );
 
     let pb = ProgressBar::new(geom.n_effective as u64);
     pb.set_style(
