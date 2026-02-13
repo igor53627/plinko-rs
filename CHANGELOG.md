@@ -122,6 +122,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **iPRF cipher**: Upgraded from AES-128 to ChaCha12 for GPU-native ARX operations; applies to both `GpuHintGenerator` and `CpuHintGenerator`
+- **VRAM layout**: On-the-fly compaction strips Tag/Padding during upload, then chunked 48B expansion ensures Tag is included in parity computation
+- **Modal scripts**: Updated for v3 schema with robust builder pattern and multi-GPU sharding support
 - **iPRF**: `Iprf` and `IprfTee` now use `SwapOrNotSr`/`SwapOrNotSrTee` instead of plain `SwapOrNot` for full-domain security
 - **Hint storage**: Hints now store a 32-byte seed instead of explicit block lists, significantly reducing memory footprint
 - **Block count (c)**: Auto-bumped to even if odd (required for security proof); hard assertion enforced in production mode
@@ -131,5 +134,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Schema v3 alignment**: Corrected ENTRY_SIZE and alignment for 40-byte schema in CUDA kernel
+- **VRAM correctness**: Switched from 32B compaction to 48B expansion to ensure Tag is included in hint parity (algorithmic correctness fix)
+- **H200 stability**: Reverted ulong2 vectorized loads that caused XID 13 misalignment crashes on H200
 - **SR round counts**: Implemented paper-faithful per-stage epsilon-budget schedule (Morris-Rogaway Section 5, Strategy 1) for provable 128-bit security; previous heuristic had no proven bound
 - Block count evenness now properly enforced for Plinko security proof compliance
+
+### Removed
+
+- `.beads` directory (unused build artifact)
+- `analyze_storage_values.rs` (unused analysis tool)
+- Legacy documentation binaries; archived into `docs/archive/`
+- SonarQube scanner work artifacts (added to `.gitignore`)

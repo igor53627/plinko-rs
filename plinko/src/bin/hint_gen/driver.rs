@@ -7,26 +7,36 @@ use crate::hint_gen::{
 use plinko::iprf::{PrfKey128, MAX_PREIMAGES};
 use rand::RngCore;
 use std::time::Duration;
+use tracing::{info, warn};
 
 use super::Args;
 
 /// Database geometry parameters computed from args and DB size.
 pub struct Geometry {
+    /// Number of real entries in the database file.
     pub n_entries: usize,
+    /// Effective entry count after padding (always a multiple of `w`).
     pub n_effective: usize,
+    /// Entries per block.
     pub w: usize,
+    /// Number of blocks (`n_effective / w`), guaranteed even.
     pub c: usize,
+    /// Number of zero-padding entries appended to reach `n_effective`.
     #[allow(dead_code)]
     pub pad_entries: usize,
 }
 
 /// Hint count parameters.
 pub struct HintParams {
+    /// Number of regular hints (`lambda * w`).
     pub num_regular: usize,
+    /// Number of backup hints (defaults to `num_regular`).
     pub num_backup: usize,
+    /// `num_regular + num_backup`.
     pub total_hints: usize,
 }
 
+/// Return type for [`init_hints`]: `(regular_hints, regular_hint_blocks, backup_hints, backup_hint_blocks)`.
 pub type HintInitOutput = (
     Vec<RegularHint>,
     Vec<Vec<usize>>,
@@ -106,22 +116,22 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
 
     if pad_entries > 0 {
         if args.allow_truncation {
-            println!(
-                "Warning: N ({}) not divisible by w ({}), {} tail entries will be ignored",
-                n_entries, w, remainder
+            warn!(
+                n_entries,
+                w,
+                tail_entries_ignored = remainder,
+                "N not divisible by w, tail entries will be ignored"
             );
         } else {
-            println!(
-                "Info: N ({}) not divisible by w ({}); padding with {} dummy entries.",
-                n_entries, w, pad_entries
+            info!(
+                n_entries,
+                w, pad_entries, "N not divisible by w, padding with dummy entries"
             );
         }
     }
 
     let (mut n_effective, final_pad) = if args.allow_truncation && remainder != 0 {
-        eprintln!(
-            "Warning: --allow-truncation is a debug flag that violates security assumptions."
-        );
+        warn!("--allow-truncation is a debug flag that violates security assumptions");
         (n_entries - remainder, 0usize)
     } else {
         (logical_n_entries, pad_entries)
@@ -137,11 +147,11 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
         c += 1;
         n_effective = c * w;
         pad_entries = n_effective - n_entries;
-        println!(
-            "Info: Bumped c from {} to {} (must be even). Padding with {} entries.",
-            c - 1,
-            c,
-            pad_entries
+        info!(
+            old_c = c - 1,
+            new_c = c,
+            pad_entries,
+            "Bumped c to even value"
         );
     }
 
@@ -168,19 +178,15 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
                 .map_err(|_| eyre::eyre!("invalid hex in --seed at position {}", i * 2))?;
         }
         if args.print_seed {
-            println!("Using provided seed: 0x{}", hex_clean);
+            eprintln!("Using provided seed: 0x{}", hex_clean);
         }
         Ok(seed)
     } else {
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
         if args.print_seed {
-            println!(
-                "Generated seed: 0x{}",
-                seed.iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>()
-            );
+            let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
+            eprintln!("Generated seed: 0x{}", hex);
         }
         Ok(seed)
     }
@@ -237,17 +243,17 @@ pub fn print_results(
 ) {
     let throughput_mb = (file_len as f64 / 1024.0 / 1024.0) / duration.as_secs_f64();
 
-    println!("\n=== Results ===");
-    println!("Time: {:.2?}", duration);
-    println!("Throughput: {:.2} MB/s", throughput_mb);
-
     let non_zero_regular = regular_hints
         .iter()
         .filter(|h| h.parity.iter().any(|&b| b != 0))
         .count();
-    println!(
-        "Regular hints with non-zero parity: {} / {}",
-        non_zero_regular, params.num_regular
+
+    info!(
+        duration_secs = format_args!("{:.2}", duration.as_secs_f64()),
+        throughput_mb_s = format_args!("{:.2}", throughput_mb),
+        non_zero_regular,
+        total_regular = params.num_regular,
+        "Results"
     );
 
     if params.num_backup > 0 {
@@ -259,13 +265,11 @@ pub fn print_results(
             .iter()
             .filter(|h| h.parity_out.iter().any(|&b| b != 0))
             .count();
-        println!(
-            "Backup hints with non-zero parity_in: {} / {}",
-            non_zero_backup_in, params.num_backup
-        );
-        println!(
-            "Backup hints with non-zero parity_out: {} / {}",
-            non_zero_backup_out, params.num_backup
+        info!(
+            non_zero_parity_in = non_zero_backup_in,
+            non_zero_parity_out = non_zero_backup_out,
+            total_backup = params.num_backup,
+            "Backup hint results"
         );
     }
 }
