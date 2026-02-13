@@ -1,7 +1,7 @@
 use blake3::Hasher;
 use rand::Rng;
 use std::time::Instant;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 const KAPPA: usize = 3; // Number of hash functions (typical for cuckoo hashing)
 const MAX_EVICTIONS: usize = 1000;
@@ -257,12 +257,18 @@ fn main() {
         cuckoo_storage_bytes = cuckoo_client_storage,
         cuckoo_hash_seeds = KAPPA,
         cuckoo_queries_per_lookup = KAPPA,
-        server_storage_gb = format_args!("{:.2}", (mainnet_accounts as f64 * CUCKOO_OVERHEAD * 24.0) / 1_000_000_000.0),
+        server_storage_gb = format_args!(
+            "{:.2}",
+            (mainnet_accounts as f64 * CUCKOO_OVERHEAD * 24.0) / 1_000_000_000.0
+        ),
         "Mainnet projections"
     );
 
     info!(
-        storage_reduction = format_args!("{:.0}x", sorted_storage_mainnet as f64 / cuckoo_client_storage as f64),
+        storage_reduction = format_args!(
+            "{:.0}x",
+            sorted_storage_mainnet as f64 / cuckoo_client_storage as f64
+        ),
         from_gb = format_args!("{:.1}", sorted_storage_mainnet as f64 / 1_000_000_000.0),
         to_bytes = cuckoo_client_storage,
         query_overhead = format_args!("{}x", KAPPA),

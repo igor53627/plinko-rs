@@ -16,7 +16,7 @@ use std::{
     io::{BufWriter, Write},
     path::PathBuf,
 };
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// Mainnet scale (approximate as of 2024)
 const MAINNET_ACCOUNTS: u64 = 330_000_000;
@@ -216,7 +216,10 @@ fn main() -> Result<()> {
         w = chunk_size,
         c = set_size,
         capacity = chunk_size * set_size,
-        overhead_pct = format_args!("{:.2}", 100.0 * (chunk_size * set_size - total_entries) as f64 / total_entries as f64),
+        overhead_pct = format_args!(
+            "{:.2}",
+            100.0 * (chunk_size * set_size - total_entries) as f64 / total_entries as f64
+        ),
         "Plinko parameters"
     );
 
