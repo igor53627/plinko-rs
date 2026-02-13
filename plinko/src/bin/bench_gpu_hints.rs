@@ -10,8 +10,6 @@ use clap::Parser;
 use eyre::Result;
 use plinko::db::{derive_plinko_params, Database40};
 use plinko::schema40::ENTRY_SIZE;
-use std::fs::File;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -173,6 +171,7 @@ fn main() -> Result<()> {
         .min(remaining_hints);
 
     // Apply max_hints limit if specified (for benchmarking)
+    #[allow(unused_variables)]
     let (total_hints, hints_scale_factor) = if let Some(max) = args.max_hints {
         if max == 0 {
             return Err(eyre::eyre!("max_hints must be > 0"));
@@ -239,7 +238,7 @@ fn main() -> Result<()> {
     // For now, we generate synthetic subsets for range 0..total_hints, which
     // is consistent with the GPU generating hints 0..total_hints locally.
     // The GPU kernel will apply hint_start offset for the iPRF value.
-    let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+    let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
     let mut hint_subsets = vec![0u8; total_hints as usize * subset_bytes_per_hint];
 
     // Fill with pattern: each hint includes ~50% of blocks
@@ -260,6 +259,9 @@ fn main() -> Result<()> {
 
     #[cfg(feature = "cuda")]
     {
+        use std::fs::File;
+        use std::io::Write;
+
         println!("Initializing GPU...");
         let gpu = GpuHintGenerator::new(0)?;
         println!("  Device: {}", gpu.device_name());
