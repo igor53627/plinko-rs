@@ -30,7 +30,12 @@ fn main() -> eyre::Result<()> {
     let db_bytes: &[u8] = &mmap;
 
     let geom = compute_geometry(db_bytes.len(), &args)?;
-    info!(n_entries = geom.n_entries, "Total entries");
+    info!(
+        n_entries = geom.n_entries,
+        n_effective = geom.n_effective,
+        pad_entries = geom.pad_entries,
+        "Total entries"
+    );
 
     debug!(
         w = geom.w,

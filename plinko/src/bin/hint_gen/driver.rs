@@ -22,7 +22,6 @@ pub struct Geometry {
     /// Number of blocks (`n_effective / w`), guaranteed even.
     pub c: usize,
     /// Number of zero-padding entries appended to reach `n_effective`.
-    #[allow(dead_code)]
     pub pad_entries: usize,
 }
 

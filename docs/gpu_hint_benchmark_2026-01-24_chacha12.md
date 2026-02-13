@@ -89,6 +89,5 @@ To avoid VRAM overflow (which previously happened when holding both 73GB raw and
 ## Artifacts
 
 **Generated Hints File:**
-[hints.bin](./hints.bin) (1.34 GB)
-*(Locally downloaded to project root)*
-
+`hints.bin` (1.34 GB)
+*(Artifact was downloaded locally and is not tracked in this repository.)*
