@@ -8,30 +8,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- **GPU-accelerated hint generation**: CUDA kernel for massively parallel hint computation
-  - CUDA kernel (`hint_kernel.cu`) with ChaCha12 block cipher and SwapOrNot iPRF
-  - `GpuHintGenerator` using cudarc for GPU execution
-  - Warp-level parallelism: warp shuffle broadcasts block keys (32x fewer memory reads), ballot sync skips unneeded blocks
-  - Parallel CPU baseline (`CpuHintGenerator`) with ChaCha12-based iPRF and rayon parallelism for accurate GPU speedup comparison
-  - Evolved cipher from AES-128 (software S-box bottleneck) through ChaCha8 experiments to ChaCha12 (current implementation)
-  - `gen_synthetic` binary for generating test datasets
-  - `bench_gpu_hints` binary for GPU vs CPU benchmarking
-  - Modal scripts for H100/H200 distributed benchmarking with multi-GPU sharding
-  - Production benchmarks: ~133-175k hints/sec on 50x H200 GPUs
-- **Schema v3 (40-byte entries)**: 17% storage reduction over 48-byte schema
-  - `AccountEntry40`: Balance(16) + Nonce(4) + CodeID(4) + TAG(8) + Pad(8)
-  - `StorageEntry40`: Value(32) + TAG(8) - no padding needed
-  - Reduced nonce from 8B (u64) to 4B (u32); supports per-account nonce values up to `2^32 - 1`
-  - Mainnet footprint: 103 GB -> 86 GB; 12% faster GPU hint generation
-  - Chunked VRAM upload: 48B expansion during upload to include Tag in parity, avoids VRAM overflow
+- **CUDA GPU hint generation pipeline**: end-to-end GPU-accelerated hint generation on NVIDIA H200
+  - ChaCha8 iPRF initially, upgraded to ChaCha12 for security margin
+  - Warp-level parallelism across CUDA threads for throughput scaling
+  - Parallel CPU baseline with full ChaCha8 iPRF for comparison benchmarks
+  - Modal scripts for H200 production benchmarking (`modal_bench_mainnet.py`, `modal_bench_distributed.py`)
+- **40-byte schema v3**: compact on-disk format saving 17% storage vs 48-byte v2
+  - New `schema40` module with CUDA kernel support
+  - Mainnet v3 dataset published to PIR bucket
+- **VRAM compaction and expansion strategies**: 40B → 32B compaction in VRAM with 40B → 48B expansion for aligned GPU loads
+  - Chunked compaction for correctness on large datasets
+  - Expansion strategy documentation (`EXPANSION_40B_48B.md`)
+- **Crate rename**: `state-syncer` renamed to `plinko` (issue #27)
+  - Workspace, Docker, documentation, and binary references updated
+  - Extractor binary renamed to `plinko`
+  - LICENSE and crates.io metadata added for publishing
+- **Formal verification**: eliminated axioms across Rocq specs (#78)
+  - Bijection properties fully proved in `SwapOrNotSrSpec.v`
+  - `BinomialSpec.v` and `IprfSpec.v` now have zero axioms
+  - `binomial_sample_range_aux` axiom eliminated
+  - Formal directory canonicalized under `plinko/formal` (#52)
 - **Documentation restructuring**
-  - Split README into focused subdocs (ops, benchmarks, architecture)
-  - Added ops docs and PIR dataset links for mainnet v3 data
-  - GPU benchmark notes and expansion strategy documentation
-- **Repository rename and crate move**: consolidated `state-syncer` into the `plinko` crate
-  - Workspace now uses `plinko` for hint generation and iPRF/CT primitives
-  - Docker artifacts updated to build/run `plinko` instead of `state-syncer`
-  - Documentation references updated to the new crate paths
+  - README split into subdocs (`protocol_overview.md`, `verification.md`, `update_strategy.md`)
+  - Ops docs added (`ARCHITECTURE.md`, `DEPLOYMENT.md`, `API_ENDPOINTS.md`, `FEATURE_FLAGS.md`)
+  - GPU benchmark results and optimization kanban tracking
+  - Legacy docs archived, stale binaries removed
+
+### Fixed
+
+- **Schema alignment**: corrected `ENTRY_SIZE` and alignment for 40-byte schema in CUDA kernel
+- **H200 misalignment crash**: reverted `ulong2` optimization that caused XID 13 crashes on H200 due to unaligned access
+- **48B expansion correctness**: ensured algorithmic correctness with chunked compaction for large datasets
+
+### Changed
+
+- **iPRF cipher**: upgraded from ChaCha8 to ChaCha12 for GPU hint generation (security margin)
+- **Schema default**: v3 (40-byte) schema used by default in Modal benchmark scripts
+
+### Removed
+
+- `.beads` directory (unused tracking artifact)
+- `analyze_storage_values.rs` (unused)
+- Legacy binaries (`bench_hints_linux_amd64`, `state-syncer-linux-amd64`)
+
+## [0.1.0] - 2025-12-18
+
+### Added
 
 - **Constant-time HintInit for TEE execution** (`--constant-time` flag): Issue #62
   - Eliminates timing side-channels that could leak iPRF mappings during hint generation
