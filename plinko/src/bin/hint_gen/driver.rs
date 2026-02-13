@@ -94,6 +94,7 @@ pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
 
 /// Compute database geometry from file length and arguments.
 pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geometry> {
+    #[allow(clippy::manual_is_multiple_of)]
     if db_len_bytes % WORD_SIZE != 0 {
         eyre::bail!("DB size must be multiple of 32 bytes");
     }
@@ -143,6 +144,7 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     }
 
     let mut pad_entries = final_pad;
+    #[allow(clippy::manual_is_multiple_of)]
     if !args.allow_truncation && c % 2 != 0 {
         c += 1;
         n_effective = c * w;

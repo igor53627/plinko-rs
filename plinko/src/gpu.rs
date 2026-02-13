@@ -356,6 +356,7 @@ fn sn_inverse(key: &[u32; 8], y: u64, domain: u64) -> u64 {
 
 /// CPU hint generator with full ChaCha8-based iPRF
 pub struct CpuHintGenerator {
+    #[allow(dead_code)]
     parallel: bool,
 }
 
@@ -370,6 +371,7 @@ impl CpuHintGenerator {
 
     /// Generate hints using CPU with full ChaCha8 iPRF.
     #[cfg(feature = "parallel")]
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_hints(
         &self,
         entries: &[u8],
@@ -382,7 +384,7 @@ impl CpuHintGenerator {
     ) -> Vec<[u8; 48]> {
         use rayon::prelude::*;
 
-        let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+        let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
 
         if self.parallel {
             (0..total_hints as usize)
@@ -419,6 +421,7 @@ impl CpuHintGenerator {
     }
 
     #[cfg(not(feature = "parallel"))]
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_hints(
         &self,
         entries: &[u8],
@@ -429,7 +432,7 @@ impl CpuHintGenerator {
         set_size: u64,
         total_hints: u32,
     ) -> Vec<[u8; 48]> {
-        let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+        let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
 
         (0..total_hints as usize)
             .map(|hint_idx| {
@@ -448,6 +451,7 @@ impl CpuHintGenerator {
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn compute_hint(
         &self,
         hint_idx: usize,
@@ -461,7 +465,7 @@ impl CpuHintGenerator {
     ) -> [u8; 48] {
         let mut parity = [0u64; 6]; // 6x u64 = 48 bytes
 
-        for block_idx in 0..set_size as usize {
+        for (block_idx, key) in block_keys.iter().enumerate().take(set_size as usize) {
             // Check subset membership
             let byte_idx = hint_idx * subset_bytes_per_hint + (block_idx / 8);
             let bit_mask = 1u8 << (block_idx % 8);
@@ -470,7 +474,6 @@ impl CpuHintGenerator {
             }
 
             // Full iPRF inverse using ChaCha12-based SwapOrNot
-            let key = &block_keys[block_idx];
             let preimage = sn_inverse(key, hint_idx as u64, chunk_size);
 
             if preimage < chunk_size {
@@ -514,6 +517,7 @@ impl SimpleCpuHintGenerator {
     }
 
     /// Generate hints using simplified CPU (no iPRF, just XOR first entry per block)
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_hints(
         &self,
         entries: &[u8],
@@ -524,10 +528,10 @@ impl SimpleCpuHintGenerator {
         set_size: u64,
         total_hints: u32,
     ) -> Vec<[u8; 48]> {
-        let subset_bytes_per_hint = (set_size as usize + 7) / 8;
+        let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
         let mut hints = vec![[0u8; 48]; total_hints as usize];
 
-        for hint_idx in 0..total_hints as usize {
+        for (hint_idx, hint) in hints.iter_mut().enumerate() {
             let mut parity = [0u64; 6];
 
             for block_idx in 0..set_size as usize {
@@ -552,11 +556,17 @@ impl SimpleCpuHintGenerator {
             }
 
             for i in 0..6 {
-                hints[hint_idx][i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
+                hint[i * 8..(i + 1) * 8].copy_from_slice(&parity[i].to_le_bytes());
             }
         }
 
         hints
+    }
+}
+
+impl Default for SimpleCpuHintGenerator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -565,7 +575,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_chacha8_block() {
+    fn test_chacha_block() {
         // Test with zero key and counter to verify basic operation
         let key = [0u32; 8];
         let output = chacha_block(&key, 0, 0);
