@@ -8,8 +8,6 @@
 #   1. Lowercase the type prefix        (Feat: -> feat:)
 #   2. Expand type aliases               (feature -> feat, bugfix/hotfix -> fix, doc -> docs)
 #   3. Insert space after colon if missing (feat:add -> feat: add)
-#   4. Lowercase first word of description (feat: Add -> feat: add)
-#   5. Truncate subject to 72 chars       (adds ... when truncated)
 #
 # Exemptions: merge commits, fixup!/squash! prefixes, "bd sync" messages.
 
@@ -58,22 +56,6 @@ msg=$(echo "$msg" | sed -E 's/^doc([(:!])/docs\1/')
 
 # 3. Fix missing space after colon: "feat:add" -> "feat: add"
 msg=$(echo "$msg" | sed -E 's/^([a-z]+(\([a-zA-Z0-9_/ -]+\))?!?:)([^ ])/\1 \3/')
-
-# 4. Lowercase first letter of description
-#    "feat: Add thing" -> "feat: add thing"
-if echo "$msg" | grep -qE '^[a-z]+(\([a-zA-Z0-9_/ -]+\))?!?: [A-Z]'; then
-  # Split at ": " after the type/scope prefix, lowercase the first char after it
-  prefix="${msg%%: *}: "
-  desc="${msg#*: }"
-  first_char=$(echo "${desc:0:1}" | tr '[:upper:]' '[:lower:]')
-  msg="${prefix}${first_char}${desc:1}"
-fi
-
-# 5. Truncate subject to 72 chars with ellipsis
-len=${#msg}
-if [ "$len" -gt 72 ]; then
-  msg="${msg:0:69}..."
-fi
 
 # Write normalized message back
 {
