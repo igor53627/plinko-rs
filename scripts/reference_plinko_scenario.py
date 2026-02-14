@@ -43,6 +43,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True, help="Path to rms24-plinko-spec checkout")
     parser.add_argument("--output", help="Optional path to write JSON summary")
+    parser.add_argument("--num-entries", type=int, default=64, help="Number of DB entries")
+    parser.add_argument("--entry-size", type=int, default=16, help="Entry size in bytes")
+    parser.add_argument(
+        "--security-param",
+        type=int,
+        default=40,
+        help="Security parameter (lambda)",
+    )
+    parser.add_argument(
+        "--num-backup-hints",
+        type=int,
+        default=32,
+        help="Number of backup hints",
+    )
     args = parser.parse_args()
 
     repo_dir = Path(args.repo).resolve()
@@ -57,10 +71,10 @@ def main() -> int:
     from plinko import Client, Params, Server  # pylint: disable=import-error
 
     params = Params(
-        num_entries=64,
-        entry_size=16,
-        security_param=40,
-        num_backup_hints=32,
+        num_entries=args.num_entries,
+        entry_size=args.entry_size,
+        security_param=args.security_param,
+        num_backup_hints=args.num_backup_hints,
     )
     expected_db = [
         deterministic_entry(i, params.entry_size, "db-v1")
