@@ -18,27 +18,18 @@ msg=$(head -1 "$commit_msg_file")
 
 # --- Exemptions (must match commit-msg hook) ---
 
-if echo "$msg" | grep -qE '^Merge '; then
-  exit 0
-fi
-
-if echo "$msg" | grep -qE '^(fixup|squash)! '; then
-  exit 0
-fi
-
-if echo "$msg" | grep -qE '^bd sync'; then
-  exit 0
-fi
+case "$msg" in
+  Merge\ *|fixup!\ *|squash!\ *|bd\ sync*)
+    exit 0
+    ;;
+esac
 
 # --- Normalization ---
-
-# Preserve the rest of the file (body/trailers after the first line)
-rest=$(tail -n +2 "$commit_msg_file") || true
 
 # 1. Lowercase type prefix (everything before the first colon, paren, or bang)
 #    Handles: Feat: -> feat:, CHORE(scope): -> chore(scope):
 #    Uses awk for portable lowercase (no GNU sed \L dependency)
-msg=$(echo "$msg" | awk '{
+msg=$(printf '%s\n' "$msg" | awk '{
   match($0, /^[A-Za-z]+/)
   if (RSTART == 1) {
     prefix = substr($0, 1, RLENGTH)
@@ -50,17 +41,17 @@ msg=$(echo "$msg" | awk '{
 }')
 
 # 2. Expand type aliases
-msg=$(echo "$msg" | sed -E 's/^feature([(:!])/feat\1/')
-msg=$(echo "$msg" | sed -E 's/^(bugfix|hotfix)([(:!])/fix\2/')
-msg=$(echo "$msg" | sed -E 's/^doc([(:!])/docs\1/')
+msg=$(printf '%s\n' "$msg" | sed -E 's/^feature([(:!])/feat\1/')
+msg=$(printf '%s\n' "$msg" | sed -E 's/^(bugfix|hotfix)([(:!])/fix\2/')
+msg=$(printf '%s\n' "$msg" | sed -E 's/^doc([(:!])/docs\1/')
 
 # 3. Fix missing space after colon: "feat:add" -> "feat: add"
-msg=$(echo "$msg" | sed -E 's/^([a-z]+(\([a-zA-Z0-9_/ -]+\))?!?:)([^ ])/\1 \3/')
+msg=$(printf '%s\n' "$msg" | sed -E 's/^([a-z]+(\([a-zA-Z0-9_/ -]+\))?!?:)([^ ])/\1 \3/')
 
-# Write normalized message back
+# Write normalized subject while preserving body/trailers.
+tmp_file="$(mktemp "${commit_msg_file}.tmp.XXXXXX")"
 {
-  echo "$msg"
-  if [ -n "$rest" ]; then
-    echo "$rest"
-  fi
-} > "$commit_msg_file"
+  printf '%s\n' "$msg"
+  tail -n +2 "$commit_msg_file"
+} > "$tmp_file"
+mv "$tmp_file" "$commit_msg_file"
