@@ -334,10 +334,10 @@ impl Client {
             .collect();
 
         let mut slots: Vec<Option<HintSlot>> = vec![None; params.num_total_hints];
-        for j in 0..params.num_regular_hints {
+        for (j, slot) in slots.iter_mut().enumerate().take(params.num_regular_hints) {
             let seed = derive_subset_seed(&master_seed, SEED_LABEL_REGULAR, j as u64);
             let subset_blocks = compute_regular_blocks(&seed, params.num_blocks);
-            slots[j] = Some(HintSlot {
+            *slot = Some(HintSlot {
                 subset_blocks,
                 parity: [0u8; ENTRY_SIZE],
                 extra_index: None,
@@ -580,15 +580,8 @@ impl Client {
         let extra_offset = slot.extra_index.map(|idx| self.params.offset_in_block(idx));
 
         for block in 0..self.params.num_blocks {
-            let is_real = if block == queried_block {
-                false
-            } else if block_in_subset(&slot.subset_blocks, block) {
-                true
-            } else if extra_block == Some(block) {
-                true
-            } else {
-                false
-            };
+            let is_real = block != queried_block
+                && (block_in_subset(&slot.subset_blocks, block) || extra_block == Some(block));
 
             if is_real {
                 real_count += 1;
