@@ -41,6 +41,10 @@ require_metric() {
   value="$(rg -o "${key}=[0-9]+" "$file" | tail -n1 | cut -d= -f2 || true)"
   if [[ -z "$value" ]]; then
     printf 'ERROR: metric %s not found in %s\n' "$key" "$file" >&2
+    printf '--- log head (%s) ---\n' "$file" >&2
+    sed -n '1,120p' "$file" >&2 || true
+    printf '--- log tail (%s) ---\n' "$file" >&2
+    tail -n 120 "$file" >&2 || true
     exit 1
   fi
   printf '%s' "$value"
@@ -82,14 +86,14 @@ if [[ ! -s "$DB_PATH" ]]; then
 fi
 
 log "running plinko_hints (fast path)"
-"$HINTS_BIN" \
+RUST_LOG="${RUST_LOG:-info}" RUST_LOG_STYLE=never "$HINTS_BIN" \
   --db-path "$DB_PATH" \
   --lambda "$LAMBDA" \
   --entries-per-block "$ENTRIES_PER_BLOCK" \
   --seed "$MASTER_SEED" 2>&1 | tee "$FAST_LOG" >/dev/null
 
 log "running plinko_hints (constant-time path)"
-"$HINTS_BIN" \
+RUST_LOG="${RUST_LOG:-info}" RUST_LOG_STYLE=never "$HINTS_BIN" \
   --db-path "$DB_PATH" \
   --lambda "$LAMBDA" \
   --entries-per-block "$ENTRIES_PER_BLOCK" \
