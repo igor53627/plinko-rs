@@ -21,16 +21,49 @@ jobs:
           for sha in $(git log --format='%H' origin/main..HEAD); do
             msg=$(git log -1 --format='%s' "$sha")
 
-            # Skip exempted messages
-            if echo "$msg" | grep -qE '^Merge |^(fixup|squash)! |^bd sync'; then
-              continue
-            fi
+            # Skip exempted messages (mirrors .githooks/prepare-commit-msg)
+            case "$msg" in
+              Merge\ *|fixup!\ *|squash!\ *|bd\ sync*)
+                continue
+                ;;
+            esac
+
+            # --- Normalize (same 3 transforms as .githooks/prepare-commit-msg) ---
+
+            # 1. Lowercase type prefix
+            msg=$(printf '%s\n' "$msg" | awk '{
+              match($0, /^[A-Za-z]+/)
+              if (RSTART == 1) {
+                prefix = substr($0, 1, RLENGTH)
+                rest = substr($0, RLENGTH + 1)
+                print tolower(prefix) rest
+              } else {
+                print
+              }
+            }')
+
+            # 2. Expand type aliases
+            msg=$(printf '%s\n' "$msg" | sed -E 's/^feature([(:!])/feat\1/')
+            msg=$(printf '%s\n' "$msg" | sed -E 's/^(bugfix|hotfix)([(:!])/fix\2/')
+            msg=$(printf '%s\n' "$msg" | sed -E 's/^doc([(:!])/docs\1/')
+
+            # 3. Fix missing space after colon
+            msg=$(printf '%s\n' "$msg" | sed -E 's/^([a-z]+(\([a-zA-Z0-9_/ -]+\))?!?:)([^ ])/\1 \3/')
+
+            # Skip exempted messages after normalization (matches local hook behavior)
+            case "$msg" in
+              Merge\ *|fixup!\ *|squash!\ *|bd\ sync*)
+                continue
+                ;;
+            esac
+
+            # --- Validate ---
 
             # Check format
-            if ! echo "$msg" | grep -qE "^($TYPES)(\([a-zA-Z0-9_/ -]+\))?!?: .+"; then
-              echo "FAIL: $sha"
-              echo "  $msg"
-              echo "  Expected: <type>[(<scope>)][!]: <description>"
+            if ! printf '%s\n' "$msg" | grep -qE "^($TYPES)(\([a-zA-Z0-9_/ -]+\))?!?: .+"; then
+              printf 'FAIL: %s\n' "$sha"
+              printf '  %s\n' "$msg"
+              printf '  Expected: <type>[(<scope>)][!]: <description>\n'
               failed=1
               continue
             fi
@@ -38,16 +71,16 @@ jobs:
             # Check length
             len=${#msg}
             if [ "$len" -gt 72 ]; then
-              echo "FAIL: $sha"
-              echo "  Subject is $len chars (max 72): $msg"
+              printf 'FAIL: %s\n' "$sha"
+              printf '  Subject is %s chars (max 72): %s\n' "$len" "$msg"
               failed=1
             fi
           done
 
           if [ "$failed" -eq 1 ]; then
-            echo ""
-            echo "Allowed types: feat, fix, perf, docs, chore, ci, test, refactor, style, build, revert"
+            printf '\n'
+            printf 'Allowed types: feat, fix, perf, docs, chore, ci, test, refactor, style, build, revert\n'
             exit 1
           fi
 
-          echo "All commit messages are valid."
+          printf 'All commit messages are valid.\n'
