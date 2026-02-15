@@ -212,10 +212,26 @@ e2e_pass() {
   fi
 }
 
+e2e_exempt_after_normalize() {
+  local input="$1"
+  local label="$2"
+  local normalized
+  normalized=$(normalize "$input")
+  if is_exempt "$normalized"; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    ERRORS="${ERRORS}FAIL [e2e-exempt] ${label}\n  input:      '${input}'\n  normalized: '${normalized}'\n  expected exempt after normalization\n\n"
+  fi
+}
+
 e2e_pass "Feat: add thing"              "e2e uppercase type"
 e2e_pass "feature: new thing"           "e2e alias expansion"
 e2e_pass "BUGFIX(core):fix crash"       "e2e combined transforms"
 e2e_pass "Doc!:update api docs"         "e2e doc alias + bang + space"
+e2e_exempt_after_normalize "Fixup! feat: original" "e2e fixup uppercase prefix"
+e2e_exempt_after_normalize "Squash! feat: original" "e2e squash uppercase prefix"
+e2e_exempt_after_normalize "BD sync something" "e2e bd sync uppercase prefix"
 
 # ---------- Report ----------
 
