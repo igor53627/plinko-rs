@@ -176,8 +176,9 @@ This repo enforces [Conventional Commits](https://www.conventionalcommits.org/).
 - **Types**: `feat`, `fix`, `perf`, `docs`, `chore`, `ci`, `test`, `refactor`, `style`, `build`, `revert`
 - **Normalizer**: `.githooks/prepare-commit-msg` auto-fixes safe issues before validation (lowercase type, expand aliases like `feature`->`feat`, insert missing space after colon)
 - **Validator**: `.githooks/commit-msg` validates locally; run `scripts/setup-hooks.sh` to enable
-- **CI**: `.github/workflows/commit-lint.yml` validates all PR commits
-- **Exemptions**: merge commits, `fixup!`/`squash!` prefixes, `bd sync` messages
+- **CI**: `.github/workflows/commit-lint.yml` normalizes then validates all PR commits (same 3 transforms as local hook, so contributors without local hooks still pass)
+- **Tests**: `scripts/test_commit_hooks.sh` table-driven tests for normalization, validation, and exemptions
+- **Exemptions**: merge commits, `fixup!`/`squash!` prefixes, `bd sync` messages (all three enforcement points use identical `case` syntax)
 
 ## PR Formatting
 
