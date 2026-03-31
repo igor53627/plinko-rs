@@ -521,10 +521,9 @@ impl Client {
                 } else {
                     let backup_idx = j - self.params.num_regular_hints;
 
-                    let should_update = self.slots[j].as_ref().is_some_and(|slot| {
-                        slot_block_in_subset(slot, block)
-                            || slot.extra_index == Some(update.index)
-                    });
+                    let should_update = self.slots[j]
+                        .as_ref()
+                        .is_some_and(|slot| slot_block_in_subset(slot, block));
                     if should_update {
                         xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
                     } else if self.backups[backup_idx].available {
@@ -642,7 +641,7 @@ impl Client {
         };
         xor_entry(&mut parity, &queried_entry);
 
-        let cached_blocks = backup.cached_blocks.clone();
+        let cached_blocks = std::mem::take(&mut backup.cached_blocks);
         backup.available = false;
 
         let promoted_idx = self.params.num_regular_hints + backup_idx;
