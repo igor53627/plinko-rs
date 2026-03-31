@@ -1,7 +1,7 @@
 ---
 id: TASK-1
 title: Use bitmap representation for hint block sets during hint generation
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 05:10'
 labels:
@@ -25,8 +25,8 @@ BlockBitset already exists in src/bin/hint_gen/bitset.rs and is used for the CT 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 init_hints() returns BlockBitset instead of Vec<usize> for block sets
-- [ ] #2 fast_path.rs uses BlockBitset for membership checks instead of binary search
-- [ ] #3 Memory usage during hint generation reduced by ~32x for block storage
-- [ ] #4 All existing tests pass
+- [x] #1 init_hints() returns BlockBitset instead of Vec<usize> for block sets
+- [x] #2 fast_path.rs uses BlockBitset for membership checks instead of binary search
+- [x] #3 Memory usage during hint generation reduced by ~32x for block storage
+- [x] #4 All existing tests pass
 <!-- AC:END -->

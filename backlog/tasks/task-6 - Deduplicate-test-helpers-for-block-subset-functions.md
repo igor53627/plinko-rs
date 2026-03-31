@@ -36,7 +36,7 @@ Additionally, `test_complement_flag_matches_complement_subset` tests local copie
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Test files import canonical implementations instead of reimplementing them
-- [ ] #2 No local copies of compute_regular_blocks/compute_backup_blocks in test files
-- [ ] #3 Complement flag test validates the production code path (not a local reimplementation)
+- [x] #1 Test files import canonical implementations instead of reimplementing them
+- [x] #2 No local copies of compute_regular_blocks/compute_backup_blocks in test files
+- [x] #3 Complement flag test validates the production code path (not a local reimplementation)
 <!-- AC:END -->

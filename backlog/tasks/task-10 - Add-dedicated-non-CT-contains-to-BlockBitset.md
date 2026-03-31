@@ -1,7 +1,7 @@
 ---
 id: TASK-10
 title: Add dedicated non-CT contains() to BlockBitset
-status: Open
+status: Done
 assignee: []
 created_date: '2026-03-31 08:00'
 labels:
@@ -32,7 +32,7 @@ This avoids entangling the CT and non-CT code paths.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 contains() uses a direct implementation instead of delegating to contains_ct()
-- [ ] #2 All existing tests pass
-- [ ] #3 Benchmark shows no regression (or improvement)
+- [x] #1 contains() uses a direct implementation instead of delegating to contains_ct()
+- [x] #2 All existing tests pass
+- [x] #3 Benchmark shows no regression (or improvement)
 <!-- AC:END -->

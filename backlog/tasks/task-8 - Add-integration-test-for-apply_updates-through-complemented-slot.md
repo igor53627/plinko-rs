@@ -1,7 +1,7 @@
 ---
 id: TASK-8
 title: Add integration test for apply_updates through complemented slot
-status: Open
+status: Done
 assignee: []
 created_date: '2026-03-31 08:00'
 labels:
@@ -23,7 +23,7 @@ This is the most important correctness path for the complement flag and should h
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Test promotes a backup where queried_block is in the original subset (complemented = true)
-- [ ] #2 Test applies updates that include blocks both inside and outside the complemented subset
-- [ ] #3 Test verifies query correctness after updates through the complemented slot
+- [x] #1 Test promotes a backup where queried_block is in the original subset (complemented = true)
+- [x] #2 Test applies updates that include blocks both inside and outside the complemented subset
+- [x] #3 Test verifies query correctness after updates through the complemented slot
 <!-- AC:END -->

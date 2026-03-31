@@ -1,7 +1,7 @@
 ---
 id: TASK-4
 title: Add regression tests for block set representation changes
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 05:12'
 labels:
@@ -29,9 +29,9 @@ Tests should cover:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Test: BlockBitset membership matches binary search on sorted Vec<usize> for random and edge-case inputs
-- [ ] #2 Test: Hint parity output is identical under both block storage representations
-- [ ] #3 Test: promote_backup with complement flag matches complement_subset() output
-- [ ] #4 Test: try_build_query produces identical queries with seed recomputation vs stored Vec<usize>
-- [ ] #5 Test: End-to-end PIR correctness (offline_init → query → answer → reconstruct) unchanged
+- [x] #1 Test: BlockBitset membership matches binary search on sorted Vec<usize> for random and edge-case inputs
+- [x] #2 Test: Hint parity output is identical under both block storage representations
+- [x] #3 Test: promote_backup with complement flag matches complement_subset() output
+- [x] #4 Test: try_build_query produces identical queries with seed recomputation vs stored Vec<usize>
+- [x] #5 Test: End-to-end PIR correctness (offline_init → query → answer → reconstruct) unchanged
 <!-- AC:END -->

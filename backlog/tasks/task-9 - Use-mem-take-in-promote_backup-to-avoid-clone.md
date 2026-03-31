@@ -1,7 +1,7 @@
 ---
 id: TASK-9
 title: "Use mem::take in promote_backup to avoid clone"
-status: Open
+status: Done
 assignee: []
 created_date: '2026-03-31 08:00'
 labels:
@@ -29,6 +29,6 @@ let cached_blocks = std::mem::take(&mut backup.cached_blocks);
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 promote_backup uses mem::take instead of clone for cached_blocks
-- [ ] #2 All existing tests pass
+- [x] #1 promote_backup uses mem::take instead of clone for cached_blocks
+- [x] #2 All existing tests pass
 <!-- AC:END -->
