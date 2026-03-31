@@ -94,9 +94,8 @@ pub fn process_entries_ct(
 mod tests {
     use super::*;
     use crate::hint_gen::keys::{derive_block_keys, derive_subset_seed};
-    use crate::hint_gen::subsets::{
-        block_in_subset, compute_backup_blocks, compute_regular_blocks, xor_32,
-    };
+    use crate::hint_gen::subsets::{compute_backup_blocks, compute_regular_blocks, xor_32};
+    use plinko::protocol::block_in_subset;
     use crate::hint_gen::types::{SEED_LABEL_BACKUP, SEED_LABEL_REGULAR};
     use plinko::iprf::Iprf;
 

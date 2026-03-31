@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
-const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";
+pub const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
+pub const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";
 
 /// Fixed entry size used by the protocol model.
 pub const ENTRY_SIZE: usize = 32;
@@ -269,14 +269,17 @@ impl Server {
 
 #[derive(Clone)]
 struct HintSlot {
-    subset_blocks: Vec<usize>,
+    /// Original (pre-complement) block indices, sorted ascending.
+    cached_blocks: Vec<usize>,
+    complemented: bool,
     parity: Entry,
     extra_index: Option<usize>,
 }
 
 #[derive(Clone)]
 struct BackupHint {
-    subset_blocks: Vec<usize>,
+    /// Block indices derived from seed, sorted ascending.
+    cached_blocks: Vec<usize>,
     parity_in: Entry,
     parity_out: Entry,
     available: bool,
@@ -336,9 +339,10 @@ impl Client {
         let mut slots: Vec<Option<HintSlot>> = vec![None; params.num_total_hints];
         for (j, slot) in slots.iter_mut().enumerate().take(params.num_regular_hints) {
             let seed = derive_subset_seed(&master_seed, SEED_LABEL_REGULAR, j as u64);
-            let subset_blocks = compute_regular_blocks(&seed, params.num_blocks);
+            let blocks = compute_regular_blocks(&seed, params.num_blocks);
             *slot = Some(HintSlot {
-                subset_blocks,
+                cached_blocks: blocks,
+                complemented: false,
                 parity: [0u8; ENTRY_SIZE],
                 extra_index: None,
             });
@@ -347,9 +351,9 @@ impl Client {
         let mut backups = Vec::with_capacity(params.num_backup_hints);
         for j in 0..params.num_backup_hints {
             let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j as u64);
-            let subset_blocks = compute_backup_blocks(&seed, params.num_blocks);
+            let blocks = compute_backup_blocks(&seed, params.num_blocks);
             backups.push(BackupHint {
-                subset_blocks,
+                cached_blocks: blocks,
                 parity_in: [0u8; ENTRY_SIZE],
                 parity_out: [0u8; ENTRY_SIZE],
                 available: true,
@@ -368,13 +372,13 @@ impl Client {
                 let j = hint_idx as usize;
                 if j < params.num_regular_hints {
                     if let Some(slot) = slots[j].as_mut() {
-                        if block_in_subset(&slot.subset_blocks, block) {
+                        if block_in_subset(&slot.cached_blocks, block) {
                             xor_entry(&mut slot.parity, &entry);
                         }
                     }
                 } else if j < params.num_total_hints {
                     let backup_idx = j - params.num_regular_hints;
-                    if block_in_subset(&backups[backup_idx].subset_blocks, block) {
+                    if block_in_subset(&backups[backup_idx].cached_blocks, block) {
                         xor_entry(&mut backups[backup_idx].parity_in, &entry);
                     } else {
                         xor_entry(&mut backups[backup_idx].parity_out, &entry);
@@ -425,7 +429,7 @@ impl Client {
                 continue;
             };
 
-            if !block_in_subset(&slot.subset_blocks, block)
+            if !slot_block_in_subset(slot, block)
                 && slot.extra_index != Some(queried_index)
             {
                 continue;
@@ -508,22 +512,23 @@ impl Client {
                 }
 
                 if j < self.params.num_regular_hints {
-                    if let Some(slot) = self.slots[j].as_mut() {
-                        if block_in_subset(&slot.subset_blocks, block) {
-                            xor_entry(&mut slot.parity, &update.delta);
-                        }
+                    let should_update = self.slots[j]
+                        .as_ref()
+                        .is_some_and(|slot| slot_block_in_subset(slot, block));
+                    if should_update {
+                        xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
                     }
                 } else {
                     let backup_idx = j - self.params.num_regular_hints;
 
-                    if let Some(slot) = self.slots[j].as_mut() {
-                        if block_in_subset(&slot.subset_blocks, block)
+                    let should_update = self.slots[j].as_ref().is_some_and(|slot| {
+                        slot_block_in_subset(slot, block)
                             || slot.extra_index == Some(update.index)
-                        {
-                            xor_entry(&mut slot.parity, &update.delta);
-                        }
+                    });
+                    if should_update {
+                        xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
                     } else if self.backups[backup_idx].available {
-                        if block_in_subset(&self.backups[backup_idx].subset_blocks, block) {
+                        if block_in_subset(&self.backups[backup_idx].cached_blocks, block) {
                             xor_entry(&mut self.backups[backup_idx].parity_in, &update.delta);
                         } else {
                             xor_entry(&mut self.backups[backup_idx].parity_out, &update.delta);
@@ -581,7 +586,8 @@ impl Client {
 
         for block in 0..self.params.num_blocks {
             let is_real = block != queried_block
-                && (block_in_subset(&slot.subset_blocks, block) || extra_block == Some(block));
+                && (slot_block_in_subset(slot, block)
+                    || extra_block == Some(block));
 
             if is_real {
                 real_count += 1;
@@ -608,6 +614,14 @@ impl Client {
         Some(Query { mask, offsets })
     }
 
+    /// Promotes the first available backup hint into a regular slot.
+    ///
+    /// Any backup can serve any queried block because backup subsets have
+    /// exactly c/2 blocks. If the queried block is in the subset, we
+    /// complement it (c/2 blocks become c - c/2 = c/2, still valid).
+    /// If it's outside, we use the subset as-is. Either way we get a
+    /// c/2-block subset that excludes the queried block, which is then
+    /// added via `extra_index`.
     fn promote_backup(
         &mut self,
         queried_index: usize,
@@ -619,13 +633,7 @@ impl Client {
 
         let queried_block = self.params.block_of(queried_index);
         let backup = &mut self.backups[backup_idx];
-        let queried_in_subset = block_in_subset(&backup.subset_blocks, queried_block);
-
-        let subset_blocks = if queried_in_subset {
-            complement_subset(self.params.num_blocks, &backup.subset_blocks)
-        } else {
-            backup.subset_blocks.clone()
-        };
+        let queried_in_subset = block_in_subset(&backup.cached_blocks, queried_block);
 
         let mut parity = if queried_in_subset {
             backup.parity_out
@@ -634,11 +642,13 @@ impl Client {
         };
         xor_entry(&mut parity, &queried_entry);
 
+        let cached_blocks = backup.cached_blocks.clone();
         backup.available = false;
 
         let promoted_idx = self.params.num_regular_hints + backup_idx;
         self.slots[promoted_idx] = Some(HintSlot {
-            subset_blocks,
+            cached_blocks,
+            complemented: queried_in_subset,
             parity,
             extra_index: Some(queried_index),
         });
@@ -647,7 +657,12 @@ impl Client {
     }
 }
 
-fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32] {
+fn slot_block_in_subset(slot: &HintSlot, block: usize) -> bool {
+    let in_original = block_in_subset(&slot.cached_blocks, block);
+    in_original ^ slot.complemented
+}
+
+pub fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(master_seed);
     hasher.update(label);
@@ -658,7 +673,7 @@ fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32
     seed
 }
 
-fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
+pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     let mut keys = Vec::with_capacity(c);
     for block_idx in 0..c {
         let mut hasher = Sha256::new();
@@ -673,37 +688,26 @@ fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     keys
 }
 
-fn compute_regular_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
+pub fn compute_regular_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
     let mut rng = ChaCha20Rng::from_seed(*seed);
     let mut blocks = sample(&mut rng, c, c / 2 + 1).into_vec();
     blocks.sort_unstable();
     blocks
 }
 
-fn compute_backup_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
+pub fn compute_backup_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
     let mut rng = ChaCha20Rng::from_seed(*seed);
     let mut blocks = sample(&mut rng, c, c / 2).into_vec();
     blocks.sort_unstable();
     blocks
 }
 
+/// Returns `true` if `block` is present in `blocks`.
+///
+/// `blocks` **must** be sorted in ascending order (uses binary search).
 #[inline]
-fn block_in_subset(blocks: &[usize], block: usize) -> bool {
+pub fn block_in_subset(blocks: &[usize], block: usize) -> bool {
     blocks.binary_search(&block).is_ok()
-}
-
-fn complement_subset(total_blocks: usize, subset: &[usize]) -> Vec<usize> {
-    let mut in_subset = vec![false; total_blocks];
-    for &block in subset {
-        in_subset[block] = true;
-    }
-    let mut complement = Vec::with_capacity(total_blocks - subset.len());
-    for (block, present) in in_subset.into_iter().enumerate() {
-        if !present {
-            complement.push(block);
-        }
-    }
-    complement
 }
 
 #[inline]
