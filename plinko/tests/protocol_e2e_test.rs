@@ -304,9 +304,12 @@ fn test_update_through_complemented_promoted_slots() {
         Client::offline_init(params.clone(), master_seed, query_seed, &entries).expect("offline init");
 
     // Phase 1: Query a few indices, consuming backups (each promotes one).
-    // With 3 queries, ~50% of promoted slots will have complemented=true.
+    // Backups are consumed in order 0, 1, 2, ... so we can verify which
+    // promotions set complemented=true by checking whether the queried block
+    // falls in the backup's original subset.
     let num_phase1 = 3;
     let mut phase1_count = 0;
+    let mut queried_indices = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for idx in 0..entries.len() {
         if phase1_count == num_phase1 {
@@ -320,10 +323,28 @@ fn test_update_through_complemented_promoted_slots() {
             .reconstruct_and_replenish(prepared, response)
             .expect("reconstruct");
         assert_eq!(got, entries[idx], "pre-update mismatch at index {idx}");
+        queried_indices.push(idx);
         phase1_count += 1;
     }
     assert_eq!(phase1_count, num_phase1);
     let backups_after_phase1 = client.remaining_backup_hints();
+
+    // Verify that at least one promoted slot actually had complemented=true.
+    // Backups are promoted in order, so backup j was used for queried_indices[j].
+    let mut any_complemented = false;
+    for (j, &idx) in queried_indices.iter().enumerate() {
+        let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j as u64);
+        let backup_blocks = compute_backup_blocks(&seed, params.num_blocks);
+        let queried_block = idx / params.block_size;
+        if block_in_subset(&backup_blocks, queried_block) {
+            any_complemented = true;
+        }
+    }
+    assert!(
+        any_complemented,
+        "test seed did not produce any complemented promotions; \
+         change master_seed or query more indices"
+    );
 
     // Phase 2: Update every entry in the database.
     let mut server_updates = Vec::new();
