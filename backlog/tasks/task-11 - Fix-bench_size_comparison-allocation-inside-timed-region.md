@@ -1,7 +1,7 @@
 ---
 id: TASK-11
 title: Fix bench_size_comparison allocation inside timed region
-status: Open
+status: Done
 assignee: []
 created_date: '2026-03-31 08:00'
 labels:
@@ -22,6 +22,6 @@ Either label `bench_size_comparison` clearly as a "combined allocation" benchmar
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 bench_size_comparison separates setup from measurement, or is clearly labelled
-- [ ] #2 Benchmark still compiles and runs
+- [x] #1 bench_size_comparison separates setup from measurement, or is clearly labelled
+- [x] #2 Benchmark still compiles and runs
 <!-- AC:END -->

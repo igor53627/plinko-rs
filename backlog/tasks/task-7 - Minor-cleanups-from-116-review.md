@@ -28,7 +28,7 @@ Minor issues identified during code review of the compact block set PR:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 bench_size_comparison prints results without duplication
-- [ ] #2 fast_path.rs has debug assertion for num_backup == backup_hint_blocks.len()
-- [ ] #3 promote_backup has a comment explaining the complement-adaptation invariant
+- [x] #1 bench_size_comparison prints results without duplication
+- [x] #2 fast_path.rs has debug assertion for num_backup == backup_hint_blocks.len()
+- [x] #3 promote_backup has a comment explaining the complement-adaptation invariant
 <!-- AC:END -->

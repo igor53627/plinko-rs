@@ -1,7 +1,7 @@
 ---
 id: TASK-3
 title: Add memory benchmarks for hint generation and client storage
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 05:11'
 labels:
@@ -28,7 +28,7 @@ Include:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Benchmark measures peak memory during hint generation
-- [ ] #2 Benchmark compares Vec<usize> vs BlockBitset storage
-- [ ] #3 Results confirm expected ~32x reduction for hint gen block storage
+- [x] #1 Benchmark measures peak memory during hint generation
+- [x] #2 Benchmark compares Vec<usize> vs BlockBitset storage
+- [x] #3 Results confirm expected ~32x reduction for hint gen block storage
 <!-- AC:END -->

@@ -1,7 +1,7 @@
 ---
 id: TASK-2
 title: Replace HintSlot subset_blocks with seed-based recomputation + complement bit
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 05:10'
 labels:
@@ -31,9 +31,9 @@ Key changes:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 HintSlot no longer stores Vec<usize> subset_blocks
-- [ ] #2 Block membership checks recompute from seed on-demand
-- [ ] #3 promote_backup stores a complement flag instead of materializing the complement set
-- [ ] #4 Client persistent storage reduced from O(lambda*c) to O(lambda)
-- [ ] #5 All existing tests pass
+- [x] #1 HintSlot no longer stores Vec<usize> subset_blocks
+- [x] #2 Block membership checks recompute from seed on-demand
+- [x] #3 promote_backup stores a complement flag instead of materializing the complement set
+- [x] #4 Client persistent storage reduced from O(lambda*c) to O(lambda)
+- [x] #5 All existing tests pass
 <!-- AC:END -->

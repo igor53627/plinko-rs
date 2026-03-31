@@ -34,9 +34,9 @@ Same issue applies to `apply_updates` for available backup hints, where `compute
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 slot_block_in_subset() does not allocate on every call
-- [ ] #2 HintSlot caches the expanded block set (computed once from seed)
-- [ ] #3 BackupHint in apply_updates does not recompute blocks per update
-- [ ] #4 All existing tests pass
-- [ ] #5 No measurable regression in protocol e2e test runtime
+- [x] #1 slot_block_in_subset() does not allocate on every call
+- [x] #2 HintSlot caches the expanded block set (computed once from seed)
+- [x] #3 BackupHint in apply_updates does not recompute blocks per update
+- [x] #4 All existing tests pass
+- [x] #5 No measurable regression in protocol e2e test runtime
 <!-- AC:END -->
