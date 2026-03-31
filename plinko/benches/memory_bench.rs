@@ -49,6 +49,8 @@ fn bench_vec_allocation(c: &mut Criterion) {
         let count = 128; // typical lambda * w hints
         let subsets = generate_subsets(c_val, count);
 
+        // Vec arm measures clone cost; BlockBitset arm measures conversion cost.
+        // This reflects their respective hot-path operations.
         group.bench_with_input(
             BenchmarkId::new("Vec<Vec<usize>>", c_val),
             &c_val,

@@ -279,6 +279,7 @@ struct HintSlot {
 #[derive(Clone)]
 struct BackupHint {
     /// Block indices derived from seed, sorted ascending.
+    /// Empty after promotion (moved into the promoted `HintSlot`).
     cached_blocks: Vec<usize>,
     parity_in: Entry,
     parity_out: Entry,
