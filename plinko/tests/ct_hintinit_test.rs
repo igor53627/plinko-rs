@@ -5,13 +5,13 @@
 //! timing side-channel protection.
 
 use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
-use plinko::iprf::{Iprf, IprfTee, PrfKey128};
+use plinko::iprf::{Iprf, IprfTee};
+use plinko::protocol::{
+    block_in_subset, compute_backup_blocks, compute_regular_blocks, derive_block_keys,
+    derive_subset_seed, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
+};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use sha2::{Digest, Sha256};
-
-const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
-const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";
 
 struct RegularHint {
     parity: [u8; 32],
@@ -22,6 +22,8 @@ struct BackupHint {
     parity_out: [u8; 32],
 }
 
+// BlockBitset is defined in the binary (hint_gen::bitset), not the library,
+// so we keep a minimal local copy for CT membership tests.
 struct BlockBitset {
     bits: Vec<u64>,
     num_blocks: usize,
@@ -61,57 +63,6 @@ fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
     for i in 0..32 {
         dst[i] ^= src[i];
     }
-}
-
-fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(master_seed);
-    hasher.update(label);
-    hasher.update(idx.to_le_bytes());
-    let hash = hasher.finalize();
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&hash[0..32]);
-    seed
-}
-
-fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
-    let mut keys = Vec::with_capacity(c);
-    for block_idx in 0..c {
-        let mut hasher = Sha256::new();
-        hasher.update(master_seed);
-        hasher.update(b"block_key");
-        hasher.update((block_idx as u64).to_le_bytes());
-        let hash = hasher.finalize();
-        let mut key = [0u8; 16];
-        key.copy_from_slice(&hash[0..16]);
-        keys.push(key);
-    }
-    keys
-}
-
-fn random_subset(rng: &mut ChaCha20Rng, size: usize, total: usize) -> Vec<usize> {
-    use rand::seq::index::sample;
-    sample(rng, total, size).into_vec()
-}
-
-fn compute_regular_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
-    let regular_subset_size = c / 2 + 1;
-    let mut rng = ChaCha20Rng::from_seed(*seed);
-    let mut blocks = random_subset(&mut rng, regular_subset_size, c);
-    blocks.sort_unstable();
-    blocks
-}
-
-fn compute_backup_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
-    let backup_subset_size = c / 2;
-    let mut rng = ChaCha20Rng::from_seed(*seed);
-    let mut blocks = random_subset(&mut rng, backup_subset_size, c);
-    blocks.sort_unstable();
-    blocks
-}
-
-fn block_in_subset(blocks: &[usize], block: usize) -> bool {
-    blocks.binary_search(&block).is_ok()
 }
 
 /// Run HintInit using the fast (non-CT) path

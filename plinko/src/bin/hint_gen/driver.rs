@@ -1,5 +1,6 @@
 //! Driver helpers for plinko_hints binary - geometry, validation, and initialization.
 
+use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::{
     compute_backup_blocks, compute_regular_blocks, derive_subset_seed, BackupHint, RegularHint,
     SEED_LABEL_BACKUP, SEED_LABEL_REGULAR, WORD_SIZE,
@@ -35,12 +36,12 @@ pub struct HintParams {
     pub total_hints: usize,
 }
 
-/// Return type for [`init_hints`]: `(regular_hints, regular_hint_blocks, backup_hints, backup_hint_blocks)`.
+/// Return type for [`init_hints`]: `(regular_hints, regular_hint_bitsets, backup_hints, backup_hint_bitsets)`.
 pub type HintInitOutput = (
     Vec<RegularHint>,
-    Vec<Vec<usize>>,
+    Vec<BlockBitset>,
     Vec<BackupHint>,
-    Vec<Vec<usize>>,
+    Vec<BlockBitset>,
 );
 
 impl HintParams {
@@ -193,10 +194,10 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
     }
 }
 
-/// Initialize hint structures and compute block memberships.
+/// Initialize hint structures and compute block memberships as bitsets.
 pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> HintInitOutput {
     let mut regular_hints: Vec<RegularHint> = Vec::with_capacity(params.num_regular);
-    let mut regular_hint_blocks: Vec<Vec<usize>> = Vec::with_capacity(params.num_regular);
+    let mut regular_bitsets: Vec<BlockBitset> = Vec::with_capacity(params.num_regular);
 
     for j in 0..params.num_regular {
         let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_REGULAR, j as u64);
@@ -205,11 +206,11 @@ pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> Hint
             subset_seed,
             parity: [0u8; 32],
         });
-        regular_hint_blocks.push(blocks);
+        regular_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
     }
 
     let mut backup_hints: Vec<BackupHint> = Vec::with_capacity(params.num_backup);
-    let mut backup_hint_blocks: Vec<Vec<usize>> = Vec::with_capacity(params.num_backup);
+    let mut backup_bitsets: Vec<BlockBitset> = Vec::with_capacity(params.num_backup);
 
     for j in 0..params.num_backup {
         let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_BACKUP, j as u64);
@@ -219,14 +220,14 @@ pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> Hint
             parity_in: [0u8; 32],
             parity_out: [0u8; 32],
         });
-        backup_hint_blocks.push(blocks);
+        backup_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
     }
 
     (
         regular_hints,
-        regular_hint_blocks,
+        regular_bitsets,
         backup_hints,
-        backup_hint_blocks,
+        backup_bitsets,
     )
 }
 

@@ -12,7 +12,6 @@ pub mod keys;
 pub mod subsets;
 pub mod types;
 
-pub use bitset::BlockBitset;
 pub use driver::{
     compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args,
     validate_hint_params, HintParams,

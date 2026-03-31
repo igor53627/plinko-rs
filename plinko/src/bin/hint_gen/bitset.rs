@@ -28,6 +28,12 @@ impl BlockBitset {
         bitset
     }
 
+    /// Returns true if `block` is in the set.
+    #[inline]
+    pub fn contains(&self, block: usize) -> bool {
+        self.contains_ct(block) == 1
+    }
+
     /// Returns 1 if `block` is in the set, 0 otherwise, in constant time.
     #[inline]
     pub fn contains_ct(&self, block: usize) -> u64 {
@@ -43,6 +49,9 @@ impl BlockBitset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::seq::index::sample;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
     #[test]
     fn test_bitset_membership() {
@@ -55,5 +64,72 @@ mod tests {
         assert_eq!(bitset.contains_ct(5), 1);
         assert_eq!(bitset.contains_ct(9), 1);
         assert_eq!(bitset.contains_ct(10), 0);
+    }
+
+    #[test]
+    fn test_bitset_exhaustive_membership() {
+        let c = 128;
+        let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+        let subset_size = c / 2 + 1;
+        let mut blocks = sample(&mut rng, c, subset_size).into_vec();
+        blocks.sort_unstable();
+
+        let bitset = BlockBitset::from_sorted_blocks(&blocks, c);
+
+        for idx in 0..c {
+            let vec_result = blocks.binary_search(&idx).is_ok();
+            let bitset_result = bitset.contains(idx);
+            assert_eq!(
+                vec_result, bitset_result,
+                "Mismatch at index {idx}: vec={vec_result}, bitset={bitset_result}"
+            );
+            assert_eq!(
+                bitset.contains_ct(idx),
+                if vec_result { 1 } else { 0 },
+                "CT mismatch at index {idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bitset_edge_cases() {
+        // Empty subset
+        let bitset = BlockBitset::from_sorted_blocks(&[], 64);
+        for i in 0..64 {
+            assert!(!bitset.contains(i), "Empty bitset should contain nothing");
+        }
+
+        // Full subset
+        let all: Vec<usize> = (0..64).collect();
+        let bitset = BlockBitset::from_sorted_blocks(&all, 64);
+        for i in 0..64 {
+            assert!(bitset.contains(i), "Full bitset should contain everything");
+        }
+        assert!(!bitset.contains(64), "Out of range should return false");
+
+        // Single element
+        let bitset = BlockBitset::from_sorted_blocks(&[0], 128);
+        assert!(bitset.contains(0));
+        for i in 1..128 {
+            assert!(!bitset.contains(i), "Only index 0 should be set");
+        }
+
+        // Boundary indices (last bit in each word)
+        let bitset = BlockBitset::from_sorted_blocks(&[63, 127], 128);
+        assert!(bitset.contains(63));
+        assert!(bitset.contains(127));
+        assert!(!bitset.contains(0));
+        assert!(!bitset.contains(64));
+
+        // First bit in each word
+        let bitset = BlockBitset::from_sorted_blocks(&[0, 64], 128);
+        assert!(bitset.contains(0));
+        assert!(bitset.contains(64));
+        assert!(!bitset.contains(1));
+        assert!(!bitset.contains(63));
+
+        // Zero-size bitset
+        let bitset = BlockBitset::from_sorted_blocks(&[], 0);
+        assert!(!bitset.contains(0));
     }
 }
