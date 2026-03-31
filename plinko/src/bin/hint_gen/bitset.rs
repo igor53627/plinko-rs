@@ -28,10 +28,13 @@ impl BlockBitset {
         bitset
     }
 
-    /// Returns true if `block` is in the set.
+    /// Returns true if `block` is in the set (non-constant-time).
     #[inline]
     pub fn contains(&self, block: usize) -> bool {
-        self.contains_ct(block) == 1
+        if block >= self.num_blocks {
+            return false;
+        }
+        (self.bits[block / 64] >> (block % 64)) & 1 == 1
     }
 
     /// Returns 1 if `block` is in the set, 0 otherwise, in constant time.

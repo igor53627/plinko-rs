@@ -111,24 +111,27 @@ fn bench_size_comparison(c: &mut Criterion) {
         }
     });
 
+    // Benchmark the conversion from pre-generated subsets to bitsets (setup excluded).
+    let all_subsets: Vec<(usize, Vec<Vec<usize>>)> = [100, 1000, 10000]
+        .iter()
+        .map(|&c_val| (c_val, generate_subsets(c_val, 128)))
+        .collect();
+
     c.bench_function("size_report", |b| {
         b.iter(|| {
-            for c_val in [100, 1000, 10000] {
-                let count = 128;
-                let subsets = generate_subsets(c_val, count);
-
+            for (c_val, subsets) in &all_subsets {
                 let vec_heap: usize = subsets
                     .iter()
                     .map(|v| v.len() * std::mem::size_of::<usize>())
                     .sum();
-                let vec_overhead = count * std::mem::size_of::<Vec<usize>>();
+                let vec_overhead = 128 * std::mem::size_of::<Vec<usize>>();
 
                 let bitsets: Vec<BlockBitset> = subsets
                     .iter()
-                    .map(|blocks| BlockBitset::from_sorted_blocks(blocks, c_val))
+                    .map(|blocks| BlockBitset::from_sorted_blocks(blocks, *c_val))
                     .collect();
                 let bitset_heap: usize = bitsets.iter().map(|bs| bs.heap_size()).sum();
-                let bitset_overhead = count * std::mem::size_of::<Vec<u64>>();
+                let bitset_overhead = 128 * std::mem::size_of::<Vec<u64>>();
 
                 let vec_total = vec_heap + vec_overhead;
                 let bitset_total = bitset_heap + bitset_overhead;

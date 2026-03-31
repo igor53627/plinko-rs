@@ -79,6 +79,7 @@ fn protocol_cache_update_and_requery() {
 
     let mut target = None;
     let mut prepared_1_opt = None;
+    #[allow(clippy::needless_range_loop)]
     for idx in 0..entries.len() {
         if let Ok(prepared) = client.prepare_query(idx) {
             target = Some(idx);
@@ -276,5 +277,93 @@ fn test_protocol_e2e_after_compaction() {
     assert_eq!(
         client.remaining_backup_hints(),
         params.num_backup_hints - tested
+    );
+}
+
+/// Exercises apply_updates through promoted (potentially complemented) slots.
+///
+/// Queries multiple indices to force backup promotions — statistically ~50%
+/// will have `complemented = true` — then mutates entries and verifies that
+/// re-querying after updates still returns correct values.
+#[test]
+fn test_update_through_complemented_promoted_slots() {
+    let params = ProtocolParams::new(
+        128,      // n
+        Some(16), // w
+        3,        // lambda
+        None,
+    )
+    .expect("params");
+
+    let mut entries = make_db(params.num_entries);
+    let master_seed = [0xCCu8; 32];
+    let query_seed = [0xDDu8; 32];
+
+    let mut server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client =
+        Client::offline_init(params.clone(), master_seed, query_seed, &entries).expect("offline init");
+
+    // Phase 1: Query a few indices, consuming backups (each promotes one).
+    // With 3 queries, ~50% of promoted slots will have complemented=true.
+    let num_phase1 = 3;
+    let mut phase1_count = 0;
+    #[allow(clippy::needless_range_loop)]
+    for idx in 0..entries.len() {
+        if phase1_count == num_phase1 {
+            break;
+        }
+        let Ok(prepared) = client.prepare_query(idx) else {
+            continue;
+        };
+        let response = server.answer(&prepared.query).expect("answer");
+        let got = client
+            .reconstruct_and_replenish(prepared, response)
+            .expect("reconstruct");
+        assert_eq!(got, entries[idx], "pre-update mismatch at index {idx}");
+        phase1_count += 1;
+    }
+    assert_eq!(phase1_count, num_phase1);
+    let backups_after_phase1 = client.remaining_backup_hints();
+
+    // Phase 2: Update every entry in the database.
+    let mut server_updates = Vec::new();
+    for (idx, entry) in entries.iter_mut().enumerate() {
+        let new_val = make_entry(0xF000 + idx as u64);
+        server_updates.push((idx, new_val));
+        *entry = new_val;
+    }
+    let deltas = server.apply_updates(&server_updates).expect("server update");
+    client.apply_updates(&deltas).expect("client update");
+
+    // Phase 3: Query new indices after the update. These queries use hints
+    // (including promoted slots with complemented=true) whose parities were
+    // maintained through apply_updates. Correct reconstruction validates that
+    // the complement flag was handled properly during the update.
+    let num_phase3 = 3;
+    let mut phase3_count = 0;
+    // Start from a higher index to avoid re-querying phase-1 cached entries
+    // via the cache path (which would bypass the hint-based reconstruction).
+    #[allow(clippy::needless_range_loop)]
+    for idx in (entries.len() / 2)..entries.len() {
+        if phase3_count == num_phase3 {
+            break;
+        }
+        let Ok(prepared) = client.prepare_query(idx) else {
+            continue;
+        };
+        let response = server.answer(&prepared.query).expect("answer post-update");
+        let got = client
+            .reconstruct_and_replenish(prepared, response)
+            .expect("reconstruct post-update");
+        assert_eq!(got, entries[idx], "post-update mismatch at index {idx}");
+        phase3_count += 1;
+    }
+    assert!(
+        phase3_count >= 2,
+        "need at least 2 post-update queries, got {phase3_count}"
+    );
+    assert_eq!(
+        client.remaining_backup_hints(),
+        backups_after_phase1 - phase3_count
     );
 }
