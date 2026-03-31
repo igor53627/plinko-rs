@@ -430,9 +430,7 @@ impl Client {
                 continue;
             };
 
-            if !slot_block_in_subset(slot, block)
-                && slot.extra_index != Some(queried_index)
-            {
+            if !slot_block_in_subset(slot, block) && slot.extra_index != Some(queried_index) {
                 continue;
             }
 
@@ -586,8 +584,7 @@ impl Client {
 
         for block in 0..self.params.num_blocks {
             let is_real = block != queried_block
-                && (slot_block_in_subset(slot, block)
-                    || extra_block == Some(block));
+                && (slot_block_in_subset(slot, block) || extra_block == Some(block));
 
             if is_real {
                 real_count += 1;

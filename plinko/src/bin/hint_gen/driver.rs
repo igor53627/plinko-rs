@@ -223,12 +223,7 @@ pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> Hint
         backup_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
     }
 
-    (
-        regular_hints,
-        regular_bitsets,
-        backup_hints,
-        backup_bitsets,
-    )
+    (regular_hints, regular_bitsets, backup_hints, backup_bitsets)
 }
 
 /// Print final results summary.
