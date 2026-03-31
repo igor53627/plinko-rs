@@ -95,9 +95,9 @@ mod tests {
     use super::*;
     use crate::hint_gen::keys::{derive_block_keys, derive_subset_seed};
     use crate::hint_gen::subsets::{compute_backup_blocks, compute_regular_blocks, xor_32};
-    use plinko::protocol::block_in_subset;
     use crate::hint_gen::types::{SEED_LABEL_BACKUP, SEED_LABEL_REGULAR};
     use plinko::iprf::Iprf;
+    use plinko::protocol::block_in_subset;
 
     #[test]
     fn test_ct_and_fast_produce_same_results() {

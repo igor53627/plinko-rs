@@ -227,7 +227,10 @@ fn test_seed_recomputation_deterministic() {
             let seed = derive_subset_seed(&master_seed, SEED_LABEL_REGULAR, j);
             let blocks1 = compute_regular_blocks(&seed, c);
             let blocks2 = compute_regular_blocks(&seed, c);
-            assert_eq!(blocks1, blocks2, "Regular non-deterministic at c={c}, j={j}");
+            assert_eq!(
+                blocks1, blocks2,
+                "Regular non-deterministic at c={c}, j={j}"
+            );
 
             let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j);
             let blocks1 = compute_backup_blocks(&seed, c);
@@ -252,9 +255,8 @@ fn test_protocol_e2e_after_compaction() {
     let query_seed = [0xBBu8; 32];
 
     let server = Server::new(params.clone(), &entries).expect("server init");
-    let mut client =
-        Client::offline_init(params.clone(), master_seed, query_seed, &entries)
-            .expect("offline init");
+    let mut client = Client::offline_init(params.clone(), master_seed, query_seed, &entries)
+        .expect("offline init");
 
     let mut tested = 0usize;
     for (index, expected) in entries.iter().enumerate() {
@@ -271,7 +273,10 @@ fn test_protocol_e2e_after_compaction() {
         assert_eq!(got, *expected, "roundtrip mismatch at index {index}");
         tested += 1;
     }
-    assert!(tested >= 6, "expected at least 6 queryable indices, got {tested}");
+    assert!(
+        tested >= 6,
+        "expected at least 6 queryable indices, got {tested}"
+    );
 
     assert_eq!(client.num_cached_entries(), tested);
     assert_eq!(
@@ -300,8 +305,8 @@ fn test_update_through_complemented_promoted_slots() {
     let query_seed = [0xDDu8; 32];
 
     let mut server = Server::new(params.clone(), &entries).expect("server init");
-    let mut client =
-        Client::offline_init(params.clone(), master_seed, query_seed, &entries).expect("offline init");
+    let mut client = Client::offline_init(params.clone(), master_seed, query_seed, &entries)
+        .expect("offline init");
 
     // Phase 1: Query a few indices, consuming backups (each promotes one).
     // Backups are consumed in order 0, 1, 2, ... so we can verify which
@@ -353,7 +358,9 @@ fn test_update_through_complemented_promoted_slots() {
         server_updates.push((idx, new_val));
         *entry = new_val;
     }
-    let deltas = server.apply_updates(&server_updates).expect("server update");
+    let deltas = server
+        .apply_updates(&server_updates)
+        .expect("server update");
     client.apply_updates(&deltas).expect("client update");
 
     // Phase 3: Query new indices after the update. These queries use hints
