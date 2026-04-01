@@ -70,7 +70,7 @@ fn main() -> eyre::Result<()> {
         count = params.num_backup,
         "Initializing backup hints"
     );
-    let (mut regular_hints, regular_hint_blocks, mut backup_hints, backup_hint_blocks) =
+    let (mut regular_hints, regular_bitsets, mut backup_hints, backup_bitsets) =
         init_hints(&master_seed, geom.c, &params);
 
     info!(
@@ -94,15 +94,6 @@ fn main() -> eyre::Result<()> {
         let block_iprfs_ct: Vec<IprfTee> = block_keys
             .iter()
             .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
-            .collect();
-
-        let regular_bitsets: Vec<BlockBitset> = regular_hint_blocks
-            .iter()
-            .map(|blocks| BlockBitset::from_sorted_blocks(blocks, geom.c))
-            .collect();
-        let backup_bitsets: Vec<BlockBitset> = backup_hint_blocks
-            .iter()
-            .map(|blocks| BlockBitset::from_sorted_blocks(blocks, geom.c))
             .collect();
 
         hint_gen::ct_path::process_entries_ct(
@@ -136,8 +127,8 @@ fn main() -> eyre::Result<()> {
                 num_regular: params.num_regular,
                 num_backup: params.num_backup,
                 block_iprfs: &block_iprfs,
-                regular_hint_blocks: &regular_hint_blocks,
-                backup_hint_blocks: &backup_hint_blocks,
+                regular_hint_blocks: &regular_bitsets,
+                backup_hint_blocks: &backup_bitsets,
             },
             &mut regular_hints,
             &mut backup_hints,

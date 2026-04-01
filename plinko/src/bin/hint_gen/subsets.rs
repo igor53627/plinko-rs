@@ -29,13 +29,6 @@ pub fn compute_backup_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
     blocks
 }
 
-/// Returns true if `block` is in the sorted `blocks` slice.
-///
-/// Precondition: `blocks` must be sorted in ascending order.
-pub fn block_in_subset(blocks: &[usize], block: usize) -> bool {
-    blocks.binary_search(&block).is_ok()
-}
-
 /// XORs `src` into `dst` in place (32-byte words).
 pub fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
     for i in 0..32 {
@@ -46,15 +39,6 @@ pub fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_block_in_subset() {
-        let blocks = vec![1, 3, 5, 7, 9];
-        assert!(block_in_subset(&blocks, 5));
-        assert!(!block_in_subset(&blocks, 6));
-        assert!(block_in_subset(&blocks, 1));
-        assert!(!block_in_subset(&blocks, 0));
-    }
 
     #[test]
     fn test_xor_32_identity() {

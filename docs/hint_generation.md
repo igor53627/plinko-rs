@@ -49,3 +49,38 @@ cd plinko && cargo build --release --bin plinko_hints
 ```
 
 See [constant_time_mode.md](constant_time_mode.md) for TEE security details.
+
+## Block Set Memory Optimization (#116)
+
+Block subsets (which blocks each hint covers) are stored as packed bitmaps
+(`BlockBitset`) instead of sorted `Vec<usize>` arrays. This reduces block
+set memory by up to 31x during hint generation:
+
+| c (blocks) | `Vec<usize>` (old) | `BlockBitset` (new) | Reduction |
+|------------|-------------------:|--------------------:|----------:|
+| 100 | 54 KB | 5 KB | 10.8x |
+| 1,000 | 504 KB | 19 KB | 26.5x |
+| 10,000 | 5,004 KB | 160 KB | 31.3x |
+
+*128 hints per measurement. Ratio converges to ~32x as c grows.*
+
+At Ethereum Mainnet scale (c ~ 16,404), block set storage drops from
+~4 GB to ~130 MB for 33.5M hints. This is a pure memory win; the
+compute bottleneck remains the Swap-Or-Not rounds in the iPRF.
+
+### Impact by execution path
+
+| Path | Membership check | Memory impact | Compute impact |
+|------|-----------------|---------------|----------------|
+| **CPU fast path** | `contains()` — O(1) bit test | 31x less block storage; fits in L2 cache | Slight speedup from cache locality; replaces O(log c) binary search |
+| **CPU CT path** | `contains_ct()` — constant-time bit test | Same reduction | No change (already used `BlockBitset`) |
+| **GPU path** | Raw byte bitsets in CUDA kernel | No intermediate `Vec<usize>` spike on host | No kernel change (GPU already operates on packed bits) |
+
+### Protocol client (online queries)
+
+The protocol `Client` caches sorted block vectors on `HintSlot` and
+`BackupHint` (computed once from seed during `offline_init`). Promoted
+backup hints use a complement flag (`complemented: bool`) instead of
+materializing the complement set, making `promote_backup` zero-allocation.
+
+Run the memory benchmark: `cargo bench --bench memory_bench`
