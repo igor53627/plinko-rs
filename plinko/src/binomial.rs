@@ -161,8 +161,8 @@ fn binomial_cdf(n: u64, p: f64, k: u64) -> f64 {
 ///   (equivalently monotone in CDF argument).
 /// - **Target envelope**: `a,b` up to ~1.3e7 (mainnet `n`), `x = 1-p` with PMNS
 ///   split probabilities away from 0/1.
-/// - **Accuracy**: Matches Cephes/statrs `beta_reg` on the large-parameter path;
-///   validated by median-CDF and first-split regression tests at mainnet scale.
+/// - **Accuracy**: Large-parameter path checked against a statrs `beta_reg` oracle at
+///   the mainnet PMNS median CDF point; see `test_beta_continued_fraction_mainnet_oracle`.
 /// - **Convergence**: Stops when successive CF factor `del` is within `f64::EPSILON`
 ///   of 1, or after [`BETA_CF_MAX_ITER`] (Cephes/statrs behavior: return the best
 ///   partial estimate if not converged; sufficient for PMNS regression tests).
@@ -170,7 +170,7 @@ fn binomial_cdf(n: u64, p: f64, k: u64) -> f64 {
 /// Algorithm adapted from statrs `checked_beta_reg` (Apache-2.0) / Numerical Recipes.
 /// Reference O(n) sampler without `betai` degeneracy: Keewoo `rms24-plinko-spec`
 /// (`PRG.binomial` coin-flip loop) — correct on small n, not used here.
-fn regularized_incomplete_beta(mut a: f64, mut b: f64, mut x: f64) -> f64 {
+fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     debug_assert!(a > 0.0 && b > 0.0);
     debug_assert!((0.0..=1.0).contains(&x));
 
@@ -185,6 +185,16 @@ fn regularized_incomplete_beta(mut a: f64, mut b: f64, mut x: f64) -> f64 {
     if a <= BETA_LARGE_THRESHOLD || b <= BETA_LARGE_THRESHOLD {
         return puruspe::betai(a, b, x);
     }
+
+    beta_continued_fraction(a, b, x)
+}
+
+/// Lentz continued fraction for I_x(a,b) when both `a` and `b` exceed [`BETA_LARGE_THRESHOLD`].
+///
+/// Caller must ensure both parameters are above the threshold (routing is handled by
+/// [`regularized_incomplete_beta`]).
+fn beta_continued_fraction(mut a: f64, mut b: f64, mut x: f64) -> f64 {
+    debug_assert!(a > BETA_LARGE_THRESHOLD && b > BETA_LARGE_THRESHOLD);
 
     let bt = (puruspe::ln_gamma(a + b) - puruspe::ln_gamma(a) - puruspe::ln_gamma(b)
         + a * x.ln()
@@ -564,16 +574,62 @@ mod tests {
     }
 
     #[test]
-    fn test_beta_large_path_agrees_with_puruspe_moderate() {
+    fn test_beta_delegates_to_puruspe_below_threshold() {
         let a = 2000.0;
         let b = 2000.0;
         let x = 0.37;
         let ours = super::regularized_incomplete_beta(a, b, x);
         let puruspe = puruspe::betai(a, b, x);
-        assert!(
-            (ours - puruspe).abs() < 1e-10,
-            "moderate path mismatch: ours={ours} puruspe={puruspe}"
+        assert_eq!(
+            ours, puruspe,
+            "expected delegation to puruspe when a or b <= threshold"
         );
+    }
+
+    /// Oracle: statrs `beta_reg(6294656, 6294657, x)` with mainnet PMNS median `x = 1-p`.
+    const MAINNET_MEDIAN_A: f64 = 6_294_656.0;
+    const MAINNET_MEDIAN_B: f64 = 6_294_657.0;
+    const MAINNET_MEDIAN_X: f64 = 0.499_989_832_645_342_36;
+    const MAINNET_MEDIAN_ORACLE: f64 = 0.499_424_400_710_225;
+
+    #[test]
+    fn test_beta_continued_fraction_mainnet_oracle() {
+        let cf = super::beta_continued_fraction(
+            MAINNET_MEDIAN_A,
+            MAINNET_MEDIAN_B,
+            MAINNET_MEDIAN_X,
+        );
+        assert!(
+            (cf - MAINNET_MEDIAN_ORACLE).abs() < 1e-9,
+            "CF {cf} vs statrs oracle {MAINNET_MEDIAN_ORACLE}"
+        );
+        let puruspe = puruspe::betai(MAINNET_MEDIAN_A, MAINNET_MEDIAN_B, MAINNET_MEDIAN_X);
+        assert!(
+            puruspe < 1e-6,
+            "puruspe betaiapprox should underflow at mainnet oracle (got {puruspe})"
+        );
+    }
+
+    #[test]
+    fn test_beta_continued_fraction_symmetric_at_half() {
+        let a = 3500.0;
+        let b = 3500.0;
+        let x = 0.5;
+        let cf = super::beta_continued_fraction(a, b, x);
+        assert!(
+            (cf - 0.5).abs() < 0.01,
+            "symmetric large beta at x=0.5 expected ~0.5, got {cf}"
+        );
+    }
+
+    #[test]
+    fn test_beta_routing_when_one_parameter_small() {
+        let a = 4000.0;
+        let b = 100.0;
+        let x = 0.58;
+        let routed = super::regularized_incomplete_beta(a, b, x);
+        let puruspe = puruspe::betai(a, b, x);
+        assert_eq!(routed, puruspe, "b <= threshold must delegate to puruspe");
     }
 
     #[test]
