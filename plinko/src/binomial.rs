@@ -192,7 +192,9 @@ fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
 /// Lentz continued fraction for I_x(a,b) when both `a` and `b` exceed [`BETA_LARGE_THRESHOLD`].
 ///
 /// Caller must ensure both parameters are above the threshold (routing is handled by
-/// [`regularized_incomplete_beta`]).
+/// [`regularized_incomplete_beta`]). If the fraction does not converge within
+/// [`BETA_CF_MAX_ITER`], returns the best partial product (Cephes/statrs semantics);
+/// PMNS regression tests at mainnet scale validate the resulting CDF in practice.
 fn beta_continued_fraction(mut a: f64, mut b: f64, mut x: f64) -> f64 {
     debug_assert!(a > BETA_LARGE_THRESHOLD && b > BETA_LARGE_THRESHOLD);
 
@@ -630,6 +632,27 @@ mod tests {
         let routed = super::regularized_incomplete_beta(a, b, x);
         let puruspe = puruspe::betai(a, b, x);
         assert_eq!(routed, puruspe, "b <= threshold must delegate to puruspe");
+    }
+
+    /// Binary-search correctness requires P(X <= k) to be non-decreasing in k.
+    #[test]
+    fn test_binomial_cdf_monotone_at_mainnet_scale() {
+        let n = 12_589_312u64;
+        let p = 24_589.0 / 49_177.0;
+        let checkpoints = [0u64, 1, 1_000, 1_000_000, n / 2, n - 1, n];
+        let mut prev = -1.0f64;
+        for k in checkpoints {
+            let cdf = super::binomial_cdf(n, p, k);
+            assert!(
+                (0.0..=1.0).contains(&cdf),
+                "CDF out of range at k={k}: {cdf}"
+            );
+            assert!(
+                cdf >= prev,
+                "CDF not monotone at k={k}: prev={prev} cdf={cdf}"
+            );
+            prev = cdf;
+        }
     }
 
     #[test]
