@@ -9,7 +9,7 @@ git checkout main && git pull
 git checkout -b <type>/<short-description>   # e.g. fix/binomial-cdf, docs/readme
 
 # ... edit ...
-cargo fmt --manifest-path plinko/Cargo.toml
+cargo fmt -p plinko
 cargo test --manifest-path plinko/Cargo.toml
 
 git push -u origin HEAD
@@ -46,10 +46,10 @@ Formal verification (`formal.yml`) runs on PRs that touch `plinko/formal/` or re
 
 `main` requires pull requests and passing checks: **Format**, **Test**, **Clippy**, **Conventional Commits**.
 
-Config reference: [`.github/branch-protection-main.json`](.github/branch-protection-main.json) (for admins re-applying via GitHub API).
+Config reference: [`.github/branch-protection-main.json`](.github/branch-protection-main.json) (for admins re-applying). If the REST API rejects `required_approving_review_count: 0`, use branch settings in the GitHub UI (current `main` uses PRs + checks, zero required approvals).
 
 ## Rust / Plinko specifics
 
 - Canonical protocol index: `docs/plinko_paper_index.json`
 - Hint generation and TEE: `docs/hint_generation.md`, `docs/constant_time_mode.md`
-- Changing hint/iPRF/binomial semantics: align with paper + `plinko/formal/` specs (see `Agents.md`)
+- Changing hint/iPRF/binomial semantics: align with paper + `plinko/formal/` specs (see `AGENTS.md`)
