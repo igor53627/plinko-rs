@@ -540,7 +540,10 @@ mod tests {
             (avg - expected_mean).abs() < tolerance,
             "first-split mean {avg} too far from expected {expected_mean}"
         );
-        assert!(min_k < max_k, "no spread in splits: min={min_k} max={max_k}");
+        assert!(
+            min_k < max_k,
+            "no spread in splits: min={min_k} max={max_k}"
+        );
     }
 
     #[test]
@@ -599,11 +602,8 @@ mod tests {
 
     #[test]
     fn test_beta_continued_fraction_mainnet_oracle() {
-        let cf = super::beta_continued_fraction(
-            MAINNET_MEDIAN_A,
-            MAINNET_MEDIAN_B,
-            MAINNET_MEDIAN_X,
-        );
+        let cf =
+            super::beta_continued_fraction(MAINNET_MEDIAN_A, MAINNET_MEDIAN_B, MAINNET_MEDIAN_X);
         assert!(
             (cf - MAINNET_MEDIAN_ORACLE).abs() < 1e-9,
             "CF {cf} vs statrs oracle {MAINNET_MEDIAN_ORACLE}"
@@ -672,7 +672,10 @@ mod tests {
                 (0.0..=1.0).contains(&cdf),
                 "CDF out of range at k={k}: {cdf}"
             );
-            assert!(cdf >= prev, "CDF not monotone at k={k}: prev={prev} cdf={cdf}");
+            assert!(
+                cdf >= prev,
+                "CDF not monotone at k={k}: prev={prev} cdf={cdf}"
+            );
             prev = cdf;
             k += step;
         }
