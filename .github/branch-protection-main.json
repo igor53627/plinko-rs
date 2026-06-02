@@ -1,0 +1,19 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      { "context": "Format" },
+      { "context": "Test" },
+      { "context": "Clippy" },
+      { "context": "Conventional Commits" }
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "required_linear_history": false,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
