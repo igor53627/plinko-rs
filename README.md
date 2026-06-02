@@ -17,6 +17,8 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 
 Canonical protocol details: [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json).
 
+Contributing: use feature branches and PRs — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## Why this exists
 
 - **Speed**: Reads Reth's MDBX via `reth-db` (no RPC).
