@@ -637,6 +637,27 @@ mod tests {
         assert_eq!(routed, puruspe, "b <= threshold must delegate to puruspe");
     }
 
+    /// Binary search probes adjacent midpoints; verify local monotonicity on consecutive k.
+    #[test]
+    fn test_binomial_cdf_monotone_consecutive_k() {
+        let n = 10_000u64;
+        let p = 0.5;
+        let start = 4_800u64;
+        let end = 5_200u64;
+        let mut prev = super::binomial_cdf(n, p, start);
+        for k in (start + 1)..=end {
+            let cdf = super::binomial_cdf(n, p, k);
+            assert!(
+                cdf >= prev,
+                "CDF decreased between k={} and k={k}: {} -> {}",
+                k - 1,
+                prev,
+                cdf
+            );
+            prev = cdf;
+        }
+    }
+
     /// Binary-search correctness requires P(X <= k) to be non-decreasing in k.
     #[test]
     fn test_binomial_cdf_monotone_dense_large_n() {
