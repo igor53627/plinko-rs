@@ -588,7 +588,10 @@ mod tests {
         );
     }
 
-    /// Oracle: statrs `beta_reg(6294656, 6294657, x)` with mainnet PMNS median `x = 1-p`.
+    /// Oracle for mainnet PMNS median CDF point (n/2 split).
+    ///
+    /// Generated with statrs 0.18: `beta_reg(6294656.0, 6294657.0, 0.49998983264534236)`.
+    /// Here `x = 1-p` for `I_x(n-k, k+1)`; with `a ≈ b` and `x ≈ 0.5`, symmetry gives CDF ≈ 0.5.
     const MAINNET_MEDIAN_A: f64 = 6_294_656.0;
     const MAINNET_MEDIAN_B: f64 = 6_294_657.0;
     const MAINNET_MEDIAN_X: f64 = 0.499_989_832_645_342_36;
@@ -636,12 +639,32 @@ mod tests {
 
     /// Binary-search correctness requires P(X <= k) to be non-decreasing in k.
     #[test]
+    fn test_binomial_cdf_monotone_dense_large_n() {
+        let n = 100_000u64;
+        let p = 0.5;
+        let step = 1_000u64;
+        let mut prev = -1.0f64;
+        let mut k = 0u64;
+        while k <= n {
+            let cdf = super::binomial_cdf(n, p, k);
+            assert!(
+                (0.0..=1.0).contains(&cdf),
+                "CDF out of range at k={k}: {cdf}"
+            );
+            assert!(cdf >= prev, "CDF not monotone at k={k}: prev={prev} cdf={cdf}");
+            prev = cdf;
+            k += step;
+        }
+    }
+
+    #[test]
     fn test_binomial_cdf_monotone_at_mainnet_scale() {
         let n = 12_589_312u64;
         let p = 24_589.0 / 49_177.0;
-        let checkpoints = [0u64, 1, 1_000, 1_000_000, n / 2, n - 1, n];
+        let step = n / 64;
         let mut prev = -1.0f64;
-        for k in checkpoints {
+        for i in 0..=64u64 {
+            let k = (i * step).min(n);
             let cdf = super::binomial_cdf(n, p, k);
             assert!(
                 (0.0..=1.0).contains(&cdf),
