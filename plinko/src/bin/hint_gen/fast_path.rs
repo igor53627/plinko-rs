@@ -10,7 +10,7 @@ use plinko::iprf::Iprf;
 
 use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::subsets::xor_32;
-use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
+use crate::hint_gen::types::{parity_word_at, BackupHint, RegularHint, PARITY_WORD_SIZE};
 
 /// Immutable inputs for non-constant-time hint processing.
 pub struct FastProcessInput<'a> {
@@ -42,13 +42,10 @@ pub fn process_entries_fast(
         let block = i / input.w;
         let offset = i % input.w;
 
-        let entry: [u8; 32] = if i < input.n_entries {
-            let entry_offset = i * WORD_SIZE;
-            input.db_bytes[entry_offset..entry_offset + WORD_SIZE]
-                .try_into()
-                .unwrap()
+        let entry: [u8; PARITY_WORD_SIZE] = if i < input.n_entries {
+            parity_word_at(input.db_bytes, i)
         } else {
-            [0u8; 32]
+            [0u8; PARITY_WORD_SIZE]
         };
 
         let hint_indices = input.block_iprfs[block].inverse(offset as u64);

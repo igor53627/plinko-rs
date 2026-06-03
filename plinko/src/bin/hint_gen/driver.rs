@@ -3,7 +3,7 @@
 use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::{
     compute_backup_blocks, compute_regular_blocks, derive_subset_seed, BackupHint, RegularHint,
-    SEED_LABEL_BACKUP, SEED_LABEL_REGULAR, WORD_SIZE,
+    DB_ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
 };
 use plinko::iprf::MAX_PREIMAGES;
 use rand::RngCore;
@@ -94,12 +94,14 @@ pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
 
 /// Compute database geometry from file length and arguments.
 pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geometry> {
-    #[allow(clippy::manual_is_multiple_of)]
-    if db_len_bytes % WORD_SIZE != 0 {
-        eyre::bail!("DB size must be multiple of 32 bytes");
+    if !db_len_bytes.is_multiple_of(DB_ENTRY_SIZE) {
+        eyre::bail!(
+            "DB size must be a multiple of {} bytes (v3 entry size)",
+            DB_ENTRY_SIZE
+        );
     }
 
-    let n_entries = db_len_bytes / WORD_SIZE;
+    let n_entries = db_len_bytes / DB_ENTRY_SIZE;
     if n_entries == 0 {
         eyre::bail!("Database must contain at least one entry");
     }
