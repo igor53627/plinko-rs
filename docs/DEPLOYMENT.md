@@ -49,6 +49,6 @@ Reads flat `database.bin` only (not MDBX):
 
 ## Production notes
 
-- Full mainnet v3 `database.bin` is ~73 GB (`docs/data_format.md`); plan disk for extract output, hint files, and (if using GPU) expanded VRAM uploads separately.
+- Full mainnet v3 `database.bin` is ~73 GB ([`data_format.md`](data_format.md)); plan disk for extract output, hint files, and (if using GPU) expanded VRAM uploads separately.
 - Long-running jobs: `systemd-run` examples in [`AGENTS.md`](../AGENTS.md).
 - GPU benchmarks: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md).
