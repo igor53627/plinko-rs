@@ -100,13 +100,14 @@ for i in 1 2 3; do echo "Attempt $i:"; codex cloud diff <task_id> --attempt $i 2
 
 ## Canonical Protocol Reference
 
-**`docs/plinko_paper_index.json`** is the canonical source of truth for Plinko protocol implementation details. It indexes:
-- Parsed paper content (`plinko_paper_part*.json`)
-- Regression test data location (Cloudflare R2)
-- Video resources
-- Agent usage notes for different tasks
+Prefer these for implementation and verification (see also `README.md`):
 
-Always consult this file first when implementing or verifying protocol logic.
+1. **`docs/hint_generation.md`** — HintInit (Fig. 7), crate layout
+2. **`docs/data_format.md`** — v3 `database.bin` / mappings, mainnet snapshot URLs
+3. **`docs/Plinko.v`** and **`plinko/formal/`** — formal specs and proofs
+4. **`docs/plinko_paper_part6_algorithms.json`** — parsed pseudocode when cross-checking the paper
+
+**`docs/plinko_paper_index.json`** is an agent catalog of paper parts 1–6; regression/R2 pointers there may be stale — confirm against `data_format.md` before using snapshot metadata.
 
 ## Host: root@aya
 

@@ -50,6 +50,6 @@ Config reference: [`.github/branch-protection-main.json`](.github/branch-protect
 
 ## Rust / Plinko specifics
 
-- Canonical protocol index: `docs/plinko_paper_index.json`
+- Implementation specs: `docs/hint_generation.md`, `docs/data_format.md`, `docs/Plinko.v` (paper JSON index is auxiliary)
 - Hint generation and TEE: `docs/hint_generation.md`, `docs/constant_time_mode.md`
 - Changing hint/iPRF/binomial semantics: align with paper + `plinko/formal/` specs (see `AGENTS.md`)

@@ -10,21 +10,29 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 | Path | Role |
 |------|------|
 | `src/main.rs` | **Extractor** — reads Reth MDBX, writes flat `database.bin` + mappings |
-| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, hint generator, optional CUDA |
+| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, hint generator (`src/bin/hint_gen/`), optional CUDA |
 | `plinko/formal/` | **Rocq** specs and proofs (`plinko/formal/README.md`) |
 | `docs/` | Protocol, data format, benchmarks, verification |
 | `tee-test/` | SEV-SNP TEE benchmark notes |
 
-Canonical protocol details: [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json).
+**Where to look for protocol / implementation truth** (in order):
 
-Contributing: use feature branches and PRs — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+1. [`docs/hint_generation.md`](docs/hint_generation.md) — HintInit behavior (Fig. 7), module map  
+2. [`docs/data_format.md`](docs/data_format.md) — v3 on-disk layout, mainnet snapshot URLs  
+3. [`docs/protocol_overview.md`](docs/protocol_overview.md) — end-to-end pipeline  
+4. [`docs/Plinko.v`](docs/Plinko.v) — Coq reference spec  
+5. [`plinko/formal/`](plinko/formal/) — Rocq proofs and machine-checked specs  
+
+Parsed paper JSON ([`docs/plinko_paper_part*.json`](docs/plinko_paper_part6_algorithms.json), catalog [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json)) is useful for agents and pseudocode lookup; snapshot/R2 pointers in the index may lag [`docs/data_format.md`](docs/data_format.md).
+
+Contributing: feature branches and PRs — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Why this exists
 
 - **Speed**: Reads Reth's MDBX via `reth-db` (no RPC).
 - **Efficiency**: Streams extraction with bounded memory.
 - **Scale**: Flat 40-byte entries (v3 schema) for PIR-friendly layout.
-- **Correctness**: HintInit aligned with paper Fig. 7 and [`docs/Plinko.v`](docs/Plinko.v); binomial CDF stable at mainnet PMNS parameters ([#94](https://github.com/igor53627/plinko-rs/issues/94)).
+- **Correctness**: HintInit aligned with paper Fig. 7 and [`docs/Plinko.v`](docs/Plinko.v); binomial inverse CDF stable at mainnet PMNS parameters ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)).
 
 ## Quick start
 
@@ -85,14 +93,14 @@ cargo run -p plinko --bin cost_estimate -- --entries 100000000 --gpus 2 --tee --
 | `code_store.bin` | `[count: u32][hash0: 32B]...` |
 | `metadata.json` | Snapshot metadata and schema version |
 
-Layout and dataset sizes: [`docs/data_format.md`](docs/data_format.md).
+Layout, sizes, and public mainnet v3 bucket: [`docs/data_format.md`](docs/data_format.md).
 
 ## Core primitives (`plinko` crate)
 
 - **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs))
 - **Binomial / PMNS**: Derandomized `Binomial(n,p; r)` via inverse CDF; large `n` uses a continued-fraction regularized incomplete beta (mainnet-safe; `puruspe::betai` approx path is not used when both shape parameters exceed 3000)
 - **TEE**: `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md))
-- **GPU** (optional): `cargo build --release --features cuda` — see [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md)
+- **GPU** (optional): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md)
 
 Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec](https://github.com/keewoolee/rms24-plinko-spec).
 
@@ -104,7 +112,7 @@ Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec
 4. Ethereum mainnet-scale parameters (λ=128, w≈√N)  
 5. Optional GPU hint throughput  
 
-Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [`docs/benchmarks.md`](docs/benchmarks.md).
+Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [`docs/benchmarks.md`](docs/benchmarks.md) (index); TEE numbers: [`tee-test/SEV-SNP-BENCHMARK.md`](tee-test/SEV-SNP-BENCHMARK.md); GPU: [`docs/gpu_hint_benchmark_2026-01-23.md`](docs/gpu_hint_benchmark_2026-01-23.md).
 
 ## Verification
 
@@ -118,24 +126,27 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 |-------|-----|
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
-| Data format | [`docs/data_format.md`](docs/data_format.md) |
+| Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |
 | Updates | [`docs/update_strategy.md`](docs/update_strategy.md) |
 | Feature flags | [`docs/FEATURE_FLAGS.md`](docs/FEATURE_FLAGS.md) |
 | Deployment | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
+| TEE (SEV-SNP) | [`tee-test/SEV-SNP-BENCHMARK.md`](tee-test/SEV-SNP-BENCHMARK.md) |
+| GPU benchmarks | [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md), [`docs/BENCHMARK_RESULTS.md`](docs/BENCHMARK_RESULTS.md) |
 
-**Paper**
+### Paper and formal references
 
-- PDF: [`docs/2024-318.pdf`](docs/2024-318.pdf)
-- Parsed JSON: [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json), parts 2–3, 6 in `docs/plinko_paper_part*.json`
-- Coq reference: [`docs/Plinko.v`](docs/Plinko.v)
+| Resource | Use |
+|----------|-----|
+| [`docs/2024-318.pdf`](docs/2024-318.pdf) | Plinko paper (ePrint 2024/318) |
+| [`docs/Plinko.v`](docs/Plinko.v) | Coq specification (HintInit, hints, updates) |
+| [`docs/plinko_paper_part6_algorithms.json`](docs/plinko_paper_part6_algorithms.json) | Parsed Fig. 7 / algorithm pseudocode |
+| [`docs/plinko_paper_part2_technical.json`](docs/plinko_paper_part2_technical.json), [`docs/plinko_paper_part3_scheme.json`](docs/plinko_paper_part3_scheme.json) | iPRF / scheme narrative |
+| [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json) | Catalog of parts 1–6 (agent index; verify live data against `data_format.md`) |
 
 ## References
 
 - [Plinko: Single-Server PIR with Efficient Updates](https://vitalik.eth.limo/general/2025/11/25/plinko.html) — Vitalik Buterin's overview  
 - [Plinko (ePrint 2024/318)](https://eprint.iacr.org/2024/318) — Mughees, Shi, Chen  
 - [Morris–Rogaway 2013](https://eprint.iacr.org/2013/560.pdf) — Swap-or-Not PRP  
-- [rms24-plinko-spec](https://github.com/keewoolee/rms24-plinko-spec) — readable Python reference (RMS24 + Plinko)
-
----
-
-[Alex Hoover: Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs](https://www.youtube.com/watch?v=okJaBn7ZXnc)
+- [rms24-plinko-spec](https://github.com/keewoolee/rms24-plinko-spec) — readable Python reference (RMS24 + Plinko)  
+- [Alex Hoover — Plinko talk (YouTube)](https://www.youtube.com/watch?v=okJaBn7ZXnc)
