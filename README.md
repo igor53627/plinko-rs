@@ -124,6 +124,7 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 
 | Topic | Doc |
 |-------|-----|
+| **Full map** | [`docs/README.md`](docs/README.md) |
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
 | Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |

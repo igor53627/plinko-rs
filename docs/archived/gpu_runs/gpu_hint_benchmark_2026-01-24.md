@@ -1,6 +1,6 @@
 # GPU Hint Generation Benchmark (Optimized)
 
-> **Historical run log.** Prefer [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md) and [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md).
+> **Historical run log.** Prefer [`../../BENCHMARK_RESULTS.md`](../../BENCHMARK_RESULTS.md) and [`../../gpu_benchmark_commands.md`](../../gpu_benchmark_commands.md).
 
 **Date:** 2026-01-24
 **Author:** Benchmarked on Modal Labs infrastructure
