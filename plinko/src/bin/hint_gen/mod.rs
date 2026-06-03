@@ -19,5 +19,5 @@ pub use driver::{
 pub use keys::{derive_block_keys, derive_subset_seed};
 pub use subsets::{compute_backup_blocks, compute_regular_blocks};
 pub use types::{
-    Args, BackupHint, DB_ENTRY_SIZE, RegularHint, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
+    Args, BackupHint, RegularHint, DB_ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
 };
