@@ -1,5 +1,7 @@
 # Contributing
 
+Repository: [igor53627/plinko-rs](https://github.com/igor53627/plinko-rs). Agent-oriented overview: [DeepWiki](https://deepwiki.com/igor53627/plinko-rs).
+
 ## Workflow
 
 Do not push feature fixes directly to `main`. Use a short-lived branch and open a pull request.
