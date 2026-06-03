@@ -1,6 +1,10 @@
 {
   "repo_notes": [
     {
+      "content": "Canonical DeepWiki URL: https://deepwiki.com/igor53627/plinko-rs (GitHub repo igor53627/plinko-rs). The old plinko-extractor slug is retired after the repository rename.",
+      "author": "maintainer"
+    },
+    {
       "content": "This repository implements the Plinko PIR (Private Information Retrieval) scheme from ePrint 2024-318. The canonical protocol reference is docs/plinko_paper_index.json (parsed paper parts, mainnet v3 reference counts). On-disk layout: docs/data_format.md. Test data: local Reth extract or gen_synthetic.",
       "author": "maintainer"
     },
