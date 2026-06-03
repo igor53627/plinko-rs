@@ -138,10 +138,8 @@ mod tests {
 
     #[test]
     fn load_rejects_empty_database_file() {
-        let path = std::env::temp_dir().join(format!(
-            "plinko_empty_db_test_{}.db",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("plinko_empty_db_test_{}.db", std::process::id()));
         std::fs::File::create(&path).unwrap();
         let result = Database40::load(&path);
         std::fs::remove_file(&path).ok();
@@ -153,10 +151,8 @@ mod tests {
 
     #[test]
     fn load_rejects_non_multiple_size() {
-        let path = std::env::temp_dir().join(format!(
-            "plinko_bad_db_test_{}.db",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("plinko_bad_db_test_{}.db", std::process::id()));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(&[0u8; 39]).unwrap();
         let result = Database40::load(&path);
