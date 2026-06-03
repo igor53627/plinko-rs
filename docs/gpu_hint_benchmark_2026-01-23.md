@@ -152,9 +152,10 @@ RESULTS - 50× H200 Production Hint Generation (with SHA-256)
 Run ID:              20260123_174356
 
 Database Parameters:
-  n (entries):       2,150,000,000
+  n (entries):       ~1,830,000,000
   Entry size:        40 bytes (v3)
   Database size:     ~73 GB
+  (Plinko w/c below reflect the original run's padded layout: w×c ≈ 2.15B.)
 
 Plinko Parameters:
   λ (lambda):        128
