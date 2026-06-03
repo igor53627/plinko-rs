@@ -1,5 +1,8 @@
 # Plinko PIR: GPU Optimization & Benchmark Report
-**Date:** 2026-01-26  
+
+> **Canonical GPU benchmark summary.** Commands: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). Index: [`benchmarks.md`](benchmarks.md). Historical Modal run logs: [`archived/gpu_runs/`](archived/gpu_runs/).
+
+**Date:** 2026-01-26
 **Hardware:** NVIDIA H200 (141GB VRAM, ~100+ INT32 TOPS)  
 **Cluster:** 50x H200 (Modal)
 

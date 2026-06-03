@@ -18,3 +18,5 @@
 | `CUDA_OPTIMIZATION.md` | 40B GPU compaction notes | [`gpu_benchmark_commands.md`](../gpu_benchmark_commands.md) |
 | `optimization/EXPANSION_40B_48B.md` | VRAM 40→48B expansion design | v3 40B on disk; see CUDA kernel in `plinko/cuda/` |
 | `optimization/sort_stream_calc.md` | Theoretical sort-and-stream model | [`BENCHMARK_RESULTS.md`](../BENCHMARK_RESULTS.md) |
+| `gpu_runs/*.md` | Modal GPU run logs (Jan 2026) | [`BENCHMARK_RESULTS.md`](../BENCHMARK_RESULTS.md), [`gpu_benchmark_commands.md`](../gpu_benchmark_commands.md) |
+| `kani-verification-results.md` | Kani run snapshot (2025-12-06) | `cd plinko && cargo kani` per [`verification.md`](../verification.md) |

@@ -1,6 +1,6 @@
 # Verification
 
-The `plinko/formal/` directory contains Rocq (Coq) specifications and proofs aligned with the Plinko paper.
+Doc map: [`README.md`](README.md). The `plinko/formal/` directory contains Rocq (Coq) specifications and proofs aligned with the Plinko paper.
 
 ## Rocq Specs
 
