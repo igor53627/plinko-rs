@@ -44,6 +44,12 @@ Base URL: `https://pir.53627.org/mainnet-pir-data-v3/`
 | `manifest.json` | 1,124 | https://pir.53627.org/mainnet-pir-data-v3/manifest.json |
 | `metadata.json` | 237 | https://pir.53627.org/mainnet-pir-data-v3/metadata.json |
 
-## Regression Dataset (Legacy)
+## Regression / subset data
 
-Legacy v2 snapshot (see `README.md` for URLs). Check `metadata.json` for `schema_version` and `entry_size_bytes`.
+There is **no** published Cloudflare R2 regression bucket anymore (an old private `plinko-regression-data` object listed in `docs/plinko_paper_index.json` is retired).
+
+For smaller runs:
+
+- Extract locally: `./target/release/plinko --db-path <reth> --output-dir ./data --limit <N>`
+- Use mainnet v3 files above for full-scale tests
+- In-repo: `cargo test -p plinko` (including mainnet-scale binomial / PMNS cases)
