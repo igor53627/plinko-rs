@@ -48,6 +48,6 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 
 Obsolete or historical material: [`archived/README.md`](archived/README.md).
 
-- GPU experiment notes: `archived/CUDA_OPTIMIZATION.md`, `archived/optimization/`
+- GPU experiment notes: [`archived/CUDA_OPTIMIZATION.md`](archived/CUDA_OPTIMIZATION.md), [`archived/optimization/`](archived/optimization/)
 - **Modal run logs**: [`archived/gpu_runs/`](archived/gpu_runs/)
 - Old kanban, compression study, tutorial draft, etc.
