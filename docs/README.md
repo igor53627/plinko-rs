@@ -2,6 +2,11 @@
 
 Entry point for everything under `docs/`. The repository root [`README.md`](../README.md) is the quickstart; this page lists all maintained docs and where archived material lives.
 
+| Link | URL |
+|------|-----|
+| DeepWiki (agent index) | [deepwiki.com/igor53627/plinko-rs](https://deepwiki.com/igor53627/plinko-rs) |
+| Protocol demo (GitHub Pages) | [igor53627.github.io/plinko-rs/protocol-visualization.html](https://igor53627.github.io/plinko-rs/protocol-visualization.html) |
+
 ## Canonical (use for implementation)
 
 | Doc | Topic |

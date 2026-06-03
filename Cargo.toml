@@ -2,6 +2,12 @@
 name = "plinko-rs"
 version = "0.1.0"
 edition = "2021"
+description = "Ethereum state extractor for Plinko PIR (Reth to v3 database.bin)"
+license = "MIT"
+repository = "https://github.com/igor53627/plinko-rs"
+readme = "README.md"
+keywords = ["ethereum", "pir", "reth", "privacy"]
+categories = ["cryptography"]
 
 [[bin]]
 name = "plinko"
