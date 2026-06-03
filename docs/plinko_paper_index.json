@@ -93,7 +93,7 @@
     "for_understanding_theory": "Use Part 2 (technical) with Part 1 (overview)",
     "for_literature_review": "Use Part 5 (references) with Part 4 (comparisons)",
     "for_quick_summary": "Use Part 1 (metadata) only",
-    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3 below. Do not use the retired R2 regression bucket."
+    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3_snapshot below. Do not use the retired R2 regression bucket."
   },
   "mainnet_v3_snapshot": {
     "status": "published",
