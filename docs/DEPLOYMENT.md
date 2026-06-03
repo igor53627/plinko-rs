@@ -1,6 +1,6 @@
 # Deployment
 
-CLI-driven flows (no HTTP API). See [`README.md`](../README.md) for the entry point.
+CLI-driven flows (no HTTP API). See [`README.md`](../README.md) and [`docs/README.md`](README.md).
 
 ## Build
 
