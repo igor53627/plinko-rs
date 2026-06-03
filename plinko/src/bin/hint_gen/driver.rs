@@ -94,7 +94,8 @@ pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
 
 /// Compute database geometry from file length and arguments.
 pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geometry> {
-    if !db_len_bytes.is_multiple_of(DB_ENTRY_SIZE) {
+    #[allow(clippy::manual_is_multiple_of)]
+    if db_len_bytes % DB_ENTRY_SIZE != 0 {
         eyre::bail!(
             "DB size must be a multiple of {} bytes (v3 entry size)",
             DB_ENTRY_SIZE
