@@ -23,7 +23,7 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 4. [`docs/Plinko.v`](docs/Plinko.v) — Coq reference spec  
 5. [`plinko/formal/`](plinko/formal/) — Rocq proofs and machine-checked specs  
 
-Parsed paper JSON ([`docs/plinko_paper_part*.json`](docs/plinko_paper_part6_algorithms.json), catalog [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json)) is useful for agents and pseudocode lookup; snapshot/R2 pointers in the index may lag [`docs/data_format.md`](docs/data_format.md).
+Parsed paper JSON ([`docs/plinko_paper_part*.json`](docs/plinko_paper_part6_algorithms.json), catalog [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json)) is useful for agents and pseudocode lookup; live dataset URLs are in [`docs/data_format.md`](docs/data_format.md) (the retired R2 regression bucket is not published).
 
 Contributing: feature branches and PRs — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
