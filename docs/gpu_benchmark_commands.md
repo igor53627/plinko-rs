@@ -13,7 +13,8 @@ unset MODAL_TOKEN_ID && unset MODAL_TOKEN_SECRET
 
 - **Volume:** `plinko-data`
 - **Mainnet v3 (40B):** `/mainnet-v3/database.bin` (~73 GB)
-- **Synthetic (Legacy):** `/synthetic_1pct/database.bin`
+- **Synthetic (local):** `cargo run -p plinko --bin gen_synthetic -- --output-dir ./data/synthetic` (40-byte v3 schema)
+- **Synthetic (Modal legacy path):** `/synthetic_1pct/database.bin`
 
 ## Commands
 

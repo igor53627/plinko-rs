@@ -1,22 +1,31 @@
 # Benchmarks
 
-## CPU / TEE Benchmarks (Mainnet, λ=128, w=49177)
+Canonical sources (prefer these over older gists or GPU run notes):
 
-*AMD EPYC 9375F, 1.1TB RAM*
+| Workload | Doc |
+|----------|-----|
+| CPU / SEV-SNP TEE HintInit | [`tee-test/SEV-SNP-BENCHMARK.md`](../tee-test/SEV-SNP-BENCHMARK.md) |
+| GPU hint generation | [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md), [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md) |
+| Historical GPU runs | [`gpu_hint_benchmark_2026-01-23.md`](gpu_hint_benchmark_2026-01-23.md) (superseded by later runs in `gpu_hint_benchmark_2026-01-24*.md`) |
 
-| Environment | vCPUs | Time | Throughput | XOR ops/s | Hint Storage |
-|-------------|-------|------|------------|-----------|--------------|
-| Bare metal | 64 | 22 min | 55.8 MB/s | 117M/s | 192 MB |
-| SEV-SNP TEE | 32 | 57 min | 21.5 MB/s | 45M/s | 192 MB |
+## CPU / TEE (mainnet-scale, λ=128)
 
-SEV-SNP overhead: ~2.6x (with half vCPUs). Normalized for vCPUs: ~1.3x.
+From [`tee-test/SEV-SNP-BENCHMARK.md`](../tee-test/SEV-SNP-BENCHMARK.md) (AMD EPYC 9375F, ~2.4B entries / 73 GB DB):
 
-Full results:
+| Environment | vCPUs | Wall time | Throughput |
+|-------------|-------|-----------|------------|
+| KVM (no SEV) | 32 | 19m 35s | 62.90 MB/s |
+| SEV-SNP TEE | 32 | 19m 57s | 61.80 MB/s |
+
+SEV-SNP overhead vs KVM on the same VM shape: **~1.8%** wall clock (not the older ~2.6× figures from an earlier benchmark configuration).
+
+Older write-ups (may use different vCPU counts or DB paths):
+
 - https://gist.github.com/igor53627/44f237c4f89fb6dcf20a58d71af0d048
 - https://gist.github.com/igor53627/4c21ea3ea9d8963d4d20c9277cc45754
 
-## GPU Benchmarks
+## GPU
 
-See:
-- `docs/BENCHMARK_RESULTS.md`
-- `docs/gpu_hint_benchmark_2026-01-24_chacha12.md`
+See [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md) and [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md).
+
+Synthetic DB for GPU dev: `cargo run -p plinko --bin gen_synthetic -- --help`.

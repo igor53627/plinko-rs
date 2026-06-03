@@ -112,7 +112,7 @@ Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec
 4. Ethereum mainnet-scale parameters (λ=128, w≈√N)  
 5. Optional GPU hint throughput  
 
-Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [`docs/benchmarks.md`](docs/benchmarks.md) (index); TEE numbers: [`tee-test/SEV-SNP-BENCHMARK.md`](tee-test/SEV-SNP-BENCHMARK.md); GPU: [`docs/gpu_hint_benchmark_2026-01-23.md`](docs/gpu_hint_benchmark_2026-01-23.md).
+Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [`docs/benchmarks.md`](docs/benchmarks.md) (index to TEE + GPU docs).
 
 ## Verification
 
@@ -132,6 +132,7 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 | Deployment | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | TEE (SEV-SNP) | [`tee-test/SEV-SNP-BENCHMARK.md`](tee-test/SEV-SNP-BENCHMARK.md) |
 | GPU benchmarks | [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md), [`docs/BENCHMARK_RESULTS.md`](docs/BENCHMARK_RESULTS.md) |
+| Archived / historical | [`docs/archived/README.md`](docs/archived/README.md) |
 
 ### Paper and formal references
 
