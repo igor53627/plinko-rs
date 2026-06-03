@@ -42,7 +42,7 @@ const TEE_OVERHEAD: f64 = 2.6;
 /// Default GPU hourly rate (H200 on Modal/cloud)
 const DEFAULT_GPU_HOURLY_RATE: f64 = 3.50;
 
-/// Expanded entry size in GPU VRAM (48 bytes, v2/GPU-optimized layout)
+/// Expanded entry size in GPU VRAM (48 bytes; 40-byte disk entries padded for alignment)
 const GPU_ENTRY_SIZE: u64 = 48;
 const BLOCK_KEY_SIZE: u64 = 32;
 const HINT_OUTPUT_SIZE: u64 = 48;

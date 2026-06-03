@@ -1,11 +1,11 @@
 {
   "repo_notes": [
     {
-      "content": "This repository implements the Plinko PIR (Private Information Retrieval) scheme from ePrint 2024-318. The canonical protocol reference is docs/plinko_paper_index.json which indexes parsed paper content, regression test data location, and video resources.",
+      "content": "This repository implements the Plinko PIR (Private Information Retrieval) scheme from ePrint 2024-318. The canonical protocol reference is docs/plinko_paper_index.json (parsed paper parts, mainnet v3 reference counts). On-disk layout: docs/data_format.md. Test data: local Reth extract or gen_synthetic.",
       "author": "maintainer"
     },
     {
-      "content": "Regression test data (3.6GB Ethereum state subset) is hosted on Cloudflare R2 at s3://plinko-regression-data/ with endpoint https://c6ffe0823b48a4b7689d9b9e9045e465.r2.cloudflarestorage.com. See docs/plinko_paper_index.json for download details.",
+      "content": "Public snapshot HTTP hosts and Cloudflare R2 regression buckets are retired. Use ./target/release/plinko --limit for subsets, or gen_synthetic for Modal/GPU benches. Mainnet reference counts: docs/data_format.md and plinko_paper_index.json mainnet_v3_snapshot.",
       "author": "maintainer"
     },
     {
@@ -65,7 +65,7 @@
     },
     {
       "title": "Regression Testing",
-      "purpose": "Document test data on Cloudflare R2, benchmark parameters, expected performance metrics"
+      "purpose": "Document local extract / synthetic test data, benchmark parameters, expected performance metrics"
     }
   ]
 }

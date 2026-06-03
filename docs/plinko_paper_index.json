@@ -1,124 +1,71 @@
 {
-  "paper_id": "2024-318",
-  "title": "Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs",
-  "version": "1.0",
-  "created_for": "Agent consumption",
-  "total_parts": 6,
-  "parts": [
-    {
-      "part_number": 1,
-      "filename": "plinko_paper_part1_metadata.json",
-      "title": "Metadata and Overview",
-      "contents": [
-        "Paper identification",
-        "Author information",
-        "Abstract",
-        "Keywords",
-        "Main contributions summary",
-        "Complexity results summary"
-      ]
-    },
-    {
-      "part_number": 2,
-      "filename": "plinko_paper_part2_technical.json",
-      "title": "Technical Overview and Invertible PRFs",
-      "contents": [
-        "Technical overview of PIR framework",
-        "Hint searching problem",
-        "iPRF formal definition",
-        "PMNS definition",
-        "iPRF construction from PRP + PMNS",
-        "PMNS construction (binary tree sampling)"
-      ]
-    },
-    {
-      "part_number": 3,
-      "filename": "plinko_paper_part3_scheme.json",
-      "title": "Plinko PIR Scheme",
-      "contents": [
-        "PIR algorithm definitions",
-        "Security games",
-        "Plinko construction details",
-        "Data structures (hints, backup hints)",
-        "Offline, query, and update phases",
-        "Efficiency and security analysis"
-      ]
-    },
-    {
-      "part_number": 4,
-      "filename": "plinko_paper_part4_comparisons.json",
-      "title": "Comparison with Prior Work",
-      "contents": [
-        "Query time comparison table",
-        "Update complexity comparison table",
-        "Complete comparison with all parameters",
-        "Key improvements over prior work"
-      ]
-    },
-    {
-      "part_number": 5,
-      "filename": "plinko_paper_part5_references.json",
-      "title": "Referenced Papers",
-      "contents": [
-        "All 56 cited papers with metadata",
-        "Categorized by topic",
-        "Special notes for key references"
-      ]
-    },
-    {
-      "part_number": 6,
-      "filename": "plinko_paper_part6_algorithms.json",
-      "title": "Algorithms and Pseudocode",
-      "contents": [
-        "PMNS forward/inverse algorithms",
-        "Plinko HintInit",
-        "Plinko Query/Answer/Recon",
-        "Plinko UpdateHint",
-        "GetHint helper function"
-      ]
-    }
-  ],
-  "key_takeaways": {
-    "problem": "Single-server PIR with client preprocessing - prior schemes had suboptimal query time O˜(r + n/r) for large client storage r",
-    "solution": "Invertible PRFs enable O˜(1) hint searching, achieving optimal O˜(n/r) query time for all r",
-    "innovation": "New iPRF primitive built from one-way functions only, secure for arbitrary domain/range sizes",
-    "practical_impact": [
-      "First optimal trade-off curve for all client storage sizes",
-      "First worst-case O˜(1) update time for PIR with preprocessing",
-      "Simple modification to existing schemes (RMS, Piano)"
+    "repo_notes": [
+        {
+            "content": "This repository implements the Plinko PIR (Private Information Retrieval) scheme from ePrint 2024-318. The canonical protocol reference is docs/plinko_paper_index.json (parsed paper parts, mainnet v3 reference counts). On-disk layout: docs/data_format.md. Test data: local Reth extract or gen_synthetic.",
+            "author": "maintainer"
+        },
+        {
+            "content": "Public snapshot HTTP hosts and Cloudflare R2 regression buckets are retired. Use ./target/release/plinko --limit for subsets, or gen_synthetic for Modal/GPU benches. Mainnet reference counts: docs/data_format.md and plinko_paper_index.json mainnet_v3_snapshot.",
+            "author": "maintainer"
+        },
+        {
+            "content": "The plinko/ crate contains the core Plinko implementation: iPRF (invertible PRF), IprfTee, Sometimes-Recurse PRP (SwapOrNotSr), true Binomial(n,p) sampling (binomial_sample / binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), and hint generation. The canonical Rocq specs/proofs and linking layer live in plinko/formal/ (see .github/workflows/formal.yml).",
+            "author": "maintainer"
+        },
+        {
+            "content": "Constant-time HintInit (--constant-time flag) for TEE execution: Uses IprfTee::inverse_ct with fixed MAX_PREIMAGES=512 iterations, BlockBitset for O(1) membership testing, ct_select_usize for branchless index clamping, and ct_xor_32_masked for conditional XOR. Protects against timing side-channels; cache side-channels are out of scope (would require ORAM). Verified against Plinko.v Coq spec and paper Fig. 7.",
+            "author": "maintainer"
+        },
+        {
+            "content": "Key video resource: Alex Hoover's talk 'Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs' at https://www.youtube.com/watch?v=okJaBn7ZXnc",
+            "author": "maintainer"
+        },
+        {
+            "content": "The PRP uses Morris-Rogaway Sometimes-Recurse (SR) wrapper for full-domain security. Round counts follow paper-faithful formula: t_N = ceil(7.23 lg N + 4.82 lambda + 4.82 lg p) from Morris-Rogaway 2013/560 Section 5. Default is 128-bit security.",
+            "author": "maintainer"
+        },
+        {
+            "content": "Formal verification status (Dec 2025): Core properties proven (SR bijection, iPRF partition, binomial range). Intentional axioms: crypto (AES-128, key derivation), math (binomial_theorem_Z), FFI (Rust refinement). One Admitted proof: hint_init_backup_streaming_eq_batch in HintInitSim.v (fold equivalence, no crypto assumptions).",
+            "author": "maintainer"
+        },
+        {
+            "content": "The plinko crate now includes a cost-estimation CLI binary (`cost_estimate`) for preflight capacity/cost planning. CI smoke-tests it in `.github/workflows/ci.yml`, and usage is documented in `README.md` and `docs/DEPLOYMENT.md`.",
+            "author": "maintainer"
+        }
+    ],
+    "pages": [
+        {
+            "title": "Architecture Overview",
+            "purpose": "High-level overview of Plinko PIR implementation: extractor, state-syncer, and formal verification components"
+        },
+        {
+            "title": "Plinko Protocol",
+            "purpose": "Document the Plinko PIR scheme from paper 2024-318: HintInit, Query, Answer, Recon, UpdateHint algorithms",
+            "parent": "Architecture Overview"
+        },
+        {
+            "title": "iPRF Implementation",
+            "purpose": "Document plinko/src/iprf.rs and related modules: Sometimes-Recurse PRP (SwapOrNotSr), PMNS (Pseudorandom Multinomial Sampler), Binomial(n,p) sampling (binomial_sample and TEE-safe binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), Iprf vs IprfTee, and constant-time primitives in plinko/src/constant_time.rs for TEE execution.",
+            "parent": "Plinko Protocol"
+        },
+        {
+            "title": "Hint Generation",
+            "purpose": "Document plinko/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, seed-based storage, constant-time mode (--constant-time) for TEE execution with BlockBitset, ct_select_usize, ct_xor_32_masked",
+            "parent": "Plinko Protocol"
+        },
+        {
+            "title": "Ethereum State Extractor",
+            "purpose": "Document src/: Reth database extraction, account/storage mapping, output artifacts (database.bin, mappings)",
+            "parent": "Architecture Overview"
+        },
+        {
+            "title": "Formal Verification",
+            "purpose": "Document plinko/formal/: Rocq specs (SwapOrNotSpec, SwapOrNotSrSpec, IprfSpec, BinomialSpec, TrueBinomialSpec), proofs (SwapOrNotProofs, IprfProofs), linking layer, CI verification workflow. Trust base: crypto axioms (AES-128, key derivation), math axiom (binomial_theorem_Z), FFI axioms (Rust refinement).",
+            "parent": "Architecture Overview"
+        },
+        {
+            "title": "Regression Testing",
+            "purpose": "Document local extract / synthetic test data, benchmark parameters, expected performance metrics"
+        }
     ]
-  },
-  "agent_usage_notes": {
-    "for_implementation": "Use Part 6 (algorithms) with Part 3 (scheme details)",
-    "for_understanding_theory": "Use Part 2 (technical) with Part 1 (overview)",
-    "for_literature_review": "Use Part 5 (references) with Part 4 (comparisons)",
-    "for_quick_summary": "Use Part 1 (metadata) only",
-    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3_snapshot counts below."
-  },
-  "mainnet_v3_snapshot": {
-    "schema_version": 3,
-    "entry_size_bytes": 40,
-    "block": 23876768,
-    "accounts": 351681953,
-    "storage_slots": 1482413924,
-    "total_entries": 1834095877,
-    "unique_bytecode_hashes": 2064516,
-    "generated_at": "2026-01-24 10:47:10",
-    "documentation": "docs/data_format.md"
-  },
-  "regression_test_data_legacy": {
-    "status": "retired",
-    "note": "Legacy v2 regression dataset (32-byte words) is not published. Superseded by v3 (40-byte entries).",
-    "alternatives": [
-      "Extract a subset: ./target/release/plinko --db-path <reth> --output-dir ./data --limit <N>",
-      "Mainnet v3 layout and reference counts: mainnet_v3_snapshot and docs/data_format.md",
-      "Mainnet-scale unit tests: plinko/src/binomial.rs, plinko/tests/"
-    ]
-  },
-  "video_resources": [
-    {
-      "title": "Alex Hoover: Plinko - Single-Server PIR with Efficient Updates via Invertible PRFs",
-      "url": "https://www.youtube.com/watch?v=okJaBn7ZXnc"
-    }
-  ]
 }

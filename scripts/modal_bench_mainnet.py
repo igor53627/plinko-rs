@@ -12,6 +12,41 @@ app = modal.App("plinko-mainnet-bench")
 volume = modal.Volume.from_name("plinko-data", create_if_missing=False)
 VOLUME_PATH = "/data"
 
+
+def print_dataset_meta(db_dir: str) -> None:
+    """Print block/entry info from extractor metadata.json (preferred)."""
+    import json
+    import os
+
+    meta_path = os.path.join(db_dir, "metadata.json")
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+        print(f"Block: {meta.get('block')}")
+        print(f"Total entries: {meta.get('total_entries', 0):,}")
+        print(
+            f"Schema: v{meta.get('schema_version')} "
+            f"({meta.get('entry_size_bytes')} B entries)"
+        )
+        if meta.get("synthetic"):
+            print(
+                f"Synthetic: scale={meta.get('scale_percent')}% "
+                f"seed={meta.get('seed')}"
+            )
+        return
+
+    manifest_path = os.path.join(db_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        print(f"Block: {manifest.get('block_number')}")
+        entries = manifest.get("entries", {})
+        total = entries.get("total") if isinstance(entries, dict) else None
+        if total is not None:
+            print(f"Total entries: {total:,}")
+        print(f"Schema: v{manifest.get('schema_version')}")
+
+
 # CUDA image with Rust + local code
 cuda_image = (
     modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.11")
@@ -64,7 +99,6 @@ def bench_mainnet_2xh200(
     # Check mainnet data
     db_dir = f"{VOLUME_PATH}/mainnet-v3"
     db_path = f"{db_dir}/database.bin"
-    manifest_path = f"{db_dir}/manifest.json"
 
     if not os.path.exists(db_path):
         print(f"\n=== Generating Mainnet v3 Data (Full Scale) ===")
@@ -76,7 +110,7 @@ def bench_mainnet_2xh200(
         
         os.makedirs(db_dir, exist_ok=True)
         # Generate full mainnet scale (100%)
-        # This will produce ~83GB of data (40-byte entries)
+        # Full scale: ~73 GB on disk (40-byte v3 entries)
         subprocess.run(
             [
                 "./target/release/gen_synthetic",
@@ -95,12 +129,7 @@ def bench_mainnet_2xh200(
     print(f"Path: {db_path}")
     print(f"Size: {db_size / 1e9:.2f} GB")
 
-    if os.path.exists(manifest_path):
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        print(f"Block: {manifest.get('block_number')}")
-        print(f"Entries: {manifest.get('entries', {}).get('total'):,}")
-        print(f"Schema: v{manifest.get('schema_version')}")
+    print_dataset_meta(db_dir)
     print()
 
     # Build benchmark command
@@ -166,7 +195,6 @@ def bench_mainnet_1xh200(
     # Check mainnet data
     db_dir = f"{VOLUME_PATH}/mainnet-v3"
     db_path = f"{db_dir}/database.bin"
-    manifest_path = f"{db_dir}/manifest.json"
 
     if not os.path.exists(db_path):
         print(f"\n=== Generating Mainnet v3 Data (Full Scale) ===")
@@ -193,12 +221,7 @@ def bench_mainnet_1xh200(
     print(f"Path: {db_path}")
     print(f"Size: {db_size / 1e9:.2f} GB")
 
-    if os.path.exists(manifest_path):
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        print(f"Block: {manifest.get('block_number')}")
-        print(f"Entries: {manifest.get('entries', {}).get('total'):,}")
-        print(f"Schema: v{manifest.get('schema_version')}")
+    print_dataset_meta(db_dir)
     print()
 
     cmd = [
