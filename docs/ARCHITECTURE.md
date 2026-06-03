@@ -7,7 +7,7 @@ This repository contains the Plinko PIR stack: data extraction from Ethereum sta
 - **Extractor** (`src/main.rs`): Reads Reth on-disk state via `reth-db` (MDBX-backed) and produces flat files.
   - Outputs: `database.bin`, `account-mapping.bin`, `storage-mapping.bin`, `code_store.bin`, `metadata.json`.
 - **Schema** (`plinko/src/schema40.rs`): Defines the 40-byte entry layout (v3).
-- **Hint generation** (`plinko/src/bin/plinko_hints.rs`): Computes Plinko hints from `database.bin`.
+- **Hint generation** (`plinko/src/bin/plinko_hints.rs`, `plinko/src/bin/hint_gen/`): Streaming HintInit over mmap'd `database.bin` (CPU fast/CT; optional GPU).
 - **GPU acceleration** (`plinko/cuda/`, `plinko/src/gpu.rs`): Optional CUDA backend for high-throughput hint generation.
 - **Formal verification** (`plinko/formal/`, `docs/Plinko.v`): Rocq specs and proofs aligned with the paper.
 

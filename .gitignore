@@ -31,3 +31,6 @@ hints.bin
 hints.bin
 __pycache__/
 *.pyc
+
+# Local roborev config (copy from ~/pse/roborev if needed)
+.roborev.toml
