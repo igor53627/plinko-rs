@@ -1,6 +1,6 @@
 # GPU Hint Generation Benchmark
 
-> **Historical run log.** Canonical commands: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). Summary: [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
+> **Historical run log.** Canonical: [`../../gpu_benchmark_commands.md`](../../gpu_benchmark_commands.md), [`../../BENCHMARK_RESULTS.md`](../../BENCHMARK_RESULTS.md).
 
 **Date:** 2026-01-23
 **Author:** Benchmarked on Modal Labs infrastructure

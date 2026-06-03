@@ -1,12 +1,12 @@
 # Benchmarks
 
-Canonical sources (prefer these over older gists or GPU run notes):
+Full doc map: [`README.md`](README.md). Canonical sources (prefer these over older gists or archived run logs):
 
 | Workload | Doc |
 |----------|-----|
 | CPU / SEV-SNP TEE HintInit | [`tee-test/SEV-SNP-BENCHMARK.md`](../tee-test/SEV-SNP-BENCHMARK.md) |
 | GPU hint generation | [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md), [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md) |
-| Historical GPU runs | [`gpu_hint_benchmark_2026-01-23.md`](gpu_hint_benchmark_2026-01-23.md) (superseded by later runs in `gpu_hint_benchmark_2026-01-24*.md`) |
+| Historical GPU runs | [`archived/gpu_runs/`](archived/gpu_runs/) (Modal run logs, Jan 2026) |
 
 ## CPU / TEE (mainnet-scale, λ=128)
 
