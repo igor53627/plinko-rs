@@ -26,7 +26,7 @@ Benchmark of GPU-accelerated hint generation for Plinko PIR using ChaCha8-based 
 | Cipher | - | ChaCha8 | 8-round ChaCha (ARX-based) |
 | Total hints | - | 33,554,432 | 2 × λ × w |
 | Blocks per hint | - | ~8,202 | c / 2 |
-| Database size | - | ~103 GB | 2.15B entries × 48 bytes |
+| Database size | - | ~73 GB | ~1.83B entries × 40 bytes (v3 schema) |
 
 ### SwapOrNot Round Calculation
 
@@ -62,7 +62,7 @@ modal setup
 
 # Ensure mainnet data is uploaded to Modal volume
 modal volume ls morphogenesis-data
-# Should show: mainnet_optimized48.bin (~103 GB)
+# Should show: mainnet v3 database.bin (~73 GB)
 ```
 
 ### Run Benchmark
@@ -121,7 +121,7 @@ modal volume get plinko-hints /hints/<run_id>/hints_combined.bin ./hints.bin
 ### 2× H200 Benchmark (1% Hints Test)
 
 **Configuration:**
-- Data: 100% mainnet (103 GB) replicated to each GPU
+- Data: 100% mainnet (~73 GB) replicated to each GPU
 - Hints: 1% = 335,544 (167,772 per GPU)
 - set_size: 16,404 (production)
 
@@ -138,7 +138,7 @@ Throughput: 4,429 hints/sec
 
 **Configuration:**
 - GPUs: 50× H200
-- Data: 100% mainnet (103 GB) - full database
+- Data: 100% mainnet (~73 GB) - full database
 - Hints: 100% = 33,554,432 (671,088 per GPU)
 - set_size: 16,404 (production)
 - Key derivation: SHA-256(block_key || "prp") → prp_key
@@ -152,9 +152,10 @@ RESULTS - 50× H200 Production Hint Generation (with SHA-256)
 Run ID:              20260123_174356
 
 Database Parameters:
-  n (entries):       2,150,000,000
-  Entry size:        48 bytes
-  Database size:     103 GB
+  n (entries):       ~1,830,000,000
+  Entry size:        40 bytes (v3)
+  Database size:     ~73 GB
+  (Plinko w/c below reflect the original run's padded layout: w×c ≈ 2.15B.)
 
 Plinko Parameters:
   λ (lambda):        128
