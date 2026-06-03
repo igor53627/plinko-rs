@@ -22,6 +22,7 @@ impl Database40 {
         let path = path.as_ref();
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let len = file.metadata()?.len();
+        ensure!(len > 0, "Database file is empty");
 
         ensure!(
             len % DB_ENTRY_SIZE_V3 as u64 == 0,
@@ -133,6 +134,38 @@ fn isqrt(n: u64) -> u64 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::io::Write;
+
+    #[test]
+    fn load_rejects_empty_database_file() {
+        let path = std::env::temp_dir().join(format!(
+            "plinko_empty_db_test_{}.db",
+            std::process::id()
+        ));
+        std::fs::File::create(&path).unwrap();
+        let result = Database40::load(&path);
+        std::fs::remove_file(&path).ok();
+        match result {
+            Err(err) => assert!(err.to_string().contains("Database file is empty")),
+            Ok(_) => panic!("expected empty database load to fail"),
+        }
+    }
+
+    #[test]
+    fn load_rejects_non_multiple_size() {
+        let path = std::env::temp_dir().join(format!(
+            "plinko_bad_db_test_{}.db",
+            std::process::id()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&[0u8; 39]).unwrap();
+        let result = Database40::load(&path);
+        std::fs::remove_file(&path).ok();
+        match result {
+            Err(err) => assert!(err.to_string().contains("not a multiple of")),
+            Ok(_) => panic!("expected invalid-size database load to fail"),
+        }
+    }
 
     #[test]
     fn derive_plinko_params_zero_entries() {
