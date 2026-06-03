@@ -2,6 +2,10 @@
 
 Implements Plinko's HintInit matching Fig. 7 of the paper and Plinko.v Coq spec.
 
+Reads v3 `database.bin` (40-byte records). Geometry uses the record count (`file_size / 40`).
+The CPU streaming paths XOR the first 32 bytes of each record into hint parity; the CUDA path
+expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
+
 ## Key Design (per paper and Coq formalization)
 
 - Generates c iPRF keys (one per block), not one global key

@@ -162,8 +162,8 @@ journalctl -u plinko_hints_0p01_prodW -n 200
 
 ## Data Format
 
-- Accounts: 3 words (96 bytes) - nonce, balance, bytecode_hash
-- Storage: 1 word (32 bytes) - value
+- v3 `database.bin`: 40-byte records (see `docs/data_format.md`)
+- Hint parity XOR uses the first 32 bytes of each record; TAG/padding are not included in the CPU path
 
 ## Style
 

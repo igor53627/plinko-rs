@@ -911,7 +911,7 @@ def main(
             # Run on 1% slice of actual mainnet data with full mainnet params
             print(f"=== MAINNET 1% SLICE BENCHMARK ===")
             print(f"GPU: H200")
-            print(f"Data: 1% of mainnet_optimized48.bin")
+            print(f"Data: 1% slice of /data/mainnet-v3/database.bin")
             print(f"Lambda: {lambda_param}")
             print(f"Chunk size (w): {chunk_size}")
             print(f"Iterations: {iterations}")
@@ -920,8 +920,8 @@ def main(
         else:
             print(f"=== MAINNET BENCHMARK ===")
             print(f"GPU: H200")
-            print(f"Data: mainnet_optimized48.bin (~88 GB)")
-            print(f"Entries: 1,831,921,514")
+            print(f"Data: /data/mainnet-v3/database.bin (~73 GB, v3 40-byte entries)")
+            print(f"Entries: 1,834,095,877")
             print(f"Lambda: {lambda_param}")
             print(f"Chunk size (w): {chunk_size}")
             print(f"Iterations: {iterations}")

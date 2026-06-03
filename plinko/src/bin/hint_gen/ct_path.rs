@@ -2,7 +2,7 @@ use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
 use plinko::iprf::IprfTee;
 
 use crate::hint_gen::bitset::BlockBitset;
-use crate::hint_gen::types::{BackupHint, RegularHint, WORD_SIZE};
+use crate::hint_gen::types::{parity_word_at, BackupHint, RegularHint, PARITY_WORD_SIZE};
 
 /// Immutable inputs for constant-time hint processing.
 pub struct CtProcessInput<'a> {
@@ -36,13 +36,10 @@ pub fn process_entries_ct(
         let block = i / input.w;
         let offset = i % input.w;
 
-        let entry: [u8; 32] = if i < input.n_entries {
-            let entry_offset = i * WORD_SIZE;
-            input.db_bytes[entry_offset..entry_offset + WORD_SIZE]
-                .try_into()
-                .unwrap()
+        let entry: [u8; PARITY_WORD_SIZE] = if i < input.n_entries {
+            parity_word_at(input.db_bytes, i)
         } else {
-            [0u8; 32]
+            [0u8; PARITY_WORD_SIZE]
         };
 
         let (indices, count) = input.block_iprfs_ct[block].inverse_ct(offset as u64);

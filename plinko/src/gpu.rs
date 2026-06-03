@@ -159,7 +159,7 @@ impl GpuHintGenerator {
         );
 
         // Compaction: Expand 40-byte entries to 48-byte packed format (16-byte aligned)
-        // We do this in chunks to avoid OOM (cannot hold both 73GB raw + 88GB packed at once)
+        // Chunked upload: ~73 GB disk (40 B/entry) -> ~88 GB VRAM (48 B/entry expanded)
         let packed_size = params.num_entries as usize * 48;
         let mut d_packed: CudaSlice<u8> = unsafe { self.device.alloc(packed_size)? };
 
