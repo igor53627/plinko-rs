@@ -27,8 +27,8 @@ Run ID:              20260124_182042
 
 Database Parameters:
   n (entries):       2,150,000,000
-  Entry size:        48 bytes
-  Database size:     103 GB
+  Entry size:        40 bytes (v3 disk)
+  Database size:     ~73 GB
 
 Plinko Parameters:
   λ (lambda):        128
