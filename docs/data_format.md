@@ -1,55 +1,123 @@
 # Data Format
 
-This document defines the Plinko v3 on-disk format and dataset layout.
+Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema40.rs`](../plinko/src/schema40.rs) (types), [`src/main.rs`](../src/main.rs) (extractor).
 
-## Files
+## Artifacts
 
-- `database.bin`: flat array of 40-byte entries.
-- `account-mapping.bin`: `Address(20) || Index(4)`.
-- `storage-mapping.bin`: `Address(20) || SlotKey(32) || Index(4)`.
-- `code_store.bin`: `[count: u32][hash0: 32B][hash1: 32B]...`.
-- `metadata.json`: snapshot metadata and schema version.
+| File | Format | Produced by extractor |
+|------|--------|----------------------|
+| `database.bin` | `total_entries` × 40-byte records | yes |
+| `account-mapping.bin` | `accounts` × (`Address(20)` \|\| `Index(4)` LE) | yes |
+| `storage-mapping.bin` | `storage_slots` × (`Address(20)` \|\| `SlotKey(32)` \|\| `Index(4)` LE) | yes |
+| `code_store.bin` | `[count: u32 LE][hash₀: 32B]…` | yes (if any contract code) |
+| `metadata.json` | JSON snapshot descriptor | yes |
+| `manifest.json` | Optional CDN manifest (different schema; not written by extractor) | no |
 
-## Entry Layout (v3, 40B)
+### `database.bin` ordering
 
-### Account Entry (40B)
-- Balance: 16B (lower 128 bits, LE)
-- Nonce: 4B (u32, LE)
-- CodeID: 4B (LE). Index into `code_store.bin` (0 = EOA)
-- TAG: 8B (cuckoo fingerprint `keccak256(address)[0:8]`)
-- Padding: 8B (zeroed)
+Flat mmap file used by `plinko_hints` ([`Database40`](../plinko/src/db.rs)):
 
-### Storage Entry (40B)
-- Value: 32B (LE)
-- TAG: 8B (cuckoo fingerprint `keccak256(address || slot_key)[0:8]`)
+1. Indices `0 .. accounts-1`: account entries (Reth `PlainAccountState` walk order).
+2. Indices `accounts .. total_entries-1`: storage entries (Reth storage walk order).
 
-## Mainnet v3 Snapshot
+`Index` in mapping files is the u32 little-endian offset into this array (same index for both mapping types).
 
-As of block 23,876,768 (2026-01-24):
-- Accounts: 351,681,953
-- Storage slots: 1,482,413,924
-- Total entries: 1,834,095,877
-- Database size: 73,363,835,080 bytes
+### Size formulas
 
-## PIR Bucket Links
+Let `A` = accounts, `S` = storage slots, `T = A + S`, `H` = unique bytecode hashes (non-zero code hashes).
 
-Base URL: `https://pir.53627.org/mainnet-pir-data-v3/`
+| File | Bytes |
+|------|------:|
+| `database.bin` | `T × 40` |
+| `account-mapping.bin` | `A × 24` |
+| `storage-mapping.bin` | `S × 56` |
+| `code_store.bin` | `4 + H × 32` |
 
-| File | Size (bytes) | Link |
-|------|--------------|------|
-| `database.bin` | 73,363,835,080 | https://pir.53627.org/mainnet-pir-data-v3/database.bin |
-| `account-mapping.bin` | 8,440,366,872 | https://pir.53627.org/mainnet-pir-data-v3/account-mapping.bin |
-| `storage-mapping.bin` | 83,015,179,744 | https://pir.53627.org/mainnet-pir-data-v3/storage-mapping.bin |
-| `code_store.bin` | 66,064,516 | https://pir.53627.org/mainnet-pir-data-v3/code_store.bin |
-| `manifest.json` | 1,124 | https://pir.53627.org/mainnet-pir-data-v3/manifest.json |
-| `metadata.json` | 237 | https://pir.53627.org/mainnet-pir-data-v3/metadata.json |
+## Entry layout (40 bytes)
+
+Source of truth: [`schema40.rs`](../plinko/src/schema40.rs).
+
+### Account entry
+
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| 0 | 16 | Balance | Lower 128 bits of 256-bit balance, LE |
+| 16 | 4 | Nonce | u32 LE (extractor errors if `nonce > u32::MAX`) |
+| 20 | 4 | CodeID | u32 LE; `0` = EOA; `k ≥ 1` → `code_store` hash at index `k-1` |
+| 24 | 8 | TAG | `keccak256(address)[0:8]` |
+| 32 | 8 | Padding | Zero |
+
+### Storage entry
+
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| 0 | 32 | Value | Full slot word, LE |
+| 32 | 8 | TAG | `keccak256(address ‖ slot_key)[0:8]` |
+
+## `metadata.json` (extractor)
+
+Written by [`src/main.rs`](../src/main.rs):
+
+```json
+{
+  "schema_version": 3,
+  "entry_size_bytes": 40,
+  "block": 23876768,
+  "accounts": 351681953,
+  "storage_slots": 1482413924,
+  "total_entries": 1834095877,
+  "unique_bytecode_hashes": 2064516,
+  "generated_at": "2026-01-24 10:47:10"
+}
+```
+
+Synthetic datasets ([`gen_synthetic`](../plinko/src/bin/gen_synthetic.rs)) add `"synthetic": true`, `"seed"`, `"scale_percent"`, `"unique_bytecodes"`, and `"size_bytes"`.
+
+## Published mainnet v3 snapshot
+
+Machine-readable copy of the published snapshot fields: [`plinko_paper_index.json`](plinko_paper_index.json) → `mainnet_v3_snapshot`.
+
+| Field | Value |
+|-------|------:|
+| Block | 23,876,768 |
+| Accounts | 351,681,953 |
+| Storage slots | 1,482,413,924 |
+| Total entries | 1,834,095,877 |
+| Unique bytecode hashes | 2,064,516 |
+| `database.bin` size | 73,363,835,080 (= `T × 40`) |
+| Generated (UTC local string) | 2026-01-24 10:47:10 |
+
+### Public HTTP download (unavailable)
+
+The former public host **`https://pir.53627.org/mainnet-pir-data-v3/`** (Jan 2026) is **no longer reachable** (DNS does not resolve). Do not rely on those links.
+
+| Former path | Size (bytes) |
+|-------------|-------------:|
+| `database.bin` | 73,363,835,080 |
+| `account-mapping.bin` | 8,440,366,872 |
+| `storage-mapping.bin` | 83,015,179,744 |
+| `code_store.bin` | 66,064,516 |
+| `metadata.json` | 237 |
+| `manifest.json` | 1,124 |
+
+If you already have a copy from that host, validate with `metadata.json` (`schema_version: 3`, `entry_size_bytes: 40`). Otherwise use the alternatives below.
 
 ## Regression / subset data
 
-There is **no** published Cloudflare R2 regression bucket anymore (an old private `plinko-regression-data` object listed in `docs/plinko_paper_index.json` is retired).
+There is **no** published Cloudflare R2 regression bucket (legacy `plinko-regression-data` in [`plinko_paper_index.json`](plinko_paper_index.json) is retired).
 
 For smaller runs:
 
-- Extract locally: `./target/release/plinko --db-path <reth> --output-dir ./data --limit <N>`
-- Use mainnet v3 files above for full-scale tests
-- In-repo: `cargo test -p plinko` (including mainnet-scale binomial / PMNS cases)
+```bash
+cargo build --release
+./target/release/plinko --db-path <reth-db> --output-dir ./data --limit <N>
+```
+
+Or synthetic scale data:
+
+```bash
+cargo build --release -p plinko --bin gen_synthetic
+./target/release/gen_synthetic --output-dir ./data/synthetic --scale-percent 0.1
+```
+
+In-repo tests: `cargo test -p plinko`.

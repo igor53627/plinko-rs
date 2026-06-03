@@ -160,7 +160,7 @@ fn main() -> Result<()> {
             });
             let code_id = code_store.get_or_insert(bytecode_hash.as_ref());
 
-            // --- WRITE DATABASE ENTRY (48 bytes) ---
+            // --- WRITE DATABASE ENTRY (40 bytes) ---
             if let Some(writer) = db_writer.as_mut() {
                 // Convert address to [u8; 20]
                 let addr_bytes: [u8; 20] = address.0 .0;
@@ -287,7 +287,7 @@ fn main() -> Result<()> {
                 break;
             }
 
-            // --- WRITE DATABASE ENTRY (48 bytes) ---
+            // --- WRITE DATABASE ENTRY (40 bytes) ---
             if let Some(writer) = db_writer.as_mut() {
                 // Convert types
                 let addr_bytes: [u8; 20] = address.0 .0;

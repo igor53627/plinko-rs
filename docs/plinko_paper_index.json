@@ -93,10 +93,11 @@
     "for_understanding_theory": "Use Part 2 (technical) with Part 1 (overview)",
     "for_literature_review": "Use Part 5 (references) with Part 4 (comparisons)",
     "for_quick_summary": "Use Part 1 (metadata) only",
-    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3_snapshot below. Do not use the retired R2 regression bucket."
+    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3_snapshot counts below. Public HTTP and R2 regression buckets are unavailable."
   },
   "mainnet_v3_snapshot": {
-    "status": "published",
+    "status": "unavailable",
+    "note": "Former public HTTP host pir.53627.org/mainnet-pir-data-v3 is no longer reachable (2026-06). Fields below describe the last published v3 extract.",
     "schema_version": 3,
     "entry_size_bytes": 40,
     "block": 23876768,
@@ -105,8 +106,15 @@
     "total_entries": 1834095877,
     "unique_bytecode_hashes": 2064516,
     "generated_at": "2026-01-24 10:47:10",
-    "public_base_url": "https://pir.53627.org/mainnet-pir-data-v3/",
-    "documentation": "docs/data_format.md"
+    "documentation": "docs/data_format.md",
+    "formerly": {
+      "public_base_url": "https://pir.53627.org/mainnet-pir-data-v3/"
+    },
+    "alternatives": [
+      "Extract: ./target/release/plinko --db-path <reth> --output-dir ./data",
+      "Synthetic: ./target/release/gen_synthetic --output-dir ./data/synthetic --scale-percent 0.1",
+      "Mainnet-scale unit tests: plinko/src/binomial.rs, plinko/tests/"
+    ]
   },
   "regression_test_data_legacy": {
     "status": "unavailable",
@@ -119,7 +127,7 @@
     },
     "alternatives": [
       "Extract a subset: ./target/release/plinko --db-path <reth> --output-dir ./data --limit <N>",
-      "Mainnet v3 public bucket: see mainnet_v3_snapshot and docs/data_format.md",
+      "Mainnet v3 layout and last published counts: mainnet_v3_snapshot and docs/data_format.md",
       "Mainnet-scale unit tests: plinko/src/binomial.rs, plinko/tests/"
     ]
   },
