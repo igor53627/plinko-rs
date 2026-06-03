@@ -14,7 +14,7 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 
 ### `database.bin` ordering
 
-Flat mmap file used by `plinko_hints` ([`Database40`](../plinko/src/db.rs)):
+Flat mmap file used by `plinko_hints` (40-byte stride; see [`hint_generation.md`](hint_generation.md)):
 
 1. Indices `0 .. accounts-1`: account entries (Reth `PlainAccountState` walk order).
 2. Indices `accounts .. total_entries-1`: storage entries (Reth storage walk order).
