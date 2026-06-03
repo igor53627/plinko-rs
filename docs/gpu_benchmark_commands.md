@@ -99,6 +99,8 @@ modal run scripts/modal_run_bench.py --generate --num-gpus 50 --run-id my_custom
 
 ## Benchmark Reports
 
+Archived Modal run logs (January 2026). Current on-disk schema: **40 bytes, ~1.83B entries, ~73 GB** — [`data_format.md`](data_format.md). Some older log blocks below used 48 B / ~103 GB before v3 sizing was unified in docs.
+
 ### ChaCha8 + SHA-256 + 40B Compaction (Optimized)
 
 #### 2x H200 (4% hints)
@@ -136,7 +138,7 @@ Results:
 ============================================================
 Configuration:
   GPUs:            2× H200
-  Data:            100% mainnet (103 GB) replicated
+  Data:            100% mainnet (~73 GB disk, v3) replicated
   Hints:           1% = 335,544 (167,772 per GPU)
   set_size:        16,404 (production)
   Key derivation:  SHA-256(block_key || "prp")
@@ -158,9 +160,9 @@ RESULTS - 50× H200 Production Hint Generation (with SHA-256)
 Run ID:              20260123_174356
 
 Database Parameters:
-  n (entries):       2,150,000,000
-  Entry size:        48 bytes
-  Database size:     103 GB
+  n (entries):       1,834,095,877
+  Entry size:        40 bytes (disk)
+  Database size:     ~73 GB
 
 Plinko Parameters:
   λ (lambda):        128
@@ -207,7 +209,7 @@ Cost Breakdown (H200 @ $0.001261/sec):
 ============================================================
 Configuration:
   GPUs:            2× H200
-  Data:            100% mainnet (103 GB) replicated
+  Data:            100% mainnet (~73 GB disk, v3) replicated
   Hints:           1% = 335,544 (167,772 per GPU)
   set_size:        16,404 (production)
   Key derivation:  SHA-256(block_key || "prp")
@@ -229,9 +231,9 @@ RESULTS - 50× H200 Production Hint Generation (ChaCha20)
 Run ID:              20260123_221733
 
 Database Parameters:
-  n (entries):       2,150,000,000
-  Entry size:        48 bytes
-  Database size:     103 GB
+  n (entries):       1,834,095,877
+  Entry size:        40 bytes (disk)
+  Database size:     ~73 GB
 
 Plinko Parameters:
   λ (lambda):        128

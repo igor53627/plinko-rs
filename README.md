@@ -18,12 +18,12 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 **Where to look for protocol / implementation truth** (in order):
 
 1. [`docs/hint_generation.md`](docs/hint_generation.md) — HintInit behavior (Fig. 7), module map  
-2. [`docs/data_format.md`](docs/data_format.md) — v3 on-disk layout, mainnet snapshot URLs  
+2. [`docs/data_format.md`](docs/data_format.md) — v3 on-disk layout, last mainnet snapshot metadata
 3. [`docs/protocol_overview.md`](docs/protocol_overview.md) — end-to-end pipeline  
 4. [`docs/Plinko.v`](docs/Plinko.v) — Coq reference spec  
 5. [`plinko/formal/`](plinko/formal/) — Rocq proofs and machine-checked specs  
 
-Parsed paper JSON ([`docs/plinko_paper_part*.json`](docs/plinko_paper_part6_algorithms.json), catalog [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json)) is useful for agents and pseudocode lookup; live dataset URLs are in [`docs/data_format.md`](docs/data_format.md) (the retired R2 regression bucket is not published).
+Parsed paper JSON ([`docs/plinko_paper_part*.json`](docs/plinko_paper_part6_algorithms.json), catalog [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json)) is useful for agents and pseudocode lookup. Datasets: local Reth extract or synthetic — [`docs/data_format.md`](docs/data_format.md).
 
 Contributing: feature branches and PRs — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
@@ -93,7 +93,7 @@ cargo run -p plinko --bin cost_estimate -- --entries 100000000 --gpus 2 --tee --
 | `code_store.bin` | `[count: u32][hash0: 32B]...` |
 | `metadata.json` | Snapshot metadata and schema version |
 
-Layout, sizes, and public mainnet v3 bucket: [`docs/data_format.md`](docs/data_format.md).
+Layout and last published mainnet v3 counts: [`docs/data_format.md`](docs/data_format.md).
 
 ## Core primitives (`plinko` crate)
 

@@ -93,10 +93,9 @@
     "for_understanding_theory": "Use Part 2 (technical) with Part 1 (overview)",
     "for_literature_review": "Use Part 5 (references) with Part 4 (comparisons)",
     "for_quick_summary": "Use Part 1 (metadata) only",
-    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3_snapshot below. Do not use the retired R2 regression bucket."
+    "for_test_data": "Use in-repo tests, local extract (--limit), or mainnet_v3_snapshot counts below."
   },
   "mainnet_v3_snapshot": {
-    "status": "published",
     "schema_version": 3,
     "entry_size_bytes": 40,
     "block": 23876768,
@@ -105,21 +104,14 @@
     "total_entries": 1834095877,
     "unique_bytecode_hashes": 2064516,
     "generated_at": "2026-01-24 10:47:10",
-    "public_base_url": "https://pir.53627.org/mainnet-pir-data-v3/",
     "documentation": "docs/data_format.md"
   },
   "regression_test_data_legacy": {
-    "status": "unavailable",
-    "note": "Former private Cloudflare R2 bucket (plinko-regression-data) is not publicly downloadable. Layout was v2 (32-byte words), superseded by v3 (40-byte entries).",
-    "formerly": {
-      "location": "Cloudflare R2: s3://plinko-regression-data/",
-      "source_block": 23889314,
-      "total_entries": 120000000,
-      "approx_database_size": "3.6 GB"
-    },
+    "status": "retired",
+    "note": "Legacy v2 regression dataset (32-byte words) is not published. Superseded by v3 (40-byte entries).",
     "alternatives": [
       "Extract a subset: ./target/release/plinko --db-path <reth> --output-dir ./data --limit <N>",
-      "Mainnet v3 public bucket: see mainnet_v3_snapshot and docs/data_format.md",
+      "Mainnet v3 layout and reference counts: mainnet_v3_snapshot and docs/data_format.md",
       "Mainnet-scale unit tests: plinko/src/binomial.rs, plinko/tests/"
     ]
   },
