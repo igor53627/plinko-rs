@@ -18,9 +18,9 @@ use std::{
 };
 use tracing::{debug, info};
 
-/// Mainnet scale (approximate as of 2024)
-const MAINNET_ACCOUNTS: u64 = 330_000_000;
-const MAINNET_STORAGE: u64 = 1_400_000_000;
+/// Mainnet v3 scale (docs/plinko_paper_index.json → mainnet_v3_snapshot)
+const MAINNET_ACCOUNTS: u64 = 351_681_953;
+const MAINNET_STORAGE: u64 = 1_482_413_924;
 
 #[derive(Parser, Debug)]
 #[command(
