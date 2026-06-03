@@ -7,7 +7,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | Doc | Topic |
 |-----|--------|
 | [`hint_generation.md`](hint_generation.md) | HintInit (Fig. 7), `plinko/src/bin/hint_gen/` layout |
-| [`data_format.md`](data_format.md) | v3 `database.bin`, mappings, snapshot metadata (HTTP host retired) |
+| [`data_format.md`](data_format.md) | v3 `database.bin`, mappings, mainnet reference counts |
 | [`protocol_overview.md`](protocol_overview.md) | End-to-end pipeline (extract → hints → query/update) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components and data flow |
 | [`constant_time_mode.md`](constant_time_mode.md) | TEE / constant-time HintInit |
