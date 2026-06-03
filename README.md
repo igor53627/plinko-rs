@@ -9,7 +9,7 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 
 | Path | Role |
 |------|------|
-| `src/main.rs` | **Extractor** — reads Reth MDBX, writes flat `database.bin` + mappings |
+| `src/main.rs` | **Extractor** — reads Reth on-disk DB via `reth-db` (MDBX-backed); writes flat `database.bin` + mappings |
 | `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, hint generator (`src/bin/hint_gen/`), optional CUDA |
 | `plinko/formal/` | **Rocq** specs and proofs (`plinko/formal/README.md`) |
 | `docs/` | Protocol, data format, benchmarks, verification |
@@ -29,7 +29,7 @@ Contributing: feature branches and PRs — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Why this exists
 
-- **Speed**: Reads Reth's MDBX via `reth-db` (no RPC).
+- **Speed**: Extractor reads Reth state through `reth-db` (no RPC); hint generation uses flat `database.bin` only (no MDBX).
 - **Efficiency**: Streams extraction with bounded memory.
 - **Scale**: Flat 40-byte entries (v3 schema) for PIR-friendly layout.
 - **Correctness**: HintInit aligned with paper Fig. 7 and [`docs/Plinko.v`](docs/Plinko.v); binomial inverse CDF stable at mainnet PMNS parameters ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)).
@@ -57,7 +57,7 @@ cargo build --release -p plinko --bin plinko_hints --bin cost_estimate
 
 | Flag | Description |
 |------|-------------|
-| `--db-path` | Reth database path (default: `/var/lib/reth/mainnet/db`) |
+| `--db-path` | Reth node data directory (`reth-db` / MDBX-backed; default: `/var/lib/reth/mainnet/db`) |
 | `--output-dir` | Output directory (default: `data`) |
 | `--limit` | Optional cap on accounts/slots extracted |
 
