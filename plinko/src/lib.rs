@@ -13,7 +13,6 @@ pub mod gpu;
 pub mod iprf;
 pub mod protocol;
 pub mod schema40;
-pub mod schema48;
 
 #[cfg(any(kani, test))]
 #[path = "kani_proofs.rs"]

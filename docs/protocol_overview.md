@@ -13,8 +13,8 @@ Plinko is a single-server PIR scheme that enables private lookup with efficient 
 ## Phases
 
 ```text
-Extract (Reth MDBX) -> database.bin + mappings + metadata
-             -> HintGen (CPU/GPU) -> hints.bin
+Extract (Reth via reth-db, MDBX on disk) -> database.bin + mappings + metadata
+             -> HintGen (CPU/GPU; flat database.bin) -> hints.bin
              -> Query/Update (client uses hints + deltas)
 ```
 

@@ -1,6 +1,7 @@
 //! Reth state extraction pipeline.
 //!
-//! Reads Ethereum account and storage state from a Reth database and writes
+//! Reads Ethereum account and storage state from a Reth node database via `reth-db`
+//! (MDBX-backed on disk) and writes
 //! a flat binary dataset (v3 / 40-byte schema) suitable for Plinko PIR queries.
 //! Outputs: `database.bin`, `account-mapping.bin`, `storage-mapping.bin`,
 //! `code_store.bin`, and `metadata.json`.

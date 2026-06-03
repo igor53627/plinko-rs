@@ -4,7 +4,7 @@ This repository contains the Plinko PIR stack: data extraction from Ethereum sta
 
 ## Components
 
-- **Extractor** (`src/main.rs`): Reads Reth MDBX state and produces flat files.
+- **Extractor** (`src/main.rs`): Reads Reth on-disk state via `reth-db` (MDBX-backed) and produces flat files.
   - Outputs: `database.bin`, `account-mapping.bin`, `storage-mapping.bin`, `code_store.bin`, `metadata.json`.
 - **Schema** (`plinko/src/schema40.rs`): Defines the 40-byte entry layout (v3).
 - **Hint generation** (`plinko/src/bin/plinko_hints.rs`): Computes Plinko hints from `database.bin`.
@@ -14,10 +14,10 @@ This repository contains the Plinko PIR stack: data extraction from Ethereum sta
 ## Data Flow
 
 ```text
-Reth MDBX DB
+Reth node DB (MDBX via reth-db)
    -> Extractor
       -> database.bin + mappings + metadata
-         -> Hint generator (CPU or GPU)
+         -> Hint generator (CPU or GPU; mmap flat database.bin)
             -> hints.bin (parities)
 ```
 
