@@ -1,22 +1,27 @@
 # Deployment
 
-This project is primarily CLI-driven. Typical flows are:
+CLI-driven flows (no HTTP API). See [`README.md`](../README.md) for the entry point.
 
 ## Build
 
 ```bash
+# Extractor (workspace root)
 cargo build --release
+
+# Hint generator and cost estimator
+cargo build --release -p plinko --bin plinko_hints --bin cost_estimate
 ```
 
-## Estimate Resource Cost (Optional Preflight)
+## Estimate resource cost (optional)
 
 ```bash
-cargo build --release --manifest-path plinko/Cargo.toml --bin cost_estimate
-./target/release/cost_estimate --mainnet
-./target/release/cost_estimate --entries 100000000 --gpus 2 --tee --json
+cargo run -p plinko --bin cost_estimate -- --mainnet
+cargo run -p plinko --bin cost_estimate -- --entries 100000000 --gpus 2 --tee --json
 ```
 
-## Extract State
+## Extract state
+
+Reth node data directory (`reth-db`, MDBX on disk):
 
 ```bash
 ./target/release/plinko \
@@ -24,24 +29,26 @@ cargo build --release --manifest-path plinko/Cargo.toml --bin cost_estimate
   --output-dir ./data
 ```
 
-## Generate Hints
+## Generate hints
+
+Reads flat `database.bin` only (not MDBX):
 
 ```bash
-cd plinko && cargo build --release --bin plinko_hints
 ./target/release/plinko_hints \
-  --db-path ../data/database.bin \
+  --db-path ./data/database.bin \
   --lambda 128
 ```
 
-## Constant-Time Mode (TEE)
+## Constant-time mode (TEE)
 
 ```bash
 ./target/release/plinko_hints \
-  --db-path ../data/database.bin \
+  --db-path ./data/database.bin \
   --lambda 128 --constant-time
 ```
 
-## Production Notes
+## Production notes
 
-- Ensure the output directory has sufficient disk space (hundreds of GB for mainnet).
-- For long-running jobs, consider systemd-run for logging (see AGENTS.md for examples).
+- Mainnet snapshot needs hundreds of GB free under `--output-dir` / hint output paths.
+- Long-running jobs: `systemd-run` examples in [`AGENTS.md`](../AGENTS.md).
+- GPU benchmarks: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md).
