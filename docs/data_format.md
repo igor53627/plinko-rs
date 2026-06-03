@@ -51,7 +51,7 @@ Source of truth: [`schema40.rs`](../plinko/src/schema40.rs).
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
 | 0 | 32 | Value | Full slot word, LE |
-| 32 | 8 | TAG | `keccak256(address ‖ slot_key)[0:8]` |
+| 32 | 8 | TAG | `keccak256(address || slot_key)[0:8]` |
 
 ## `metadata.json` (extractor)
 
