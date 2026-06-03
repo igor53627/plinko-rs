@@ -8,7 +8,9 @@
 //! - client reconstruction + backup promotion
 //! - hint updates via XOR deltas
 //!
-//! Entries are fixed-size 32-byte words.
+//! Simplified in-memory model: logical entries are fixed 32-byte words.
+//! Production `database.bin` uses the v3 40-byte on-disk layout (`schema40`);
+//! see `hint_gen` and [`docs/data_format.md`](../../docs/data_format.md).
 
 use crate::iprf::{Iprf, PrfKey128};
 use rand::seq::index::sample;

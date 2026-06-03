@@ -270,7 +270,7 @@ def main(
     print(f"Plinko Mainnet v3 GPU Benchmark")
     print(f"================================")
     print(f"GPUs: {gpus}x H200")
-    print(f"Database: mainnet-v3 (~69 GB, 1.83B entries)")
+    print(f"Database: mainnet-v3 (~73 GB, 1.83B entries, 40-byte v3)")
     print(f"Lambda: {lambda_param}")
     print(f"Iterations: {iterations}")
     if max_hints:

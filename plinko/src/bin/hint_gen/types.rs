@@ -1,8 +1,15 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Database word size in bytes (one 256-bit entry).
-pub const WORD_SIZE: usize = 32;
+/// On-disk v3 record size (`database.bin` stride).
+pub use plinko::schema40::ENTRY_SIZE as DB_ENTRY_SIZE;
+
+/// Bytes XOR'd into hint parity (first 32 bytes of each v3 entry).
+pub const PARITY_WORD_SIZE: usize = 32;
+
+/// Alias kept for older call sites; prefer `PARITY_WORD_SIZE` / `DB_ENTRY_SIZE`.
+#[allow(dead_code)]
+pub const WORD_SIZE: usize = PARITY_WORD_SIZE;
 
 /// Domain-separation label used when deriving seeds for regular hint subsets.
 pub const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
@@ -44,6 +51,15 @@ pub struct Args {
     /// Enable constant-time processing path (data-independent memory access).
     #[arg(long)]
     pub constant_time: bool,
+}
+
+/// Load the 32-byte parity word for logical entry `index` in a v3 `database.bin` mmap.
+#[inline]
+pub fn parity_word_at(db_bytes: &[u8], index: usize) -> [u8; PARITY_WORD_SIZE] {
+    let offset = index * DB_ENTRY_SIZE;
+    db_bytes[offset..offset + PARITY_WORD_SIZE]
+        .try_into()
+        .expect("v3 entry must be at least 32 bytes")
 }
 
 /// A regular PIR hint: the XOR parity of database entries in a pseudorandom
