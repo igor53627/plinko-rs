@@ -11,7 +11,6 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 | `storage-mapping.bin` | `storage_slots` × (`Address(20)` \|\| `SlotKey(32)` \|\| `Index(4)` LE) | yes |
 | `code_store.bin` | `[count: u32 LE][hash₀: 32B]…` | yes (if any contract code) |
 | `metadata.json` | JSON snapshot descriptor | yes |
-| `manifest.json` | Optional CDN manifest (different schema; not written by extractor) | no |
 
 ### `database.bin` ordering
 
@@ -73,9 +72,9 @@ Written by [`src/main.rs`](../src/main.rs):
 
 Synthetic datasets ([`gen_synthetic`](../plinko/src/bin/gen_synthetic.rs)) add `"synthetic": true`, `"seed"`, `"scale_percent"`, `"unique_bytecodes"`, and `"size_bytes"`.
 
-## Published mainnet v3 snapshot
+## Mainnet v3 reference counts
 
-Machine-readable copy of the published snapshot fields: [`plinko_paper_index.json`](plinko_paper_index.json) → `mainnet_v3_snapshot`.
+Used by `cost_estimate --mainnet` and benchmarks. Also in [`plinko_paper_index.json`](plinko_paper_index.json) → `mainnet_v3_snapshot`.
 
 | Field | Value |
 |-------|------:|
@@ -87,24 +86,7 @@ Machine-readable copy of the published snapshot fields: [`plinko_paper_index.jso
 | `database.bin` size | 73,363,835,080 (= `T × 40`) |
 | Generated (UTC local string) | 2026-01-24 10:47:10 |
 
-### Public HTTP download (unavailable)
-
-The former public host **`https://pir.53627.org/mainnet-pir-data-v3/`** (Jan 2026) is **no longer reachable** (DNS does not resolve). Do not rely on those links.
-
-| Former path | Size (bytes) |
-|-------------|-------------:|
-| `database.bin` | 73,363,835,080 |
-| `account-mapping.bin` | 8,440,366,872 |
-| `storage-mapping.bin` | 83,015,179,744 |
-| `code_store.bin` | 66,064,516 |
-| `metadata.json` | 237 |
-| `manifest.json` | 1,124 |
-
-If you already have a copy from that host, validate with `metadata.json` (`schema_version: 3`, `entry_size_bytes: 40`). Otherwise use the alternatives below.
-
-## Regression / subset data
-
-There is **no** published Cloudflare R2 regression bucket (legacy `plinko-regression-data` in [`plinko_paper_index.json`](plinko_paper_index.json) is retired).
+## Obtaining data
 
 For smaller runs:
 

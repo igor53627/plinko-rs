@@ -103,11 +103,11 @@ for i in 1 2 3; do echo "Attempt $i:"; codex cloud diff <task_id> --attempt $i 2
 Prefer these for implementation and verification (see also `README.md`):
 
 1. **`docs/hint_generation.md`** — HintInit (Fig. 7), crate layout
-2. **`docs/data_format.md`** — v3 `database.bin` / mappings, snapshot metadata (public HTTP host retired)
+2. **`docs/data_format.md`** — v3 `database.bin` / mappings, mainnet reference counts
 3. **`docs/Plinko.v`** and **`plinko/formal/`** — formal specs and proofs
 4. **`docs/plinko_paper_part6_algorithms.json`** — parsed pseudocode when cross-checking the paper
 
-**`docs/plinko_paper_index.json`** is an agent catalog of paper parts 1–6. Dataset layout: **`docs/data_format.md`** (v3). Public HTTP (`pir.53627.org`) and R2 regression buckets are **not** available; use extract `--limit` or in-repo tests.
+**`docs/plinko_paper_index.json`** is an agent catalog of paper parts 1–6. Dataset layout: **`docs/data_format.md`** (v3). Use local extract `--limit`, synthetic data, or in-repo tests.
 
 ## Host: root@aya
 
