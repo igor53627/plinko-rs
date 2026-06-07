@@ -99,7 +99,7 @@ modal run scripts/modal_run_bench.py --generate --num-gpus 50 --run-id my_custom
 
 ## Benchmark Reports
 
-Archived Modal run logs (January 2026). Current on-disk schema: **40 bytes, ~1.83B entries, ~73 GB** — [`data_format.md`](data_format.md). Some older log blocks below used 48 B / ~103 GB before v3 sizing was unified in docs.
+Archived Modal run logs (January 2026). Current on-disk schema: **40 bytes, ~1.83B entries, ~73 GB** — [`data_format.md`](data_format.md). Some older log blocks below used 48 B / ~103 GB before v3 sizing was unified in docs. The Jan 23/24 blocks also preserve the older padded workload geometry (`c = 16,404`, about `8,202` blocks per hint); use the command templates above for new v3 runs instead of treating those archived `c` values as current v3 geometry.
 
 ### ChaCha8 + SHA-256 + 40B Compaction (Optimized)
 
@@ -128,7 +128,7 @@ Results:
 1. *Compaction (40B -> 32B) & Alignment: ~1.37×*
 2. *Tighter Set Size (13,996 vs 16,404): ~1.17× (processing only active entries)*
 
-### ChaCha8 + SHA-256 (Production Configuration)
+### ChaCha8 + SHA-256 (Archived old-layout production run)
 
 #### 2x H200 (1% hints)
 

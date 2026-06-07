@@ -17,14 +17,14 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 
 | File | Size (bytes) | Purpose |
 |------|--------------|---------|
-| mod.rs | 761 | Module wiring and re-exports |
-| types.rs | 2560 | Core data types (`Args`, hints, constants) |
+| mod.rs | 772 | Module wiring and re-exports |
+| types.rs | 3184 | Core data types (`Args`, hints, constants) |
 | bitset.rs | 4516 | `BlockBitset` for constant-time membership checks |
 | keys.rs | 3885 | iPRF block key and subset-seed derivation |
-| subsets.rs | 2360 | Regular/backup subset block computation |
-| driver.rs | 9183 | Geometry, validation, seed handling, hint initialization, and result summaries |
-| fast_path.rs | 2797 | Standard streaming path (non-constant-time), accepts `FastProcessInput` |
-| ct_path.rs | 8860 | Constant-time streaming path for TEE mode, accepts `CtProcessInput` |
+| subsets.rs | 3014 | Regular/backup subset block computation |
+| driver.rs | 9262 | Geometry, validation, seed handling, hint initialization, and result summaries |
+| fast_path.rs | 2727 | Standard streaming path (non-constant-time), accepts `FastProcessInput` |
+| ct_path.rs | 8790 | Constant-time streaming path for TEE mode, accepts `CtProcessInput` |
 
 ## API Notes
 
@@ -62,14 +62,18 @@ set memory by up to 31x during hint generation:
 
 | c (blocks) | `Vec<usize>` (old) | `BlockBitset` (new) | Reduction |
 |------------|-------------------:|--------------------:|----------:|
-| 100 | 54 KB | 5 KB | 10.8x |
-| 1,000 | 504 KB | 19 KB | 26.5x |
-| 10,000 | 5,004 KB | 160 KB | 31.3x |
+| 100 | 54 KB | 6 KB | 8.8x |
+| 1,000 | 504 KB | 20 KB | 25.2x |
+| 10,000 | 5,004 KB | 161 KB | 31.1x |
 
 *128 hints per measurement. Ratio converges to ~32x as c grows.*
 
-At Ethereum Mainnet scale (c ~ 16,404), block set storage drops from
-~4 GB to ~130 MB for 33.5M hints. This is a pure memory win; the
+At Ethereum Mainnet scale, use the active v3 parameter derivation in
+[`data_format.md`](data_format.md) and the command templates in
+[`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). For any block count
+`c`, each old hint used roughly `(c / 2) * size_of::<usize>()` bytes for block
+indices, while each `BlockBitset` uses `ceil(c / 64) * 8` heap bytes plus one
+`size_of::<BlockBitset>()` struct overhead. This is a pure memory win; the
 compute bottleneck remains the Swap-Or-Not rounds in the iPRF.
 
 ### Impact by execution path
@@ -87,4 +91,8 @@ The protocol `Client` caches sorted block vectors on `HintSlot` and
 backup hints use a complement flag (`complemented: bool`) instead of
 materializing the complement set, making `promote_backup` zero-allocation.
 
-Run the memory benchmark: `cargo bench --bench memory_bench`
+Run the memory benchmark from the workspace root:
+
+```bash
+cargo bench -p plinko --bench memory_bench
+```

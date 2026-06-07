@@ -8,9 +8,10 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::sync::Once;
 
-/// Minimal BlockBitset replica (same layout as hint_gen::bitset::BlockBitset).
+/// Minimal BlockBitset replica matching `hint_gen::bitset::BlockBitset` layout.
 struct BlockBitset {
     bits: Vec<u64>,
+    num_blocks: usize,
 }
 
 impl BlockBitset {
@@ -22,7 +23,7 @@ impl BlockBitset {
                 bits[block / 64] |= 1u64 << (block % 64);
             }
         }
-        Self { bits }
+        Self { bits, num_blocks }
     }
 
     fn heap_size(&self) -> usize {
@@ -101,7 +102,7 @@ fn bench_size_comparison(c: &mut Criterion) {
                 .map(|blocks| BlockBitset::from_sorted_blocks(blocks, c_val))
                 .collect();
             let bitset_heap: usize = bitsets.iter().map(|bs| bs.heap_size()).sum();
-            let bitset_overhead = count * std::mem::size_of::<Vec<u64>>();
+            let bitset_overhead = count * std::mem::size_of::<BlockBitset>();
 
             let vec_total = vec_heap + vec_overhead;
             let bitset_total = bitset_heap + bitset_overhead;
@@ -133,7 +134,7 @@ fn bench_size_comparison(c: &mut Criterion) {
                     .map(|blocks| BlockBitset::from_sorted_blocks(blocks, *c_val))
                     .collect();
                 let bitset_heap: usize = bitsets.iter().map(|bs| bs.heap_size()).sum();
-                let bitset_overhead = 128 * std::mem::size_of::<Vec<u64>>();
+                let bitset_overhead = 128 * std::mem::size_of::<BlockBitset>();
 
                 let vec_total = vec_heap + vec_overhead;
                 let bitset_total = bitset_heap + bitset_overhead;
