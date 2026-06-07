@@ -163,7 +163,7 @@ journalctl -u plinko_hints_0p01_prodW -n 200
 ## Data Format
 
 - v3 `database.bin`: 40-byte records (see `docs/data_format.md`)
-- Hint parity XOR uses the first 32 bytes of each record; TAG/padding are not included in the CPU path
+- Hint parity XOR uses the first 32 bytes of each record. For account entries this includes the account TAG bytes at offsets `24..32`; account padding and storage TAG/padding bytes are outside the XOR window.
 
 ## Style
 
