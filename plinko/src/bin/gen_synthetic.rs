@@ -3,7 +3,7 @@
 //! Generates a configurable-size database with random entries in the 40-byte schema (v3),
 //! suitable for benchmarking on Modal H100/H200 GPUs.
 //!
-//! Default: 0.1% of mainnet scale (~330K accounts, ~1.4M storage slots)
+//! Default: 0.1% of mainnet scale (~352K accounts, ~1.48M storage slots)
 
 use clap::Parser;
 use eyre::Result;

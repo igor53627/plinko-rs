@@ -37,7 +37,6 @@ WORKDIR /app
 
 # Copy binaries
 COPY --from=builder /app/target/release/plinko_hints /usr/local/bin/
-COPY --from=builder /app/target/release/bench_hints /usr/local/bin/
 
 # Create data directories
 RUN mkdir -p /data /public/deltas /public/snapshots

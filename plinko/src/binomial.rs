@@ -21,9 +21,16 @@ const EXACT_THRESHOLD: u64 = 1024;
 /// which underflows to 0 at Plinko mainnet CDF arguments. We use continued fraction instead.
 const BETA_LARGE_THRESHOLD: f64 = 3000.0;
 
-/// Lentz continued-fraction iterations (Cephes/statrs default). Sufficient for
-/// PMNS envelopes: both parameters are O(n) with n up to ~12.5M and x away from 0/1.
-const BETA_CF_MAX_ITER: u32 = 140;
+/// Lentz continued-fraction iteration cap. PMNS mainnet-scale points need more
+/// than the Cephes/statrs default 140 iterations to satisfy an `f64::EPSILON`
+/// successive-factor convergence check.
+const BETA_CF_MAX_ITER: u32 = 10_000;
+
+struct BetaCfResult {
+    value: f64,
+    converged: bool,
+    iterations: u32,
+}
 
 /// Maximum value of u64 as f64 for normalization
 const U64_MAX_F64: f64 = u64::MAX as f64;
@@ -161,7 +168,7 @@ fn binomial_cdf(n: u64, p: f64, k: u64) -> f64 {
 ///   (equivalently monotone in CDF argument).
 /// - **Target envelope**: `a,b` up to ~1.3e7 (mainnet `n`), `x = 1-p` with PMNS
 ///   split probabilities away from 0/1.
-/// - **Accuracy**: Large-parameter path checked against a statrs `beta_reg` oracle at
+/// - **Accuracy**: Large-parameter path checked against a SciPy `betainc` oracle at
 ///   the mainnet PMNS median CDF point; see `test_beta_continued_fraction_mainnet_oracle`.
 /// - **Convergence**: Stops when successive CF factor `del` is within `f64::EPSILON`
 ///   of 1, or after [`BETA_CF_MAX_ITER`] (Cephes/statrs behavior: return the best
@@ -192,10 +199,20 @@ fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
 /// Lentz continued fraction for I_x(a,b) when both `a` and `b` exceed [`BETA_LARGE_THRESHOLD`].
 ///
 /// Caller must ensure both parameters are above the threshold (routing is handled by
-/// [`regularized_incomplete_beta`]). If the fraction does not converge within
-/// [`BETA_CF_MAX_ITER`], returns the best partial product (Cephes/statrs semantics);
-/// PMNS regression tests at mainnet scale validate the resulting CDF in practice.
-fn beta_continued_fraction(mut a: f64, mut b: f64, mut x: f64) -> f64 {
+/// [`regularized_incomplete_beta`]). Debug/test builds assert convergence within
+/// [`BETA_CF_MAX_ITER`]; release builds return the best partial product if the cap
+/// is ever reached.
+fn beta_continued_fraction(a: f64, b: f64, x: f64) -> f64 {
+    let result = beta_continued_fraction_with_status(a, b, x);
+    debug_assert!(
+        result.converged,
+        "beta continued fraction did not converge within {} iterations",
+        result.iterations
+    );
+    result.value
+}
+
+fn beta_continued_fraction_with_status(mut a: f64, mut b: f64, mut x: f64) -> BetaCfResult {
     debug_assert!(a > BETA_LARGE_THRESHOLD && b > BETA_LARGE_THRESHOLD);
 
     let bt = (puruspe::ln_gamma(a + b) - puruspe::ln_gamma(a) - puruspe::ln_gamma(b)
@@ -224,11 +241,13 @@ fn beta_continued_fraction(mut a: f64, mut b: f64, mut x: f64) -> f64 {
     }
     d = 1.0 / d;
     let mut h = d;
+    let mut converged = false;
+    let mut iterations = BETA_CF_MAX_ITER;
 
     for m in 1..=BETA_CF_MAX_ITER {
-        let m = m as f64;
-        let m2 = m * 2.0;
-        let mut aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        let mf = m as f64;
+        let m2 = mf * 2.0;
+        let mut aa = mf * (b - mf) * x / ((qam + m2) * (a + m2));
         d = 1.0 + aa * d;
         if d.abs() < fpmin {
             d = fpmin;
@@ -239,7 +258,7 @@ fn beta_continued_fraction(mut a: f64, mut b: f64, mut x: f64) -> f64 {
         }
         d = 1.0 / d;
         h *= d * c;
-        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        aa = -(a + mf) * (qab + mf) * x / ((a + m2) * (qap + m2));
         d = 1.0 + aa * d;
         if d.abs() < fpmin {
             d = fpmin;
@@ -252,15 +271,21 @@ fn beta_continued_fraction(mut a: f64, mut b: f64, mut x: f64) -> f64 {
         let del = d * c;
         h *= del;
         if (del - 1.0).abs() <= eps {
+            converged = true;
+            iterations = m;
             break;
         }
     }
 
-    let result = bt * h / a;
+    let mut value = bt * h / a;
     if symm_transform {
-        1.0 - result
-    } else {
-        result
+        value = 1.0 - value;
+    }
+    value = value.clamp(0.0, 1.0);
+    BetaCfResult {
+        value,
+        converged,
+        iterations,
     }
 }
 
@@ -593,25 +618,43 @@ mod tests {
 
     /// Oracle for mainnet PMNS median CDF point (n/2 split).
     ///
-    /// Generated with statrs 0.18: `beta_reg(6294656.0, 6294657.0, 0.49998983264534236)`.
-    /// Here `x = 1-p` for `I_x(n-k, k+1)`; with `a ≈ b` and `x ≈ 0.5`, symmetry gives CDF ≈ 0.5.
+    /// Generated with SciPy 1.17.1: `scipy.special.betainc(6294656.0, 6294657.0, 0.49998983264534236)`.
+    /// Here `x = 1-p` for `I_x(n-k, k+1)`; this point is slightly below the beta mean.
     const MAINNET_MEDIAN_A: f64 = 6_294_656.0;
     const MAINNET_MEDIAN_B: f64 = 6_294_657.0;
     const MAINNET_MEDIAN_X: f64 = 0.499_989_832_645_342_36;
-    const MAINNET_MEDIAN_ORACLE: f64 = 0.499_424_400_710_225;
+    const MAINNET_MEDIAN_ORACLE: f64 = 0.471_353_239_052_697_16;
 
     #[test]
     fn test_beta_continued_fraction_mainnet_oracle() {
         let cf =
             super::beta_continued_fraction(MAINNET_MEDIAN_A, MAINNET_MEDIAN_B, MAINNET_MEDIAN_X);
         assert!(
-            (cf - MAINNET_MEDIAN_ORACLE).abs() < 1e-9,
-            "CF {cf} vs statrs oracle {MAINNET_MEDIAN_ORACLE}"
+            (cf - MAINNET_MEDIAN_ORACLE).abs() < 1e-8,
+            "CF {cf} vs SciPy oracle {MAINNET_MEDIAN_ORACLE}"
         );
         let puruspe = puruspe::betai(MAINNET_MEDIAN_A, MAINNET_MEDIAN_B, MAINNET_MEDIAN_X);
         assert!(
             puruspe < 1e-6,
             "puruspe betaiapprox should underflow at mainnet oracle (got {puruspe})"
+        );
+    }
+
+    #[test]
+    fn test_beta_continued_fraction_mainnet_converges() {
+        let result = super::beta_continued_fraction_with_status(
+            MAINNET_MEDIAN_A,
+            MAINNET_MEDIAN_B,
+            MAINNET_MEDIAN_X,
+        );
+        assert!(
+            result.converged,
+            "mainnet oracle point did not converge within {} iterations",
+            result.iterations
+        );
+        assert!(
+            result.iterations < super::BETA_CF_MAX_ITER,
+            "mainnet oracle point converged only at max iteration"
         );
     }
 
@@ -700,6 +743,32 @@ mod tests {
             );
             prev = cdf;
         }
+    }
+
+    fn assert_monotone_adjacent_window(n: u64, p: f64, start: u64, end: u64) {
+        let mut prev = super::binomial_cdf(n, p, start);
+        for k in (start + 1)..=end {
+            let cdf = super::binomial_cdf(n, p, k);
+            assert!(
+                cdf >= prev,
+                "CDF decreased between k={} and k={k}: {} -> {}",
+                k - 1,
+                prev,
+                cdf
+            );
+            prev = cdf;
+        }
+    }
+
+    #[test]
+    fn test_binomial_cdf_monotone_adjacent_mainnet_windows() {
+        let n = 12_589_312u64;
+        let p = 24_589.0 / 49_177.0;
+        let mean = (n as f64 * p).round() as u64;
+
+        assert_monotone_adjacent_window(n, p, mean - 256, mean + 256);
+        assert_monotone_adjacent_window(n, p, 2_990, 3_010);
+        assert_monotone_adjacent_window(n, p, n - 3_010, n - 2_990);
     }
 
     #[test]

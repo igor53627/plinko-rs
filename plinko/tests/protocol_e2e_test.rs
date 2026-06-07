@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use plinko::protocol::{
     block_in_subset, compute_backup_blocks, compute_regular_blocks, derive_subset_seed, Client,
     Entry, ProtocolParams, Server, ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
@@ -336,17 +338,17 @@ fn test_update_through_complemented_promoted_slots() {
 
     // Verify that at least one promoted slot actually had complemented=true.
     // Backups are promoted in order, so backup j was used for queried_indices[j].
-    let mut any_complemented = false;
+    let mut complemented_promoted_slots = HashSet::new();
     for (j, &idx) in queried_indices.iter().enumerate() {
         let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j as u64);
         let backup_blocks = compute_backup_blocks(&seed, params.num_blocks);
         let queried_block = idx / params.block_size;
         if block_in_subset(&backup_blocks, queried_block) {
-            any_complemented = true;
+            complemented_promoted_slots.insert(params.num_regular_hints + j);
         }
     }
     assert!(
-        any_complemented,
+        !complemented_promoted_slots.is_empty(),
         "test seed did not produce any complemented promotions; \
          change master_seed or query more indices"
     );
@@ -369,6 +371,7 @@ fn test_update_through_complemented_promoted_slots() {
     // the complement flag was handled properly during the update.
     let num_phase3 = 3;
     let mut phase3_count = 0;
+    let mut consumed_complemented_promoted_slot = false;
     // Start from a higher index to avoid re-querying phase-1 cached entries
     // via the cache path (which would bypass the hint-based reconstruction).
     #[allow(clippy::needless_range_loop)]
@@ -379,6 +382,8 @@ fn test_update_through_complemented_promoted_slots() {
         let Ok(prepared) = client.prepare_query(idx) else {
             continue;
         };
+        consumed_complemented_promoted_slot |=
+            complemented_promoted_slots.contains(&prepared.consumed_hint_index());
         let response = server.answer(&prepared.query).expect("answer post-update");
         let got = client
             .reconstruct_and_replenish(prepared, response)
@@ -389,6 +394,10 @@ fn test_update_through_complemented_promoted_slots() {
     assert!(
         phase3_count >= 2,
         "need at least 2 post-update queries, got {phase3_count}"
+    );
+    assert!(
+        consumed_complemented_promoted_slot,
+        "post-update queries did not consume a complemented promoted slot"
     );
     assert_eq!(
         client.remaining_backup_hints(),
