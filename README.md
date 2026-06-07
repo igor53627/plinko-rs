@@ -57,7 +57,7 @@ cargo build --release -p plinko --bin plinko_hints --bin cost_estimate
 
 | Flag | Description |
 |------|-------------|
-| `--db-path` | Reth node data directory (`reth-db` / MDBX-backed; default: `/var/lib/reth/mainnet/db`) |
+| `--db-path` | Reth MDBX database folder, for example `/var/lib/reth/mainnet/db` |
 | `--output-dir` | Output directory (default: `data`) |
 | `--limit` | Optional cap on accounts/slots extracted |
 

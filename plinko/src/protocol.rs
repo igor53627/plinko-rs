@@ -298,8 +298,16 @@ pub struct PreparedQuery {
     pub query: Query,
     requested_index: usize,
     queried_index: usize,
+    consumed_hint_idx: usize,
     real_is_first: bool,
     consumed_parity: Entry,
+}
+
+impl PreparedQuery {
+    /// Return the hint slot index consumed by this prepared query.
+    pub fn consumed_hint_index(&self) -> usize {
+        self.consumed_hint_idx
+    }
 }
 
 /// Client for the in-memory protocol model.
@@ -449,6 +457,7 @@ impl Client {
                 query,
                 requested_index,
                 queried_index,
+                consumed_hint_idx: hint_idx,
                 real_is_first,
                 consumed_parity: consumed.parity,
             });
