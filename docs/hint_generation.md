@@ -23,7 +23,7 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 | bitset.rs | 4516 | `BlockBitset` for constant-time membership checks |
 | keys.rs | 3885 | iPRF block key and subset-seed derivation |
 | subsets.rs | 3014 | Regular/backup subset block computation |
-| driver.rs | 10720 | Geometry, validation, seed handling, hint initialization, and result summaries |
+| driver.rs | 11013 | Geometry, validation, seed handling, hint initialization, and result summaries |
 | fast_path.rs | 2727 | Standard streaming path (non-constant-time), accepts `FastProcessInput` |
 | ct_path.rs | 8790 | Constant-time streaming path for TEE mode, accepts `CtProcessInput` |
 

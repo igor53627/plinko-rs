@@ -148,10 +148,6 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     };
     let mut c = n_effective / w;
 
-    if c < 2 {
-        eyre::bail!("Number of blocks (c = {}) must be at least 2.", c);
-    }
-
     let mut pad_entries = final_pad;
     #[allow(clippy::manual_is_multiple_of)]
     if !args.allow_truncation && c % 2 != 0 {
@@ -164,6 +160,10 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
             pad_entries,
             "Bumped c to even value"
         );
+    }
+
+    if c < 2 {
+        eyre::bail!("Number of blocks (c = {}) must be at least 2.", c);
     }
 
     Ok(Geometry {
@@ -307,18 +307,24 @@ mod tests {
 
     #[test]
     fn default_geometry_matches_the_protocol_client() {
-        let n_entries: usize = 1_834_095_877;
         let args: Args = Args::parse_from(["plinko_hints"]);
-        let geometry: Geometry =
-            compute_geometry(n_entries * DB_ENTRY_SIZE, &args).expect("geometry");
-        let client = plinko::protocol::ProtocolParams::new(n_entries, None, 128, None)
-            .expect("client params");
+        let geometry_of = |n_entries: usize| -> (usize, usize) {
+            let geometry: Geometry =
+                compute_geometry(n_entries * DB_ENTRY_SIZE, &args).expect("geometry");
+            (geometry.w, geometry.c)
+        };
 
-        assert_eq!(geometry.w, 65_536);
-        assert_eq!(geometry.c, 27_988);
-        assert_eq!(
-            (geometry.w, geometry.c),
-            (client.block_size, client.num_blocks)
-        );
+        assert_eq!(geometry_of(1_834_095_877), (65_536, 27_988));
+
+        // Includes databases that fill less than two blocks, and odd block counts.
+        for n_entries in (1..=70).chain([1_000, 65_537, 1_834_095_877]) {
+            let client = plinko::protocol::ProtocolParams::new(n_entries, None, 128, None)
+                .expect("client params");
+            assert_eq!(
+                geometry_of(n_entries),
+                (client.block_size, client.num_blocks),
+                "n_entries={n_entries}"
+            );
+        }
     }
 }
