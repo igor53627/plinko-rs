@@ -16,6 +16,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | [`protocol_overview.md`](protocol_overview.md) | End-to-end pipeline (extract → hints → query/update) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components and data flow |
 | [`trust_model.md`](trust_model.md) | Who runs HintInit, who holds the seed, what each party learns |
+| [`online_protocol.md`](online_protocol.md) | Query, decoy, query format, retry rule, query limit; deviations from the paper |
 | [`keyword_lookup.md`](keyword_lookup.md) | Proposal: lookup by key through a cuckoo table (not implemented) |
 | [`constant_time_mode.md`](constant_time_mode.md) | TEE / constant-time HintInit |
 | [`update_strategy.md`](update_strategy.md) | Incremental updates; see also [`../plinko/docs/delta-format.md`](../plinko/docs/delta-format.md) |

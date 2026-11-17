@@ -496,10 +496,16 @@ impl Iprf {
     }
 
     /// Forward evaluation: P(x) then S(P(x))
+    ///
+    /// # Panics
+    /// Panics if `x` is not in `[0, domain)`. The function has no value there,
+    /// and bin 0 is a valid output.
     pub fn forward(&self, x: u64) -> u64 {
-        if x >= self.domain {
-            return 0;
-        }
+        assert!(
+            x < self.domain,
+            "Iprf::forward: x={x} is outside the domain [0, {})",
+            self.domain
+        );
         // Apply PRP first, then PMNS
         let permuted = self.prp.forward(x);
         self.trace_ball(permuted, self.domain, self.range)
@@ -1111,6 +1117,13 @@ mod tests {
             equal_bins < 16,
             "{equal_bins} of 64 bins have equal loads for domains 16384 and 16385"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the domain")]
+    fn test_iprf_forward_rejects_input_outside_the_domain() {
+        let iprf = Iprf::new([7u8; 16], 100, 16);
+        let _ = iprf.forward(100);
     }
 
     #[test]

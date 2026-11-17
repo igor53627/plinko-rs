@@ -9,6 +9,9 @@
 //! - client reconstruction + backup promotion
 //! - hint updates via XOR deltas
 //!
+//! The rules of the online phase (decoy, query format, retry, query limit) and
+//! the deviations from the paper are in `docs/online_protocol.md`.
+//!
 //! Simplified in-memory model: logical entries are fixed 32-byte words.
 //! Production `database.bin` uses the v3 40-byte on-disk layout (`schema40`);
 //! see `hint_gen` and [`docs/data_format.md`](../../docs/data_format.md).
@@ -16,7 +19,8 @@
 use crate::hints::{self, HintGeometry, HintSet};
 use crate::iprf::{Iprf, IprfTable, PrfKey128};
 use crate::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
-use rand::{RngCore, SeedableRng};
+use rand::seq::SliceRandom;
+use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -44,9 +48,24 @@ pub enum ProtocolError {
     NoHintForIndex {
         index: usize,
     },
+    /// Every backup hint is promoted or reserved by a query in flight.
+    /// The client must run HintInit again.
     NoBackupHintsLeft,
+    /// A query for this index was sent and has no answer yet.
+    QueryInFlight {
+        index: usize,
+    },
+    /// The prepared query is not a query in flight of this client.
+    ///
+    /// The check compares the queried index and the hint slot. It does not
+    /// identify the client instance that built the query.
+    UnknownPreparedQuery,
     QueryShapeMismatch {
         expected_offsets: usize,
+        got: usize,
+    },
+    MaskLengthMismatch {
+        expected_bytes: usize,
         got: usize,
     },
     OffsetOutOfRange {
@@ -67,6 +86,12 @@ impl Display for ProtocolError {
             Self::NoDecoyIndexAvailable => write!(f, "no decoy index available"),
             Self::NoHintForIndex { index } => write!(f, "no hint found for index {index}"),
             Self::NoBackupHintsLeft => write!(f, "no backup hints left for promotion"),
+            Self::QueryInFlight { index } => {
+                write!(f, "a query for index {index} has no answer yet")
+            }
+            Self::UnknownPreparedQuery => {
+                write!(f, "prepared query is not in flight for this client")
+            }
             Self::QueryShapeMismatch {
                 expected_offsets,
                 got,
@@ -74,6 +99,15 @@ impl Display for ProtocolError {
                 write!(
                     f,
                     "query offset length mismatch: expected {expected_offsets}, got {got}"
+                )
+            }
+            Self::MaskLengthMismatch {
+                expected_bytes,
+                got,
+            } => {
+                write!(
+                    f,
+                    "query mask length mismatch: expected {expected_bytes} bytes, got {got}"
                 )
             }
             Self::OffsetOutOfRange { block, offset } => {
@@ -240,8 +274,12 @@ pub struct EntryUpdate {
     pub delta: Entry,
 }
 
-/// Query format using shared offsets optimization:
-/// one bitmask + `num_blocks/2` offsets.
+/// Query format with shared offsets: one bitmask and `num_blocks/2` offsets.
+///
+/// Bit `k` of `mask` puts block `k` in subset 0 (set) or subset 1 (clear).
+/// The `i`-th block of each subset uses `offsets[i]`. RMS24 and Plinko Fig. 7
+/// send one offset per block; `docs/online_protocol.md` gives the argument
+/// for the shared form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     pub mask: Vec<u8>,
@@ -283,33 +321,40 @@ impl Server {
             });
         }
 
+        let mask_bytes: usize = self.params.num_blocks.div_ceil(8);
+        if query.mask.len() != mask_bytes {
+            return Err(ProtocolError::MaskLengthMismatch {
+                expected_bytes: mask_bytes,
+                got: query.mask.len(),
+            });
+        }
+
         let mut parity_0 = [0u8; ENTRY_SIZE];
         let mut parity_1 = [0u8; ENTRY_SIZE];
         let mut idx_0 = 0usize;
         let mut idx_1 = 0usize;
 
         for block in 0..self.params.num_blocks {
-            if bit_is_set(&query.mask, block) {
-                let offset = query.offsets[idx_0] as usize;
-                if offset >= self.params.block_size {
-                    return Err(ProtocolError::OffsetOutOfRange { block, offset });
-                }
-                xor_entry(
-                    &mut parity_0,
-                    &self.database[block * self.params.block_size + offset],
-                );
-                idx_0 += 1;
+            let (parity, rank): (&mut Entry, &mut usize) = if bit_is_set(&query.mask, block) {
+                (&mut parity_0, &mut idx_0)
             } else {
-                let offset = query.offsets[idx_1] as usize;
-                if offset >= self.params.block_size {
-                    return Err(ProtocolError::OffsetOutOfRange { block, offset });
-                }
-                xor_entry(
-                    &mut parity_1,
-                    &self.database[block * self.params.block_size + offset],
-                );
-                idx_1 += 1;
+                (&mut parity_1, &mut idx_1)
+            };
+            let Some(&offset) = query.offsets.get(*rank) else {
+                return Err(ProtocolError::QueryShapeMismatch {
+                    expected_offsets: half,
+                    got: query.offsets.len(),
+                });
+            };
+            let offset: usize = offset as usize;
+            if offset >= self.params.block_size {
+                return Err(ProtocolError::OffsetOutOfRange { block, offset });
             }
+            xor_entry(
+                parity,
+                &self.database[block * self.params.block_size + offset],
+            );
+            *rank += 1;
         }
 
         if idx_0 != half || idx_1 != half {
@@ -371,19 +416,22 @@ struct CacheEntry {
     hint_idx: usize,
 }
 
+/// A query in flight: built for the server, with no answer yet.
+///
+/// Keep the value until the answer arrives. To retry, send `query` again
+/// without a change. To stop, call [`Client::abandon_query`].
 pub struct PreparedQuery {
     pub query: Query,
     requested_index: usize,
     queried_index: usize,
-    consumed_hint_idx: usize,
+    hint_idx: usize,
     real_is_first: bool,
-    consumed_parity: Entry,
 }
 
 impl PreparedQuery {
-    /// Return the hint slot index consumed by this prepared query.
-    pub fn consumed_hint_index(&self) -> usize {
-        self.consumed_hint_idx
+    /// Returns the index of the hint slot that this query uses.
+    pub fn hint_index(&self) -> usize {
+        self.hint_idx
     }
 }
 
@@ -396,7 +444,8 @@ pub struct Client {
     backups: Vec<BackupHint>,
     cache: HashMap<usize, CacheEntry>,
     rng: ChaCha20Rng,
-    next_decoy_index: usize,
+    /// Queried index and hint slot of each query in flight.
+    in_flight: HashMap<usize, usize>,
 }
 
 impl Client {
@@ -467,10 +516,19 @@ impl Client {
             backups,
             cache: HashMap::new(),
             rng: ChaCha20Rng::from_seed(query_rng_seed),
-            next_decoy_index: 0,
+            in_flight: HashMap::new(),
         })
     }
 
+    /// Builds the query for `requested_index` (Plinko Fig. 7, `Query`).
+    ///
+    /// For a cached index the query goes to a uniform index that is not cached
+    /// and not in flight. The hint stays in the client, reserved, until
+    /// [`Client::reconstruct_and_replenish`] or [`Client::abandon_query`].
+    ///
+    /// Each query in flight reserves one backup hint, so
+    /// [`ProtocolError::NoBackupHintsLeft`] comes before a query is built. On
+    /// an error no hint is reserved.
     pub fn prepare_query(
         &mut self,
         requested_index: usize,
@@ -481,20 +539,29 @@ impl Client {
                 num_entries: self.params.num_entries,
             });
         }
+        if self.remaining_backup_hints() <= self.in_flight.len() {
+            return Err(ProtocolError::NoBackupHintsLeft);
+        }
+        if self.in_flight.contains_key(&requested_index) {
+            return Err(ProtocolError::QueryInFlight {
+                index: requested_index,
+            });
+        }
 
         let queried_index = if self.cache.contains_key(&requested_index) {
-            self.next_decoy()?
+            self.random_decoy()?
         } else {
             requested_index
         };
 
         let block = self.params.block_of(queried_index);
         let offset = self.params.offset_in_block(queried_index);
-        let candidates = self.iprfs[block].inverse(offset as u64);
+        let mut candidates: Vec<u64> = self.iprfs[block].inverse(offset as u64);
+        candidates.shuffle(&mut self.rng);
 
         for candidate in candidates {
             let hint_idx = candidate as usize;
-            if hint_idx >= self.params.num_total_hints {
+            if hint_idx >= self.params.num_total_hints || self.hint_is_reserved(hint_idx) {
                 continue;
             }
 
@@ -514,16 +581,13 @@ impl Client {
                 continue;
             };
 
-            let consumed = self.slots[hint_idx]
-                .take()
-                .expect("slot existence checked above");
+            self.in_flight.insert(queried_index, hint_idx);
             return Ok(PreparedQuery {
                 query,
                 requested_index,
                 queried_index,
-                consumed_hint_idx: hint_idx,
+                hint_idx,
                 real_is_first,
-                consumed_parity: consumed.parity,
             });
         }
 
@@ -532,17 +596,23 @@ impl Client {
         })
     }
 
+    /// Computes the answer, consumes the hint of the query, and promotes a
+    /// backup hint in its place (Plinko Fig. 7, `Recon`).
+    ///
+    /// Returns [`ProtocolError::UnknownPreparedQuery`] if `prepared` is not a
+    /// query in flight of this client.
     pub fn reconstruct_and_replenish(
         &mut self,
         prepared: PreparedQuery,
         response: Response,
     ) -> Result<Entry, ProtocolError> {
+        let hint: HintSlot = self.take_in_flight(&prepared)?;
         let mut queried_entry = if prepared.real_is_first {
             response.parity_0
         } else {
             response.parity_1
         };
-        xor_entry(&mut queried_entry, &prepared.consumed_parity);
+        xor_entry(&mut queried_entry, &hint.parity);
 
         let promoted_hint_idx = self.promote_backup(prepared.queried_index, queried_entry)?;
         self.cache.insert(
@@ -563,6 +633,16 @@ impl Client {
             });
         };
         Ok(entry.value)
+    }
+
+    /// Stops a query in flight that gets no answer.
+    ///
+    /// The hint is removed, because the server saw its subset. The index is
+    /// not cached and no backup hint is used. Prefer a retry: the proof of
+    /// RMS24 does not cover a hint that is removed with no promotion (see
+    /// `docs/online_protocol.md`).
+    pub fn abandon_query(&mut self, prepared: PreparedQuery) -> Result<(), ProtocolError> {
+        self.take_in_flight(&prepared).map(|_| ())
     }
 
     /// Apply server updates in O(expected preimages) per updated entry.
@@ -631,15 +711,56 @@ impl Client {
         self.cache.len()
     }
 
-    fn next_decoy(&mut self) -> Result<usize, ProtocolError> {
-        while self.next_decoy_index < self.params.num_entries {
-            let idx = self.next_decoy_index;
-            self.next_decoy_index += 1;
-            if !self.cache.contains_key(&idx) {
-                return Ok(idx);
+    /// Returns the number of queries that have no answer yet.
+    #[inline]
+    pub fn queries_in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    fn hint_is_reserved(&self, hint_idx: usize) -> bool {
+        self.in_flight
+            .values()
+            .any(|&reserved| reserved == hint_idx)
+    }
+
+    fn take_in_flight(&mut self, prepared: &PreparedQuery) -> Result<HintSlot, ProtocolError> {
+        if self.in_flight.get(&prepared.queried_index) != Some(&prepared.hint_idx) {
+            return Err(ProtocolError::UnknownPreparedQuery);
+        }
+        self.in_flight.remove(&prepared.queried_index);
+        self.slots[prepared.hint_idx]
+            .take()
+            .ok_or(ProtocolError::UnknownPreparedQuery)
+    }
+
+    fn is_decoy_candidate(&self, index: usize) -> bool {
+        !self.cache.contains_key(&index) && !self.in_flight.contains_key(&index)
+    }
+
+    /// Draws a uniform index among those that are not cached and not in flight
+    /// (Plinko Fig. 7: `While Q[i] != ⊥: i <-$ [n]`).
+    fn random_decoy(&mut self) -> Result<usize, ProtocolError> {
+        let num_entries: usize = self.params.num_entries;
+        let num_free: usize = num_entries.saturating_sub(self.cache.len() + self.in_flight.len());
+        if num_free == 0 {
+            return Err(ProtocolError::NoDecoyIndexAvailable);
+        }
+
+        if num_free >= num_entries / 2 {
+            loop {
+                let index: usize = self.rng.gen_range(0..num_entries);
+                if self.is_decoy_candidate(index) {
+                    return Ok(index);
+                }
             }
         }
-        Err(ProtocolError::NoDecoyIndexAvailable)
+
+        let free: Vec<usize> = (0..num_entries)
+            .filter(|&index| self.is_decoy_candidate(index))
+            .collect();
+        free.choose(&mut self.rng)
+            .copied()
+            .ok_or(ProtocolError::NoDecoyIndexAvailable)
     }
 
     fn try_build_query(
@@ -866,5 +987,85 @@ fn bit_is_set(mask: &[u8], bit: usize) -> bool {
 fn xor_entry(dst: &mut Entry, src: &Entry) {
     for i in 0..ENTRY_SIZE {
         dst[i] ^= src[i];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NUM_ENTRIES: usize = 64;
+
+    fn client_with_taken(cached: &[usize], in_flight: &[usize]) -> Client {
+        let params: ProtocolParams =
+            ProtocolParams::new(NUM_ENTRIES, Some(8), 2, None).expect("params");
+        let entries: Vec<Entry> = vec![[0u8; ENTRY_SIZE]; NUM_ENTRIES];
+        let mut client: Client = Client::offline_init(params, [0x01u8; 32], [0x02u8; 32], &entries)
+            .expect("offline init");
+        for &index in cached {
+            client.cache.insert(
+                index,
+                CacheEntry {
+                    value: [0u8; ENTRY_SIZE],
+                    hint_idx: 0,
+                },
+            );
+        }
+        for &index in in_flight {
+            client.in_flight.insert(index, 0);
+        }
+        client
+    }
+
+    /// Draws 1000 decoys per free index and checks every count against the
+    /// uniform mean with a bound of 6 standard deviations (about 31 each).
+    fn assert_decoys_are_uniform(cached: &[usize], in_flight: &[usize]) {
+        let mut client: Client = client_with_taken(cached, in_flight);
+        let free: Vec<usize> = (0..NUM_ENTRIES)
+            .filter(|index| !cached.contains(index) && !in_flight.contains(index))
+            .collect();
+
+        let mut counts: Vec<u32> = vec![0; NUM_ENTRIES];
+        for _ in 0..(1000 * free.len()) {
+            counts[client.random_decoy().expect("decoy")] += 1;
+        }
+
+        for (index, &count) in counts.iter().enumerate() {
+            if free.contains(&index) {
+                assert!(
+                    (810..=1190).contains(&count),
+                    "index {index}: count {count} is not uniform"
+                );
+            } else {
+                assert_eq!(count, 0, "index {index} is cached or in flight");
+            }
+        }
+    }
+
+    #[test]
+    fn decoy_is_uniform_among_indices_not_cached_and_not_in_flight() {
+        let few_cached: Vec<usize> = (0..10).collect();
+        assert_decoys_are_uniform(&few_cached, &[20]);
+
+        // More than half of the indices are taken: the enumeration branch.
+        let many_cached: Vec<usize> = (0..40).collect();
+        assert_decoys_are_uniform(&many_cached, &[41, 63]);
+    }
+
+    #[test]
+    fn decoy_needs_an_index_that_is_not_cached_and_not_in_flight() {
+        let all_but_two: Vec<usize> = (0..NUM_ENTRIES - 2).collect();
+
+        let mut one_free: Client = client_with_taken(&all_but_two, &[NUM_ENTRIES - 1]);
+        for _ in 0..20 {
+            assert_eq!(one_free.random_decoy(), Ok(NUM_ENTRIES - 2));
+        }
+
+        let mut none_free: Client =
+            client_with_taken(&all_but_two, &[NUM_ENTRIES - 2, NUM_ENTRIES - 1]);
+        assert_eq!(
+            none_free.random_decoy(),
+            Err(ProtocolError::NoDecoyIndexAvailable)
+        );
     }
 }

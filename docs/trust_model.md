@@ -83,8 +83,10 @@ These points are outside the privacy claim today. Each has a backlog task.
   `database.bin` has no link to a state root (TASK-24).
 - **Consistent snapshot.** The extractor does not read one consistent state
   (TASK-25).
-- **Deviations of the online protocol** from the paper: decoy selection, a lost
-  answer, no hint refresh before `Q` queries (TASK-28).
+- **Online protocol.** [online_protocol.md](online_protocol.md) lists the open
+  points: the query format with shared offsets has an argument and no proof, an
+  answer has no database version, `abandon_query` removes a hint with no
+  replacement, and there is no hint refresh before `Q` queries.
 - **Traffic analysis.** The time and the number of queries are visible.
 
 ## Cost For The Client

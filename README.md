@@ -132,6 +132,7 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 | **Full map** | [`docs/README.md`](docs/README.md) |
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Trust model | [`docs/trust_model.md`](docs/trust_model.md) |
+| Online protocol | [`docs/online_protocol.md`](docs/online_protocol.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
 | Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |
 | Updates | [`docs/update_strategy.md`](docs/update_strategy.md) |

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use plinko::protocol::{Client, Entry, ProtocolParams, Server, ENTRY_SIZE};
+use plinko::protocol::{
+    Client, Entry, PreparedQuery, ProtocolError, ProtocolParams, Query, Server, ENTRY_SIZE,
+};
 use plinko::subsets::{backup_subset_size, SubsetPrf};
 
 fn make_entry(tag: u64) -> Entry {
@@ -14,6 +16,19 @@ fn make_entry(tag: u64) -> Entry {
 
 fn make_db(n: usize) -> Vec<Entry> {
     (0..n).map(|i| make_entry(i as u64 + 11)).collect()
+}
+
+/// Prepares a query for the first index of `indices` that has a hint.
+fn prepare_first(
+    client: &mut Client,
+    indices: impl Iterator<Item = usize>,
+) -> (usize, PreparedQuery) {
+    for index in indices {
+        if let Ok(prepared) = client.prepare_query(index) {
+            return (index, prepared);
+        }
+    }
+    panic!("no queryable index found");
 }
 
 #[test]
@@ -179,10 +194,11 @@ fn test_update_through_complemented_promoted_slots() {
     .expect("params");
 
     let mut entries = make_db(params.num_entries);
-    // The scenario checks below hold for about one master seed in twelve;
-    // this seed is one of them. The value checks do not depend on the seed.
+    // The scenario checks below hold for a part of the seed pairs (the hint
+    // of a query is a random candidate); this pair is one of them. The value
+    // checks do not depend on the seeds.
     let master_seed = [0x2Au8; 32];
-    let query_seed = [0xDDu8; 32];
+    let query_seed = [0xD0u8; 32];
 
     let mut server = Server::new(params.clone(), &entries).expect("server init");
     let mut client = Client::offline_init(params.clone(), master_seed, query_seed, &entries)
@@ -268,7 +284,7 @@ fn test_update_through_complemented_promoted_slots() {
             continue;
         };
         consumed_complemented_promoted_slot |=
-            complemented_promoted_slots.contains(&prepared.consumed_hint_index());
+            complemented_promoted_slots.contains(&prepared.hint_index());
         let response = server.answer(&prepared.query).expect("answer post-update");
         let got = client
             .reconstruct_and_replenish(prepared, response)
@@ -288,4 +304,243 @@ fn test_update_through_complemented_promoted_slots() {
         client.remaining_backup_hints(),
         backups_after_phase1 - phase3_count
     );
+}
+
+#[test]
+fn a_lost_answer_keeps_the_hint_and_a_retry_sends_the_same_query() {
+    let params: ProtocolParams = ProtocolParams::new(128, Some(16), 4, None).expect("params");
+    let mut entries: Vec<Entry> = make_db(params.num_entries);
+    let mut server: Server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client: Client =
+        Client::offline_init(params.clone(), [0x51u8; 32], [0x52u8; 32], &entries)
+            .expect("offline init");
+
+    let (index, prepared) = prepare_first(&mut client, 0..params.num_entries);
+    let backups_before: usize = client.remaining_backup_hints();
+    assert_eq!(client.queries_in_flight(), 1);
+    assert_eq!(
+        client.prepare_query(index).err(),
+        Some(ProtocolError::QueryInFlight { index })
+    );
+
+    let _lost = server
+        .answer(&prepared.query)
+        .expect("answer that gets lost");
+
+    let server_updates: Vec<(usize, Entry)> = (0..params.num_entries)
+        .map(|idx| (idx, make_entry(0xA000 + idx as u64)))
+        .collect();
+    let deltas = server
+        .apply_updates(&server_updates)
+        .expect("server update");
+    client.apply_updates(&deltas).expect("client update");
+    for (idx, value) in server_updates {
+        entries[idx] = value;
+    }
+
+    let response = server.answer(&prepared.query).expect("answer to the retry");
+    let got: Entry = client
+        .reconstruct_and_replenish(prepared, response)
+        .expect("reconstruct");
+
+    assert_eq!(got, entries[index]);
+    assert_eq!(client.queries_in_flight(), 0);
+    assert_eq!(client.num_cached_entries(), 1);
+    assert_eq!(client.remaining_backup_hints(), backups_before - 1);
+}
+
+#[test]
+fn a_query_in_flight_reserves_its_hint_and_a_backup_hint() {
+    let params: ProtocolParams = ProtocolParams::new(128, Some(16), 4, Some(2)).expect("params");
+    let entries: Vec<Entry> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client: Client =
+        Client::offline_init(params.clone(), [0x61u8; 32], [0x62u8; 32], &entries)
+            .expect("offline init");
+
+    let (index_a, prepared_a) = prepare_first(&mut client, 0..params.num_entries);
+    let (index_b, prepared_b) = prepare_first(&mut client, (index_a + 1)..params.num_entries);
+    assert_ne!(prepared_a.hint_index(), prepared_b.hint_index());
+    assert_eq!(client.queries_in_flight(), 2);
+    assert_eq!(client.remaining_backup_hints(), 2);
+
+    for index in 0..params.num_entries {
+        assert_eq!(
+            client.prepare_query(index).err(),
+            Some(ProtocolError::NoBackupHintsLeft),
+            "index {index}"
+        );
+    }
+    assert_eq!(client.queries_in_flight(), 2);
+
+    let response_b = server.answer(&prepared_b.query).expect("answer b");
+    let response_a = server.answer(&prepared_a.query).expect("answer a");
+    assert_eq!(
+        client.reconstruct_and_replenish(prepared_b, response_b),
+        Ok(entries[index_b])
+    );
+    assert_eq!(
+        client.reconstruct_and_replenish(prepared_a, response_a),
+        Ok(entries[index_a])
+    );
+    assert_eq!(client.remaining_backup_hints(), 0);
+}
+
+#[test]
+fn the_client_stops_at_the_query_limit() {
+    let query_limit: usize = 5;
+    let params: ProtocolParams =
+        ProtocolParams::new(128, Some(16), 4, Some(query_limit)).expect("params");
+    let entries: Vec<Entry> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client: Client =
+        Client::offline_init(params.clone(), [0x71u8; 32], [0x72u8; 32], &entries)
+            .expect("offline init");
+
+    let mut answered: Vec<usize> = Vec::new();
+    for (index, expected) in entries.iter().enumerate() {
+        let prepared: PreparedQuery = match client.prepare_query(index) {
+            Ok(prepared) => prepared,
+            Err(ProtocolError::NoHintForIndex { .. }) => continue,
+            Err(ProtocolError::NoBackupHintsLeft) => break,
+            Err(other) => panic!("unexpected error at index {index}: {other}"),
+        };
+        let response = server.answer(&prepared.query).expect("answer");
+        assert_eq!(
+            client.reconstruct_and_replenish(prepared, response),
+            Ok(*expected)
+        );
+        answered.push(index);
+    }
+
+    assert_eq!(answered.len(), query_limit);
+    assert_eq!(client.remaining_backup_hints(), 0);
+    assert_eq!(client.num_cached_entries(), query_limit);
+
+    // After the limit, a new index and a cached index (decoy path) both stop
+    // before a query is built.
+    for index in 0..params.num_entries {
+        assert_eq!(
+            client.prepare_query(index).err(),
+            Some(ProtocolError::NoBackupHintsLeft),
+            "index {index}"
+        );
+    }
+    assert_eq!(client.queries_in_flight(), 0);
+    assert_eq!(client.num_cached_entries(), query_limit);
+}
+
+#[test]
+fn an_abandoned_query_removes_its_hint_and_uses_no_backup_hint() {
+    let params: ProtocolParams = ProtocolParams::new(128, Some(16), 4, None).expect("params");
+    let entries: Vec<Entry> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client: Client =
+        Client::offline_init(params.clone(), [0x81u8; 32], [0x82u8; 32], &entries)
+            .expect("offline init");
+
+    let (index, prepared) = prepare_first(&mut client, 0..params.num_entries);
+    let abandoned_hint: usize = prepared.hint_index();
+    let backups_before: usize = client.remaining_backup_hints();
+
+    assert_eq!(client.abandon_query(prepared), Ok(()));
+    assert_eq!(client.queries_in_flight(), 0);
+    assert_eq!(client.num_cached_entries(), 0);
+    assert_eq!(client.remaining_backup_hints(), backups_before);
+
+    // The index is not cached, so a new query goes to the same index. It must
+    // not use the hint that the server saw.
+    match client.prepare_query(index) {
+        Ok(second) => {
+            assert_ne!(second.hint_index(), abandoned_hint);
+            let response = server.answer(&second.query).expect("answer");
+            assert_eq!(
+                client.reconstruct_and_replenish(second, response),
+                Ok(entries[index])
+            );
+        }
+        Err(error) => assert_eq!(error, ProtocolError::NoHintForIndex { index }),
+    }
+}
+
+#[test]
+fn a_prepared_query_of_another_client_is_rejected() {
+    let params: ProtocolParams = ProtocolParams::new(128, Some(16), 4, None).expect("params");
+    let entries: Vec<Entry> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client: Client =
+        Client::offline_init(params.clone(), [0x91u8; 32], [0x92u8; 32], &entries)
+            .expect("offline init");
+    let mut other: Client =
+        Client::offline_init(params.clone(), [0x91u8; 32], [0x93u8; 32], &entries)
+            .expect("offline init");
+
+    let (_, foreign_a) = prepare_first(&mut other, 0..params.num_entries);
+    let (_, foreign_b) = prepare_first(&mut other, (params.num_entries / 2)..params.num_entries);
+    let response = server.answer(&foreign_a.query).expect("answer");
+    let backups_before: usize = client.remaining_backup_hints();
+
+    assert_eq!(
+        client.reconstruct_and_replenish(foreign_a, response),
+        Err(ProtocolError::UnknownPreparedQuery)
+    );
+    assert_eq!(
+        client.abandon_query(foreign_b),
+        Err(ProtocolError::UnknownPreparedQuery)
+    );
+    assert_eq!(client.remaining_backup_hints(), backups_before);
+    assert_eq!(client.num_cached_entries(), 0);
+}
+
+#[test]
+fn the_server_rejects_a_malformed_query() {
+    let params: ProtocolParams = ProtocolParams::new(128, Some(16), 4, None).expect("params");
+    let entries: Vec<Entry> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), &entries).expect("server init");
+    let mut client: Client =
+        Client::offline_init(params.clone(), [0xA1u8; 32], [0xA2u8; 32], &entries)
+            .expect("offline init");
+
+    let (_, prepared) = prepare_first(&mut client, 0..params.num_entries);
+    let valid: Query = prepared.query.clone();
+    let half: usize = params.num_blocks / 2;
+    assert_eq!(valid.offsets.len(), half);
+    assert!(server.answer(&valid).is_ok());
+
+    let mut short_mask: Query = valid.clone();
+    short_mask.mask.clear();
+    assert_eq!(
+        server.answer(&short_mask),
+        Err(ProtocolError::MaskLengthMismatch {
+            expected_bytes: params.num_blocks.div_ceil(8),
+            got: 0,
+        })
+    );
+
+    let mut one_sided: Query = valid.clone();
+    one_sided.mask.fill(0xFF);
+    assert_eq!(
+        server.answer(&one_sided),
+        Err(ProtocolError::QueryShapeMismatch {
+            expected_offsets: half,
+            got: half,
+        })
+    );
+
+    let mut short_offsets: Query = valid.clone();
+    short_offsets.offsets.pop();
+    assert_eq!(
+        server.answer(&short_offsets),
+        Err(ProtocolError::QueryShapeMismatch {
+            expected_offsets: half,
+            got: half - 1,
+        })
+    );
+
+    let mut large_offset: Query = valid;
+    large_offset.offsets[0] = params.block_size as u32;
+    assert!(matches!(
+        server.answer(&large_offset),
+        Err(ProtocolError::OffsetOutOfRange { offset, .. }) if offset == params.block_size
+    ));
 }

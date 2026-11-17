@@ -60,9 +60,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Agent rules**: `AGENTS.md` has a local-only phase section (no GitHub, `backlog/` tasks, `jj`, CodeRabbit CLI review) and no longer describes the Codex Cloud workflow, the remote Rocq checker, DeepWiki updates, or PR formatting. It states that the formal models are not checked against the Rust source. The module table in `docs/hint_generation.md` has no file-size column.
 - **Batched inverse PRP**: `SwapOrNotSr::inverse_range` and `SwapOrNotSrTee::inverse_many_ct` invert all balls of one offset in one call. A round derives its round key once and computes the swap decisions as one batch of AES blocks. `Iprf::inverse`, `IprfTable::inverse`, `IprfTee::inverse_ct` and `IprfTeeTable::inverse_ct` use them; outputs are unchanged. Measured at w = 65536 and 16,777,216 hints, one thread, hardware AES: 7.04 ms to 0.52 ms per entry in the standard path, 68.3 ms to 16.7 ms in the constant-time path.
 - The constant-time path runs every Sometimes-Recurse stage for every slot. Before, the time of the inverse PRP depended on the position of the balls of an entry (15 us to 213 us per value for a domain of 65536).
+- **Online protocol (breaking)**: `Client::prepare_query` reserves the hint and one backup hint; the hint leaves the client in `reconstruct_and_replenish` (or `abandon_query`, new). A retry sends the same `Query` again. `prepare_query` returns `NoBackupHintsLeft` before it builds a message, and `QueryInFlight` for an index that has no answer yet. `PreparedQuery::consumed_hint_index` is now `hint_index`; `Client::queries_in_flight` is new. The rules and the open points are in `docs/online_protocol.md`.
+- The client tries the hint candidates of an index in a random order (Fig. 7, `GetHint`).
+- **`Iprf::forward` panics for an input outside the domain (breaking)**. It returned bin 0, which is a valid output.
 
 ### Fixed
 
+- **Decoy index was sequential**: a query for a cached index went to the smallest index that was not cached. It now goes to a uniform index among those that are not cached and not in flight (Fig. 7).
+- **A lost answer lost the hint, and an update during a query gave a wrong answer**: `prepare_query` took the hint out of the client and kept a copy of its parity.
+- **Two queries for one index before the first answer** promoted two backup hints with the same extra index; later updates of that entry missed one of them.
+- **`Server::answer` panicked on a malformed query** (short mask, or a mask with more than `c/2` blocks in one subset). It returns `MaskLengthMismatch` or `QueryShapeMismatch`.
 - **PMNS binomial sampler was not binomial for counts 1025 to about 12000**: `binomial_sample` delegated to `puruspe::betai`, which selects the wrong continued fraction in the lower tail. PMNS bin loads were not multinomial, and `Iprf` disagreed with `IprfTee` above 1024 hints. The floating-point sampler is removed (see Changed).
 - **Constant-time mode above 65536 total hints**: `IprfTee::new` no longer panics; the new sampler has no domain limit.
 - **Databases smaller than two blocks**: `plinko_hints` pads them to two blocks, as the protocol client does, instead of returning an error.
