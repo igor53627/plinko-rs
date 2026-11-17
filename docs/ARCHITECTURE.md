@@ -1,6 +1,6 @@
 # Architecture
 
-This repository contains the Plinko PIR stack: data extraction from Ethereum state, hint generation, and formal verification.
+This repository contains a Plinko PIR library for a database of fixed-size records: hint generation by the client, the online protocol, hint updates, and formal models. The extractor of Ethereum state is a source of large test data; the full Ethereum state is not a target ([`protocol_overview.md`](protocol_overview.md#scope)).
 
 ## Components
 

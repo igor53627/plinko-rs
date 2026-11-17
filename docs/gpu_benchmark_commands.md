@@ -1,6 +1,21 @@
 # GPU Benchmark Commands & Reports
 
-Quick reference for running GPU hint generation benchmarks on Modal Labs.
+Quick reference for running the GPU throughput benchmark on Modal Labs.
+
+> **Historical results; the output is not a Plinko hint set.**
+>
+> - `bench_gpu_hints` is a throughput benchmark: public block keys, two fixed
+>   block subsets, no backup hints, no iPRF inverse (TASK-21,
+>   [`trust_model.md`](trust_model.md#gpu-path)). "Production run" below means
+>   the full hint count of that benchmark. The file from "Download Generated
+>   Hints" holds raw 40-byte parities; no client code reads it.
+> - The reports name ChaCha8 and ChaCha20. The kernel has `CHACHA_ROUNDS 12`
+>   since `aae2060` (2026-01-24) and no option for the round count
+>   (`plinko/cuda/hint_kernel.cu`). The revision of each run is not recorded,
+>   so the commands below do not reproduce the reports.
+> - The summary table gives "~80s" on 50 GPUs for 7,002 hints/s on 2 GPUs. The
+>   arithmetic gives 192 s (33,554,432 hints at 175,050 hints/s).
+> - The commands were not run again after January 2026.
 
 ## Prerequisites
 

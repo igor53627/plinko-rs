@@ -1,5 +1,20 @@
 # Plinko Delta File Format
 
+> **Proposal from 2025; not implemented.** No code in the repository writes or
+> reads a delta file, and there is no `plinko` service. The text below is kept
+> as a record and differs from the code:
+>
+> - The update of the code is `Client::apply_updates` in
+>   `plinko/src/protocol.rs`. For a changed record it computes the iPRF
+>   **inverse** with the key of the block and gets a set of hints (256 on
+>   average with lambda = 128), then checks the block subset of each hint. The
+>   logic below uses one forward call and one hint.
+> - The format has records for accounts only.
+> - It assumes that the index of a record does not change. In the v3 layout an
+>   insert moves all later records (TASK-23).
+>
+> Current state of updates: [`docs/update_strategy.md`](../../docs/update_strategy.md).
+
 The `plinko` service produces per-block delta files (e.g., `delta-23237685.bin`) that allow PIR clients to update their local hints without re-downloading the database.
 
 ## File Structure

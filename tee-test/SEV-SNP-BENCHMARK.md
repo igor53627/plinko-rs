@@ -1,5 +1,26 @@
 # Plinko PIR Hint Generation: SEV-SNP TEE Benchmark Results
 
+> **Historical (December 2025). These numbers do not apply to the current code.**
+>
+> - Measured code: `state-syncer/src/bin/plinko_hints.rs` at revision `0b3fccb`
+>   (2025-12-05) or earlier; the exact revision of the binary is not recorded.
+> - That generator made regular hints only. Its file header says "Backup hints:
+>   Not implemented". It had no iPRF and no inverse. A BLAKE3 hash per
+>   (block, hint) pair, or one BLAKE3-XOF or AES-CTR stream per block, decided
+>   which hints a record goes to.
+> - The first table uses w = 245 and 31,360 hints. The current default for the
+>   same database is w = 65,536 and 16,777,216 hints.
+> - The database is an older dataset of 2,418,358,495 entries. The v3 snapshot
+>   has 1,834,095,877 records of 40 bytes (`docs/data_format.md`).
+> - The current `plinko_hints` needs about 300 core-hours for the v3 snapshot
+>   (extrapolated, `docs/hint_generation.md`), not 20 minutes.
+> - The conclusions "production-viable", "no code changes required" and
+>   "attestation ready" are not claims of the repository today. A TEE is not
+>   part of the trust model (`docs/trust_model.md`).
+>
+> What the document still shows: the relative overhead of SEV-SNP over KVM for
+> a compute-bound workload with AES-NI on this host.
+
 ## Summary
 
 We benchmarked Plinko PIR hint generation inside an AMD SEV-SNP Trusted Execution Environment to measure the overhead of confidential computing.

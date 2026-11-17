@@ -16,6 +16,14 @@ publishes it again, this section replaces the GitHub rules of the global agent i
 
 Remove this section when the repository is on GitHub again.
 
+## Scope
+
+The target is a PIR library for a database of fixed-size records. The full Ethereum state is not
+a target (owner decision of 2026-11-17, `backlog/decisions/decision-1`; costs in
+`docs/protocol_overview.md`). The Reth extractor, the v3 record format and the mainnet numbers
+stay as test data and as a scale reference. Do not describe the repository as a solution for
+Ethereum-scale state, and do not propose HintInit by a server, a cloud or a TEE.
+
 ## Canonical Protocol Reference
 
 Prefer these for implementation and verification (see also `README.md`):

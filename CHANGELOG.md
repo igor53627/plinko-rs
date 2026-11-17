@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Mainnet v3 dataset published to PIR bucket
 - **VRAM compaction and expansion strategies**: 40B → 32B compaction in VRAM with 40B → 48B expansion for aligned GPU loads
   - Chunked compaction for correctness on large datasets
-  - Expansion strategy documentation (`EXPANSION_40B_48B.md`)
+  - Expansion strategy documentation (`EXPANSION_40B_48B.md`, now in `docs/archived/optimization/`)
 - **Crate rename**: `state-syncer` renamed to `plinko` (issue #27)
   - Workspace, Docker, documentation, and binary references updated
   - Extractor binary renamed to `plinko`
@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Formal directory canonicalized under `plinko/formal` (#52)
 - **Documentation restructuring**
   - README split into subdocs (`protocol_overview.md`, `verification.md`, `update_strategy.md`)
-  - Ops docs added (`ARCHITECTURE.md`, `DEPLOYMENT.md`, `API_ENDPOINTS.md`, `FEATURE_FLAGS.md`)
+  - Ops docs added (`ARCHITECTURE.md`, `DEPLOYMENT.md`, `FEATURE_FLAGS.md`, and `API_ENDPOINTS.md`, now in `docs/archived/`)
   - GPU benchmark results and optimization kanban tracking
   - Legacy docs archived, stale binaries removed
 
@@ -67,6 +67,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Trust base is generated**: `plinko/formal/scripts/trust_base.py` writes `plinko/formal/docs/TRUST_BASE.md` from the `.v` files and `docs/trust_base_notes.toml` (class and meaning of each `Axiom`, `Parameter` and `Admitted`, the known differences between the models and the Rust code). `make verify-axioms` fails when an item has no note or the file is out of date; it printed a warning before. `proofs/Assumptions.v` prints the assumptions of the main theorems.
 - **Documents state that the proofs are about models**: `docs/verification.md`, `plinko/formal/README.md`, `README.md` and the headers of the `sims/` and `linking/` files no longer describe the Rust code as verified. `docs/Plinko.v` is marked as a sketch.
 - **CI**: `formal.yml` runs the trust base check and compiles `docs/Plinko.v` (`make sketch`). The Rocq-of-Rust job had `continue-on-error`; it is now the manual workflow `rocq-of-rust.yml` and fails when a step fails.
+- **Scope**: the target is a PIR library for a database of fixed-size records. The full Ethereum state is not a target (`backlog/decisions/decision-1`); `README.md`, `docs/protocol_overview.md`, `docs/ARCHITECTURE.md`, `docs/trust_model.md` and `AGENTS.md` state this, with the cost for a client as the reason. The extractor and the mainnet numbers stay as test data and a scale reference.
+- **Performance claims replaced by measurements**: `docs/protocol_overview.md` and `README.md` no longer say "O(1) hint search", "O(1) updates" or "Ethereum-scale practicality". They give the work of each step and the numbers of one run on 16,777,216 records (HintInit 0.58 ms CPU for each record, query 56 ms of client CPU and 8.7 KB, update 0.51 to 0.53 ms for each changed record). `docs/update_strategy.md` separates what is implemented (`apply_updates` in memory) from what is not (delta feed, inserts, database version).
+- **Benchmark documents marked as historical**: `tee-test/SEV-SNP-BENCHMARK.md` (a generator of December 2025 with regular hints only and no iPRF), `docs/BENCHMARK_RESULTS.md` and `docs/gpu_benchmark_commands.md` (GPU throughput kernel, not Plinko hints; the reports say ChaCha8 where the kernel has 12 rounds) have a note at the top. `docs/benchmarks.md` lists the numbers of the current code first. `plinko/docs/delta-format.md` is marked as a proposal that is not implemented.
+- `tee-test/run-benchmark.sh` describes the current generator in place of "per-hint BLAKE3" and takes `PLINKO_DIR`, `DB_PATH`, `HINTS_BIN`, `THREADS` and `LAMBDA` from the environment.
+- `README.md` names the paper authors Hoover, Patel, Persiano and Yeo.
 
 ### Fixed
 
@@ -187,5 +192,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - `.beads` directory (unused build artifact)
 - `analyze_storage_values.rs` (unused analysis tool)
-- Legacy documentation binaries; archived into `docs/archive/`
+- Legacy documentation binaries; archived into `docs/archived/`
 - SonarQube scanner work artifacts (added to `.gitignore`)

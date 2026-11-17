@@ -2,7 +2,10 @@
 
 This document states who runs each step of the protocol, who holds each secret,
 and what each party learns. It applies to any database that is an array of
-fixed-size records; nothing in it is specific to Ethereum state.
+fixed-size records; nothing in it is specific to Ethereum state. The full
+Ethereum state is not a target of the repository
+([protocol_overview.md](protocol_overview.md#scope)); the mainnet numbers below
+are a scale reference.
 
 ## Decision
 
@@ -103,7 +106,7 @@ and measurement conditions: [hint_generation.md](hint_generation.md#mainnet-cost
 | HintInit, memory                   | 1.8 GB plus the mapped database pages        | Measured, 24 blocks, mainnet hint count  |
 | Hint file                          | 872 MB (872,415,328 bytes)                   | Computed                                 |
 | Update of the hints                | 0.52 ms CPU per changed record               | Measured (`inverse`, one thread)         |
-| Query, client side                 | About 0.4 s CPU                              | Computed: 13,995 `forward` calls, 28.5 us each |
+| Query, client side                 | About 0.4 s CPU                              | Computed: 13,994 `forward` calls, 28.5 us each |
 
 The measurements are from an Apple M3 Ultra with hardware AES. No mainnet run
 was done. A build without hardware AES is about 20 times slower.

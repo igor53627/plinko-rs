@@ -39,6 +39,14 @@
     {
       "content": "The plinko crate now includes a cost-estimation CLI binary (`cost_estimate`) for preflight capacity/cost planning. CI smoke-tests it in `.github/workflows/ci.yml`, and usage is documented in `README.md` and `docs/DEPLOYMENT.md`.",
       "author": "maintainer"
+    },
+    {
+      "content": "Scope (owner decision, 2026-11-17, backlog/decisions/decision-1): the target is a PIR library for a database of fixed-size records. The full Ethereum state is not a target, because each client must download the database (73.4 GB at mainnet) and run HintInit (about 300 core-hours, extrapolated). The Reth extractor and the mainnet numbers are test data and a scale reference. Measured costs of the current code are in docs/protocol_overview.md; tee-test/SEV-SNP-BENCHMARK.md, docs/BENCHMARK_RESULTS.md and docs/gpu_benchmark_commands.md are historical.",
+      "author": "maintainer"
+    },
+    {
+      "content": "Online protocol (plinko/src/protocol.rs, docs/online_protocol.md): prepare_query reserves the hint and one backup hint; the hint leaves the client in reconstruct_and_replenish or abandon_query. The decoy for a cached index is a uniform index that is not cached and not in flight. The query format with c/2 shared offsets is from keewoolee/rms24-plinko-spec, not from RMS24 or the Plinko paper; the document gives an argument for it, not a proof.",
+      "author": "maintainer"
     }
   ],
   "pages": [
@@ -63,7 +71,7 @@
     },
     {
       "title": "Ethereum State Extractor",
-      "purpose": "Document src/: Reth database extraction, account/storage mapping, output artifacts (database.bin, mappings)",
+      "purpose": "Document src/: Reth database extraction, account/storage mapping, output artifacts (database.bin, mappings). State that the extractor is a source of large test data; the full Ethereum state is not a target of the repository.",
       "parent": "Architecture Overview"
     },
     {
@@ -73,7 +81,7 @@
     },
     {
       "title": "Regression Testing",
-      "purpose": "Document local extract / synthetic test data, benchmark parameters, expected performance metrics"
+      "purpose": "Document local extract / synthetic test data and the measured costs of the current code (docs/protocol_overview.md, docs/benchmarks.md). The TEE and GPU benchmark documents are historical."
     }
   ]
 }
