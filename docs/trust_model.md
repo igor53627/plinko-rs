@@ -76,16 +76,19 @@ not encrypted. The repository has no transport.
 
 ## Not Covered
 
-These points are outside the privacy claim today. Each has a backlog task.
+These points are outside the privacy claim today.
 
-- **Key to index.** PIR takes an index. The step from an address or an
-  (address, slot) pair to an index needs the mapping files (91 GB at mainnet)
-  or a message that reveals the key (TASK-22).
+- **Key to index.** PIR takes an index. The step from a key to an index needs
+  a full map from keys to indices (91 GB of mapping files for the mainnet test
+  data) or a message that reveals the key (TASK-22).
 - **Wrong answers.** The games of the paper compute the answer with the honest
-  `Answer` algorithm. The client cannot check an answer, and
-  `database.bin` has no link to a state root (TASK-24).
-- **Consistent snapshot.** The extractor does not read one consistent state
-  (TASK-25).
+  `Answer` algorithm. The client cannot check an answer, and it has no
+  commitment of the database to compare with (TASK-24).
+- **Database version.** An answer and an update carry no version of the
+  database (TASK-23).
+- **Test data from the extractor.** The extractor does not read one consistent
+  state; see [data_format.md](data_format.md#limits-of-the-extractor). This is
+  not planned.
 - **Online protocol.** [online_protocol.md](online_protocol.md) lists the open
   points: the query format with shared offsets has an argument and no proof, an
   answer has no database version, `abandon_query` removes a hint with no

@@ -11,7 +11,9 @@
 >   logic below uses one forward call and one hint.
 > - The format has records for accounts only.
 > - It assumes that the index of a record does not change. In the v3 layout an
->   insert moves all later records (TASK-23).
+>   insert moves all later records.
+>
+> A delta format with a database version is the subject of TASK-23.
 >
 > Current state of updates: [`docs/update_strategy.md`](../../docs/update_strategy.md).
 

@@ -167,7 +167,7 @@ offsets, and an offset outside a block.
 
 - **Answer and update order.** An answer has no database version. The caller
   must make sure that the client has applied the same updates as the database
-  that the answer comes from.
+  that the answer comes from (TASK-23).
 - **Wrong answers.** The client cannot check an answer (TASK-24).
 - **Bias after `abandon_query`.** See above.
 - **Formal model.** No machine-checked statement covers the online phase or

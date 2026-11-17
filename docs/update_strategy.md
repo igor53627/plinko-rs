@@ -42,9 +42,10 @@ not small: 10,000 changed records cost about 5 CPU-seconds for each client.
 - **Inserts and deletes.** An update changes a record at a fixed index. In the
   v3 layout (accounts first, then storage, in key order) a new record moves
   all later records, and a larger `w` changes the block of each record. Both
-  need a new HintInit (TASK-23).
+  need a new HintInit. The rule for a database that grows is a part of
+  TASK-23.
 - **Database version.** An answer and a delta carry no version, so a client
   cannot tell which database state they belong to
-  ([online_protocol.md](online_protocol.md)).
+  ([online_protocol.md](online_protocol.md); TASK-23).
 - **Authentication.** A client cannot check a delta, as it cannot check an
-  answer (TASK-24 is about answers).
+  answer (TASK-24).

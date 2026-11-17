@@ -73,8 +73,12 @@ pub const CODE_ID_NONE: u32 = 0;
 /// 8-byte TAG for Cuckoo collision resolution.
 ///
 /// Derived from truncated hash of the address (for accounts) or
-/// (address || slot_key) for storage entries. With 64 bits, collision
-/// probability is ~5×10⁻²⁰, essentially zero for any practical database size.
+/// (address || slot_key) for storage entries. With 64 bits, two given keys
+/// have the same TAG with probability 2^-64 (about 5.4e-20). Over a full
+/// database some pair collides more often (birthday bound): about 0.33% for
+/// the 351,681,953 accounts of the mainnet v3 snapshot, 5.8% for its
+/// 1,482,413,924 storage slots, and 8.7% for all records. No code checks a
+/// TAG today.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Tag(pub [u8; TAG_SIZE]);

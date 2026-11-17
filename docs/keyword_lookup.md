@@ -3,6 +3,14 @@
 Status: proposal for TASK-22. The layout decision is open; no code implements
 this document yet.
 
+The document was written for the Ethereum v3 data: its keys are addresses and
+(address, slot) pairs, and its numbers are for the mainnet snapshot. The full
+Ethereum state is no longer a target
+([protocol_overview.md](protocol_overview.md#scope)). TASK-22 now asks for the
+same lookup for a general key-value database, with the key size, the value
+size and the load as parameters; this document is the start point and is not
+general yet.
+
 ## Problem
 
 Plinko retrieves the record at an integer index. A client has a key: an address,
@@ -155,8 +163,8 @@ lookups per hint set, and a change of one record changes a 320-byte entry.
    the file header has the field already), `plinko::protocol` (`Entry` is
    32 bytes today) and `plinko_hints` (40-byte stride, 32-byte parity window)
    take the entry size from the table parameters. The parity covers the full
-   entry. This also removes the "TAG outside the parity window" part of
-   TASK-24 and lets other data sets use other record sizes.
+   entry, and other data sets can use other record sizes. This step is
+   TASK-31.
 2. **A table builder.** The cuckoo build needs random access to the table.
    With d = 2 the builder keeps, for each slot, the index of the other
    candidate bucket of its key (4 bytes), so that it can move a record without

@@ -99,6 +99,27 @@ Written by `plinko_hints --output` and read by the protocol client
 - Size: `96 + num_regular × 36 + num_backup × 68` bytes. Mainnet with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 872,415,328 bytes (computed).
 - The file holds no master seed. The file and the seed are client-secret.
 
+## Limits of the extractor
+
+The extractor (`src/main.rs`) is a source of test data. The full Ethereum
+state is not a target ([protocol_overview.md](protocol_overview.md#scope)),
+and these defects are known and not planned (TASK-25, closed without
+implementation):
+
+- **No single snapshot.** Each batch (`--batch-size`, 100,000 items by default)
+  uses a new read transaction. On a node that runs, the output mixes the state
+  of several blocks.
+- **Block number.** `"block"` is the last key of the `CanonicalHeaders` table,
+  read once before the first batch. It is not the best block of the Reth
+  provider, and an empty table gives `0` with no error.
+- **No link to a state root.** `metadata.json` has no block hash, no state root
+  and no hash of `database.bin`.
+- **Lossy records.** The balance is the low 128 bits, with no error for a
+  larger value. A nonce above `u32::MAX` stops the run.
+- **CodeIDs** follow the first appearance in address order, so they change
+  between two extractions.
+- **Failed run.** The extractor does not remove partial output files.
+
 ## Mainnet v3 reference counts
 
 Used by `cost_estimate --mainnet` and benchmarks. Also in [`plinko_paper_index.json`](plinko_paper_index.json) → `mainnet_v3_snapshot`.

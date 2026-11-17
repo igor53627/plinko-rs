@@ -72,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Benchmark documents marked as historical**: `tee-test/SEV-SNP-BENCHMARK.md` (a generator of December 2025 with regular hints only and no iPRF), `docs/BENCHMARK_RESULTS.md` and `docs/gpu_benchmark_commands.md` (GPU throughput kernel, not Plinko hints; the reports say ChaCha8 where the kernel has 12 rounds) have a note at the top. `docs/benchmarks.md` lists the numbers of the current code first. `plinko/docs/delta-format.md` is marked as a proposal that is not implemented.
 - `tee-test/run-benchmark.sh` describes the current generator in place of "per-hint BLAKE3" and takes `PLINKO_DIR`, `DB_PATH`, `HINTS_BIN`, `THREADS` and `LAMBDA` from the environment.
 - `README.md` names the paper authors Hoover, Patel, Persiano and Yeo.
+- `docs/data_format.md` has a section "Limits of the extractor" (no single snapshot, block number source, lossy records, unstable CodeIDs, partial files after a failed run). These limits are not planned to be removed; the extractor is a source of test data.
+- The TAG comment in `plinko/src/schema40.rs` gives the collision probability over the mainnet record counts (8.7% for all records) in place of the probability for one pair.
+- `docs/protocol_overview.md` lists the open work for a general library (record size as a parameter, lookup by key, database version and delta feed, check of an answer); `docs/trust_model.md` and `docs/keyword_lookup.md` follow the rewritten backlog tasks.
 
 ### Fixed
 

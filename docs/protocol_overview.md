@@ -21,16 +21,16 @@ that each client pays. For the mainnet v3 snapshot (1,834,095,877 records):
 | Download for HintInit          | 73.4 GB                                                       | [data_format.md](data_format.md)              |
 | HintInit                       | About 300 core-hours                                          | Extrapolated, [hint_generation.md](hint_generation.md#mainnet-cost) |
 | Query, client CPU              | About 0.4 s                                                   | Computed from the measured cost per iPRF call |
-| HintInit again                 | When an insert moves the record indices, and after `Q` queries | TASK-23, [online_protocol.md](online_protocol.md) |
-| Lookup by address or slot      | Mapping files of 91 GB, or a message that reveals the key     | TASK-22, [keyword_lookup.md](keyword_lookup.md) |
-| Check of an answer             | None                                                          | TASK-24                                       |
+| HintInit again                 | When an insert moves the record indices, and after `Q` queries | [online_protocol.md](online_protocol.md)      |
+| Lookup by address or slot      | Mapping files of 91 GB, or a message that reveals the key     | [keyword_lookup.md](keyword_lookup.md)        |
+| Check of an answer             | None                                                          | [trust_model.md](trust_model.md#not-covered)  |
 
 The Reth extractor (`src/main.rs`), the v3 record format and the mainnet
 numbers stay in the repository as a source of large test data and as a scale
 reference.
 
 The record size is not a parameter today: `database.bin` has 40-byte records
-and the hints cover the first 32 bytes of each record.
+and the hints cover the first 32 bytes of each record (TASK-31).
 
 ## Cost
 
@@ -105,9 +105,15 @@ database.bin (array of fixed-size records; the server publishes it)
 ```
 
 The online steps are a library model in one process. The repository has no
-network transport, no delta feed for updates ([update_strategy.md](update_strategy.md)),
-no lookup by key and no check of an answer. See
-[trust_model.md](trust_model.md#not-covered).
+network transport. Open work for a general library, each with a backlog task:
+
+- The record size as a parameter, with the parity over the whole record
+  (TASK-31).
+- Lookup by key (TASK-22, proposal in [keyword_lookup.md](keyword_lookup.md)).
+- A database version and a delta feed for updates (TASK-23,
+  [update_strategy.md](update_strategy.md)).
+- A check of an answer against a commitment of the database (TASK-24,
+  [trust_model.md](trust_model.md#not-covered)).
 
 ## References
 
