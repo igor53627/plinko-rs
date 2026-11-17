@@ -4,6 +4,7 @@ title: Keep indices stable when the state grows and implement deltas
 status: To Do
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
+updated_date: '2026-11-17T17:33:00Z'
 labels:
   - data-layer
   - updates
@@ -31,3 +32,9 @@ The index is a running counter in key order: accounts first, then storage slots.
 - [ ] #4 The client update cost per changed entry is measured and docs/update_strategy.md and docs/protocol_overview.md state it
 - [ ] #5 This layout and the layout of the index lookup task are one layout
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Scope decision of 2026-11-17 (backlog/decisions/decision-1): the full Ethereum state is not a target. The index shift on inserts is a property of the Ethereum v3 layout. A delta feed and a database version are still general needs; the owner decides whether to keep them as a smaller task.
+<!-- SECTION:NOTES:END -->

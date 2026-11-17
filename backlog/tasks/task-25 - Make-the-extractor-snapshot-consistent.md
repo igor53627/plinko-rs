@@ -4,6 +4,7 @@ title: Make the extractor snapshot consistent
 status: To Do
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
+updated_date: '2026-11-17T17:33:00Z'
 labels:
   - extractor
 dependencies: []
@@ -27,3 +28,9 @@ The extractor opens a new read transaction for each 100,000 items and reads the 
 - [ ] #4 CodeIDs are stable between extractions, or the document states that they are not
 - [ ] #5 A failed run leaves no partial output files
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Scope decision of 2026-11-17 (backlog/decisions/decision-1): the full Ethereum state is not a target. The extractor is now a source of test data only, so a consistent snapshot has low value. Candidate to close; waits for the owner.
+<!-- SECTION:NOTES:END -->

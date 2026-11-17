@@ -4,7 +4,7 @@ title: Let the client find the index of a key privately
 status: In Progress
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
-updated_date: '2026-11-17T13:44:00Z'
+updated_date: '2026-11-17T17:33:00Z'
 labels:
   - data-layer
   - design
@@ -36,4 +36,6 @@ PIR works on an integer index. The step from an address or an (address, slot) pa
 
 <!-- SECTION:NOTES:BEGIN -->
 docs/keyword_lookup.md proposes the layout: cuckoo table, 2 hash functions, 4 slots per bucket, load 0.90, slot = tag (8) | payload (32), 2 PIR queries per lookup. The owner has not confirmed the layout; AC 2 to 5 wait for that. Simulation crate: /tmp/plinko-review-main/cuckoo_sim.
+
+Scope decision of 2026-11-17 (backlog/decisions/decision-1): the full Ethereum state is not a target. The cuckoo layout of docs/keyword_lookup.md is sized for mainnet. Lookup by key is still a general need of a PIR library; this task stays on hold until the owner decides whether to keep it in a general form.
 <!-- SECTION:NOTES:END -->

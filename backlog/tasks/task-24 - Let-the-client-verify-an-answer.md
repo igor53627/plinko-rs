@@ -4,6 +4,7 @@ title: Let the client verify an answer
 status: To Do
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
+updated_date: '2026-11-17T17:33:00Z'
 labels:
   - data-layer
   - security
@@ -31,3 +32,9 @@ The parity covers the first 32 bytes of a record. A storage record has its TAG a
 - [ ] #4 The document selects a mechanism against a malleable answer, or states that integrity is out of scope
 - [ ] #5 The TAG collision comment in schema40.rs gives the mainnet-scale probability
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Scope decision of 2026-11-17 (backlog/decisions/decision-1): the full Ethereum state is not a target. The link to a state root is Ethereum-specific. A check of an answer against a commitment of the database is a general need; the owner decides whether to change the task.
+<!-- SECTION:NOTES:END -->
