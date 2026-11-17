@@ -1,10 +1,10 @@
 ---
 id: TASK-19
 title: Decide who runs HintInit and write the trust model
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
-updated_date: '2026-11-17T12:51:00Z'
+updated_date: '2026-11-17T13:02:00Z'
 labels:
   - design
   - docs
@@ -36,3 +36,9 @@ The paper lets the client run HintInit, and the keys stay with the client. The r
 <!-- SECTION:NOTES:BEGIN -->
 docs/trust_model.md is written with the paper model as the decision: the client runs HintInit and holds the master seed; the TEE mode and the GPU path are experimental and not part of the model. AC 3 is met as a list of what a TEE design needs and does not have. The owner has not confirmed the decision yet; the task stays In Progress until then.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The owner confirmed the decision: the client runs HintInit and holds the master seed; the TEE mode and the GPU path are outside the trust model. docs/trust_model.md states the parties, the secrets, what the server learns, the cost for the client (73.4 GB download, about 300 core-hours extrapolated, 872 MB hint file), and the points not covered (TASK-22, 24, 25, 28). README.md, docs/DEPLOYMENT.md, docs/constant_time_mode.md and docs/ARCHITECTURE.md mark the TEE mode and the GPU path as experimental. Follow-up: move that code out of the core crate.
+<!-- SECTION:FINAL_SUMMARY:END -->
