@@ -11,7 +11,7 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 |------|------|
 | `src/main.rs` | **Extractor** — reads Reth on-disk DB via `reth-db` (MDBX-backed); writes flat `database.bin` + mappings |
 | `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, hint generator (`src/bin/hint_gen/`), optional CUDA |
-| `plinko/formal/` | **Rocq** specs and proofs (`plinko/formal/README.md`) |
+| `plinko/formal/` | **Rocq** models of the algorithms and proofs about the models, not about the Rust code (`plinko/formal/README.md`) |
 | `docs/` | Protocol, data format, benchmarks, verification |
 | `tee-test/` | SEV-SNP TEE benchmark notes |
 
@@ -20,8 +20,8 @@ Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server 
 1. [`docs/hint_generation.md`](docs/hint_generation.md) — HintInit behavior (Fig. 7), module map  
 2. [`docs/data_format.md`](docs/data_format.md) — v3 on-disk layout, last mainnet snapshot metadata
 3. [`docs/protocol_overview.md`](docs/protocol_overview.md) — end-to-end pipeline  
-4. [`docs/Plinko.v`](docs/Plinko.v) — Coq reference spec  
-5. [`plinko/formal/`](plinko/formal/) — Rocq proofs and machine-checked specs  
+4. [`plinko/formal/`](plinko/formal/) — Rocq models and proofs about the models; assumptions in [`plinko/formal/docs/TRUST_BASE.md`](plinko/formal/docs/TRUST_BASE.md)  
+5. [`docs/Plinko.v`](docs/Plinko.v) — older Coq sketch (HintInit, GetHint, UpdateHint)  
 
 Parsed paper JSON ([`docs/plinko_paper_part*.json`](docs/plinko_paper_part6_algorithms.json), catalog [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json)) is useful for agents and pseudocode lookup. Datasets: local Reth extract or synthetic — [`docs/data_format.md`](docs/data_format.md).
 
@@ -121,8 +121,8 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 
 ## Verification
 
-- **Rocq**: `plinko/formal/` — specs for iPRF, Swap-or-Not, binomial ([`docs/verification.md`](docs/verification.md))
-- **Kani / proptest**: `cd plinko && cargo test --lib`
+- **Rocq**: `plinko/formal/` — models of the iPRF, Swap-or-Not and the coin sampler, with proofs about the models. The Rust code is not formally verified ([`docs/verification.md`](docs/verification.md))
+- **Proptest**: `cd plinko && cargo test --lib`; **Kani**: one harness, see [`docs/verification.md`](docs/verification.md)
 - **Regression**: sampler distribution and PMNS bin-load tests in `plinko/src/binomial.rs` and `plinko/src/iprf.rs`
 
 ## Documentation
@@ -147,7 +147,7 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 | Resource | Use |
 |----------|-----|
 | [`docs/2024-318.pdf`](docs/2024-318.pdf) | Plinko paper (ePrint 2024/318) |
-| [`docs/Plinko.v`](docs/Plinko.v) | Coq specification (HintInit, hints, updates) |
+| [`docs/Plinko.v`](docs/Plinko.v) | Coq sketch (HintInit, hints, updates); not a specification of the Rust code |
 | [`docs/plinko_paper_part6_algorithms.json`](docs/plinko_paper_part6_algorithms.json) | Parsed Fig. 7 / algorithm pseudocode |
 | [`docs/plinko_paper_part2_technical.json`](docs/plinko_paper_part2_technical.json), [`docs/plinko_paper_part3_scheme.json`](docs/plinko_paper_part3_scheme.json) | iPRF / scheme narrative |
 | [`docs/plinko_paper_index.json`](docs/plinko_paper_index.json) | Catalog of parts 1–6 (agent index; verify live data against `data_format.md`) |

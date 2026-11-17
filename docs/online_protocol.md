@@ -171,7 +171,8 @@ offsets, and an offset outside a block.
 - **Wrong answers.** The client cannot check an answer (TASK-24).
 - **Bias after `abandon_query`.** See above.
 - **Formal model.** No machine-checked statement covers the online phase or
-  the shared offsets (TASK-26).
+  the shared offsets. The Rocq models have no Query, Answer and Recon
+  ([verification.md](verification.md)).
 - **Entry size.** The model has entries of 32 bytes in memory; a record of
   `database.bin` has 40 bytes.
 - **Reference check.** `scripts/differential_protocol_transcript.sh` compares

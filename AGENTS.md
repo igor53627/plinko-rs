@@ -125,11 +125,13 @@ Before committing Rust changes to hint generation or iPRF:
 ### Formal Models
 
 `docs/Plinko.v` and `plinko/formal/` are hand-written models of the algorithms. No tool checks
-them against the Rust source, and they do not model the Rust PMNS sampler, key derivation, or
-40-byte records. A Rust test is the evidence for Rust behaviour; a proof is not.
+them against the Rust source, and they do not model the AES keystream of the PMNS sampler, key
+derivation, or 40-byte records. A Rust test is the evidence for Rust behaviour; a proof is not.
 
 - Build: `cd plinko/formal && make` (Rocq is installed locally).
 - Do not add `Axiom` or `Admitted`. Do not describe Rust code as formally verified.
+- `plinko/formal/docs/TRUST_BASE.md` is generated. After a change of an `Axiom`, `Parameter` or
+  `Admitted`, edit `plinko/formal/docs/trust_base_notes.toml` and run `make trust-base`.
 - When a Rust change makes a statement in `docs/verification.md` or
   `plinko/formal/docs/TRUST_BASE.md` false, correct the statement in the same change.
 - The Codex Cloud and remote checker workflow is in `docs/codex-cloud-verification.md`. It is

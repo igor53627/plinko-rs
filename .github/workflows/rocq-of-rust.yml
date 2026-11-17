@@ -1,0 +1,196 @@
+name: Rocq-of-Rust Translation
+
+# Manual only. The linking files hold placeholders for the Rust functions and no
+# translated Rust code, so this job proves nothing about the Rust code. It checks
+# that the translation tool and the linking files still build.
+on:
+  workflow_dispatch:
+
+env:
+  OPAMYES: 1
+  OPAMJOBS: 2
+
+jobs:
+  rocq-of-rust:
+    name: Rocq-of-Rust Translation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache opam
+        id: cache-opam-ror
+        uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: opam-rocq9-ror-${{ runner.os }}-v2-${{ hashFiles('plinko/formal/Makefile', '.github/workflows/formal.yml') }}
+          restore-keys: |
+            opam-rocq9-ror-${{ runner.os }}-v2-
+            opam-rocq9-${{ runner.os }}-
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-ror-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-ror-${{ runner.os }}-
+
+      - name: Cache rocq-of-rust
+        id: cache-ror
+        uses: actions/cache@v4
+        with:
+          path: ~/rocq-of-rust
+          # v3: switched to fork with Rocq 9.x CLI support
+          key: rocq-of-rust-fork-${{ runner.os }}-v3
+          restore-keys: |
+            rocq-of-rust-fork-${{ runner.os }}-
+
+      - name: Install opam
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y opam
+
+      - name: Setup opam and Rocq 9.0
+        if: steps.cache-opam-ror.outputs.cache-hit != 'true'
+        run: |
+          opam init --auto-setup --disable-sandboxing --bare
+          opam switch create rocq-9 ocaml-base-compiler.4.14.2 || opam switch set rocq-9
+          eval $(opam env --switch=rocq-9)
+          opam repo add coq-released https://coq.inria.fr/opam/released || true
+          opam update
+          opam install -y rocq-prover.9.0.0 rocq-stdlib.9.0.0
+
+      - name: Configure opam environment
+        run: |
+          echo "/home/runner/.opam/rocq-9/bin" >> $GITHUB_PATH
+          # Debug: show available binaries
+          echo "Available binaries in opam switch:"
+          ls -la /home/runner/.opam/rocq-9/bin/ 2>/dev/null | grep -E "rocq|coq" | head -20 || echo "(bin dir not found)"
+          # Create compatibility wrappers for tools that expect Coq-style CLIs.
+          # Rocq 9.x uses `rocq <subcommand>` instead of separate binaries.
+          rm -f /home/runner/.opam/rocq-9/bin/coqc
+          cat > /home/runner/.opam/rocq-9/bin/coqc <<'EOF'
+          #!/usr/bin/env bash
+          exec rocq compile "$@"
+          EOF
+          chmod +x /home/runner/.opam/rocq-9/bin/coqc
+          rm -f /home/runner/.opam/rocq-9/bin/rocqc
+          cat > /home/runner/.opam/rocq-9/bin/rocqc <<'EOF'
+          #!/usr/bin/env bash
+          exec rocq compile "$@"
+          EOF
+          chmod +x /home/runner/.opam/rocq-9/bin/rocqc
+          rm -f /home/runner/.opam/rocq-9/bin/coqdep
+          cat > /home/runner/.opam/rocq-9/bin/coqdep <<'EOF'
+          #!/usr/bin/env bash
+          exec rocq dep "$@"
+          EOF
+          chmod +x /home/runner/.opam/rocq-9/bin/coqdep
+          rm -f /home/runner/.opam/rocq-9/bin/rocqdep
+          cat > /home/runner/.opam/rocq-9/bin/rocqdep <<'EOF'
+          #!/usr/bin/env bash
+          exec rocq dep "$@"
+          EOF
+          chmod +x /home/runner/.opam/rocq-9/bin/rocqdep
+          rm -f /home/runner/.opam/rocq-9/bin/coq_makefile
+          cat > /home/runner/.opam/rocq-9/bin/coq_makefile <<'EOF'
+          #!/usr/bin/env bash
+          exec rocq makefile "$@"
+          EOF
+          chmod +x /home/runner/.opam/rocq-9/bin/coq_makefile
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-12-07
+          components: rustc-dev, llvm-tools-preview
+
+      - name: Clone and build rocq-of-rust
+        run: |
+          FORK_URL="https://github.com/igor53627/rocq-of-rust.git"
+          FORK_BRANCH="fix/rocq-9x-cli-support"
+          
+          if [ -d ~/rocq-of-rust ]; then
+            cd ~/rocq-of-rust
+            # Check if this is our fork or the old upstream
+            if ! git remote get-url origin | grep -q "igor53627"; then
+              echo "Cached repo is old upstream, removing..."
+              cd ~ && rm -rf ~/rocq-of-rust
+            fi
+          fi
+          
+          if [ ! -d ~/rocq-of-rust ]; then
+            echo "Cloning fork..."
+            git clone "$FORK_URL" ~/rocq-of-rust
+          fi
+          
+          cd ~/rocq-of-rust
+          git fetch origin "$FORK_BRANCH"
+          # Cached builds may leave the working tree dirty; force checkout for a clean baseline.
+          git checkout -f "origin/$FORK_BRANCH"
+
+          # Hotfix: keep OfTy/OfValue quantifying over Type (needed for pointers/refs in links/M.v).
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("RocqOfRust/links/M.v")
+          text = path.read_text()
+
+          replacements = {
+              "| Make {A : Set} `{Link A} :": "| Make {A : Type} `{Link A} :",
+              "Definition of_ty {A : Set} `{Link A} :": "Definition of_ty {A : Type} `{Link A} :",
+              "| Make {A : Set} `{Link A} (value : A) :": "| Make {A : Type} `{Link A} (value : A) :",
+              "Definition of_value {A : Set} `{Link A} (value : A) :": "Definition of_value {A : Type} `{Link A} (value : A) :",
+          }
+
+          missing = [old for old in replacements if old not in text]
+          if len(missing) == len(replacements):
+              # Either already patched upstream, or the file has drifted.
+              if all(new in text for new in replacements.values()):
+                  print(f"No patch needed for {path} (already uses Type).")
+                  raise SystemExit(0)
+              raise SystemExit(
+                  f"Unexpected {path} contents: expected either Set- or Type-based OfTy/OfValue binders."
+              )
+
+          for old, new in replacements.items():
+              text = text.replace(old, new)
+
+          path.write_text(text)
+          print(f"Patched {path} (Set -> Type in OfTy/OfValue)")
+          PY
+          
+          if [ ! -f target/release/rocq-of-rust ]; then
+            echo "Building rocq-of-rust..."
+            cargo +nightly-2024-12-07 build --release
+          else
+            echo "Using cached rocq-of-rust binary"
+          fi
+
+      - name: Build minimal RocqOfRust library
+        run: |
+          cd ~/rocq-of-rust/RocqOfRust
+          echo "Building minimal RocqOfRust library (needed by Plinko linking)..."
+          make -j2 links/M.vo || make links/M.vo
+
+      - name: Translate Rust to Rocq
+        id: translate
+        run: |
+          export PATH="$HOME/rocq-of-rust/target/release:$PATH"
+          cd plinko/formal
+          make translate
+
+      - name: Build proofs and linking layer
+        id: linking
+        run: |
+          cd plinko/formal
+          make clean
+          make ROCQOFRUST_PATH="$HOME/rocq-of-rust/RocqOfRust" all
+          make ROCQOFRUST_PATH="$HOME/rocq-of-rust/RocqOfRust" linking

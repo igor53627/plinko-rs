@@ -119,11 +119,6 @@ Qed.
 Axiom sr_round_key_in_range : forall level r n,
   0 < n -> 0 <= sr_round_key level r n < n.
 
-(* Axiom: base domain outputs stay in the right half, so SR does not recurse *)
-Axiom sr_base_case_no_recurse : forall x,
-  0 <= x < N ->
-  (N / 2 <=? sr_apply_rounds 0 (sr_t_rounds N) N x) = true.
-
 (* Round is involutive at each level *)
 Lemma sr_round_involutive : forall level r n x,
   0 < n -> 0 <= x < n ->
@@ -374,15 +369,18 @@ Qed.
 
 (** Compatibility with base SwapOrNot *)
 
-(* When domain = 2^64, SR with 0 recursions is equivalent to base SwapOrNot *)
+(* On the domain 2^64, SR equals the base SwapOrNot for an input whose
+   first-stage output lands in the right half, so that SR does not recurse.
+   For the other inputs SR recurses and the two functions differ in general. *)
 Lemma sr_base_case_equiv : forall x,
   0 <= x < N ->
   sr_t_rounds N = num_rounds ->
   (forall r, sr_round_key 0 r N = round_key r) ->
   (forall r c, sr_round_bit 0 r c N = round_bit r c) ->
+  (N / 2 <=? forward_spec x) = true ->
   sr_forward N x = forward_spec x.
 Proof.
-  intros x Hx Hrounds Hkey Hbit.
+  intros x Hx Hrounds Hkey Hbit Hright.
   assert (Hround_spec : forall r x0, sr_round_spec 0 r N x0 = round_spec r x0).
   { intros r x0. unfold sr_round_spec, round_spec, sr_partner, partner, canonical.
     rewrite Hkey, Hbit. reflexivity. }
@@ -398,7 +396,7 @@ Proof.
   rewrite Hrounds.
   set (x' := sr_apply_rounds 0 num_rounds N x).
   assert (Hno_recurse : (N / 2 <=? x') = true).
-  { subst x'. rewrite <- Hrounds. apply sr_base_case_no_recurse. assumption. }
+  { subst x'. rewrite Happly_rounds. exact Hright. }
   rewrite Hno_recurse.
   subst x'. rewrite Happly_rounds.
   reflexivity.

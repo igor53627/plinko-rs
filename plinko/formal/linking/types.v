@@ -1,4 +1,6 @@
 (** * Type Links for Plinko
+
+    STATUS: sketch. `make all` does not build this file, and no proof uses it.
     
     This module defines Link instances connecting:
     - Simulation types (Z-based integers) in specs/

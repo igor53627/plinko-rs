@@ -38,11 +38,11 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | Resource | Topic |
 |----------|--------|
 | [`2024-318.pdf`](2024-318.pdf) | Plinko paper |
-| [`Plinko.v`](Plinko.v) | Coq spec |
+| [`Plinko.v`](Plinko.v) | Coq sketch (not a specification of the Rust code) |
 | [`plinko_paper_index.json`](plinko_paper_index.json) | Catalog of parsed paper parts 1–6 |
 | [`plinko_paper_part6_algorithms.json`](plinko_paper_part6_algorithms.json) | Fig. 7 / algorithm pseudocode |
 | [`plinko_paper_part2_technical.json`](plinko_paper_part2_technical.json), [`plinko_paper_part3_scheme.json`](plinko_paper_part3_scheme.json) | iPRF / scheme |
-| [`../plinko/formal/`](../plinko/formal/) | Rocq proofs |
+| [`../plinko/formal/`](../plinko/formal/) | Rocq models and proofs about the models |
 | [`codex-cloud-verification.md`](codex-cloud-verification.md) | Remote Rocq verify (agents) |
 
 ## Other assets

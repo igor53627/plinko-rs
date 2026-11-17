@@ -1,0 +1,393 @@
+# Notes for scripts/trust_base.py.
+#
+# Each [[item]] belongs to one Axiom, Parameter or Admitted of a .v file. The
+# script stops when an item has no note or a note has no item. After a change,
+# run `make trust-base` in plinko/formal.
+
+intro = """
+This file lists every `Axiom`, `Parameter` and `Admitted` of the Rocq
+development in `plinko/formal` and of the sketch `docs/Plinko.v`.
+
+## What The Proofs Are About
+
+The proofs are about hand-written models of the algorithms. No tool translates
+the Rust source into these models, and no proof contains a term of the Rust
+code. The evidence for the behaviour of the Rust code is the Rust tests.
+
+Proven for the models, with the assumptions listed below:
+
+- Swap-or-Not is a bijection on `[0, 2^64)` for all round keys in range and all
+  round bits (`proofs/SwapOrNotProofs.v`).
+- Sometimes-Recurse is a bijection on `[0, n)` for each `n > 0`
+  (`specs/SwapOrNotSrSpec.v`).
+- The PMNS tree walk: the forward walk and the inverse walk agree, the ball
+  ranges of two different bins are disjoint, and the ranges cover the domain.
+  This holds for all coins (`specs/IprfSpec.v`, `proofs/IprfProofs.v`).
+- The iPRF (PRP, then PMNS): `inverse y` is the set of all `x` with
+  `forward x = y`.
+- HintInit model, regular hints: the streaming parity equals the batch parity
+  (`hint_init_streaming_eq_batch` in `sims/HintInitSim.v`).
+- The parameter function of `DbSpec.v`: the block size is a power of two, and
+  the capacity is not less than the number of entries (`proofs/DbProofs.v`).
+
+No file states any of these:
+
+- Correctness of the protocol (`Recon` returns `D[i]`).
+- Privacy of a query.
+- A distribution: pseudorandomness, or the binomial distribution of a coin count.
+- Constant-time behaviour.
+
+## Assumptions Of The Main Theorems
+
+`proofs/Assumptions.v` runs `Print Assumptions` for the main theorems, so the
+log of `make all` shows what each proof uses. Result with Rocq 9.3.0:
+
+- The Sometimes-Recurse bijection, the iPRF inverse and partition theorems, and
+  the HintInit theorem for regular hints use symbols only. They use no axiom
+  that is a statement.
+- The Swap-or-Not bijection on `2^64` also uses `round_key_in_range`.
+- The theorems of `sims/SwapOrNotSim.v` use the two axioms of class `ideal`
+  (`round_key_refinement`, `prf_bit_refinement`).
+
+## Known Differences Between The Models And The Rust Code
+
+- **`specs/IprfSpec.v`, `specs/BinomialSpec.v`.** The tree walk and the coin
+  sampler follow `plinko/src/iprf.rs` and `plinko/src/binomial.rs`: the left
+  count of a node is the number of set coins among the first `ball_count` coins
+  of the node. The coins, the round keys and the round bits are symbols. The
+  cache of the top tree levels and `IprfTable` are not in the model.
+- **`sims/SwapOrNotSim.v`.** The file models the one-level `SwapOrNot` on the
+  domain `2^64`. The Rust field is a `u64` and cannot hold `2^64`, so no Rust
+  state satisfies `refines_swap_or_not_state`. The iPRF uses `SwapOrNotSr`,
+  which this file does not model.
+- **`sims/HintInitSim.v`.** One iPRF with no key serves all blocks: the model
+  computes the block key and does not use it. The block subsets come from an
+  abstract predicate; the Rust code uses a PRF cutoff (`plinko/src/subsets.rs`).
+  The theorem for backup hints has no proof.
+- **`specs/DbSpec.v`.** The file models `derive_plinko_params` of
+  `plinko/src/db.rs`. Only `bench_gpu_hints` and `cost_estimate` call that
+  function. `plinko_hints` and the client use another geometry
+  (`default_block_size` in `plinko/src/protocol.rs`).
+- **`linking/`.** The Rust functions are symbols, and the axioms state that
+  they equal the model. The files contain no translated Rust code and are not
+  built by `make all`.
+- **`docs/Plinko.v`.** A sketch. It has HintInit, GetHint and UpdateHint; it
+  has no Query, Answer and Recon. The iPRF domain is fixed as `w * 10`.
+
+## Consistency
+
+`sr_base_case_no_recurse` was removed. It stated that the first stage maps the
+full domain into the upper half, which contradicts the proven bijection.
+
+For each remaining axiom of the built files, the note below gives a model: a
+definition of the symbols for which the axiom is a true statement. Where two
+files constrain one symbol, the models agree (`round_key := fun _ => 0`
+satisfies the axioms of `SwapOrNotSpec.v` and of `SwapOrNotSim.v`). Thus the
+axioms together do not derive `False`. This is an argument by hand; no file
+checks it.
+"""
+
+# --- specs/SwapOrNotSpec.v ---------------------------------------------------
+
+[[item]]
+file = "specs/SwapOrNotSpec.v"
+name = "num_rounds"
+class = "symbol"
+meaning = "Number of rounds. The bijection proofs hold for each value."
+
+[[item]]
+file = "specs/SwapOrNotSpec.v"
+name = "round_key"
+class = "symbol"
+meaning = "Round key of round `r`. In Rust it is an AES output modulo the domain."
+
+[[item]]
+file = "specs/SwapOrNotSpec.v"
+name = "round_bit"
+class = "symbol"
+meaning = "Swap decision of round `r` for a canonical value. In Rust it is one bit of an AES output."
+
+[[item]]
+file = "specs/SwapOrNotSpec.v"
+name = "round_key_in_range"
+class = "math"
+meaning = "Each round key is below the domain size. A value modulo the domain has this property."
+model = "`round_key := fun _ => 0`."
+
+# --- specs/SwapOrNotSrSpec.v -------------------------------------------------
+
+[[item]]
+file = "specs/SwapOrNotSrSpec.v"
+name = "sr_t_rounds"
+class = "symbol"
+meaning = "Number of rounds of a stage with `n` values. The bijection proofs hold for each value; the security of the PRP depends on it and is not stated."
+
+[[item]]
+file = "specs/SwapOrNotSrSpec.v"
+name = "sr_round_key"
+class = "symbol"
+meaning = "Round key of a stage (level, round, stage size)."
+
+[[item]]
+file = "specs/SwapOrNotSrSpec.v"
+name = "sr_round_bit"
+class = "symbol"
+meaning = "Swap decision of a stage (level, round, canonical value, stage size)."
+
+[[item]]
+file = "specs/SwapOrNotSrSpec.v"
+name = "sr_round_key_in_range"
+class = "math"
+meaning = "Each round key of a stage is below the stage size."
+model = "`sr_round_key := fun _ _ _ => 0`."
+
+# --- specs/IprfSpec.v --------------------------------------------------------
+
+[[item]]
+file = "specs/IprfSpec.v"
+name = "node_coin"
+class = "symbol"
+meaning = "Coin `i` of the PMNS node that covers bins `low .. high`. In Rust it is bit `i` of the AES-128 counter-mode keystream of the node. The theorems hold for all coins, so they say nothing about the distribution of the bins."
+
+# --- sims/SwapOrNotSim.v -----------------------------------------------------
+
+[[item]]
+file = "sims/SwapOrNotSim.v"
+name = "aes128_encrypt"
+class = "symbol"
+meaning = "AES-128 block encryption (key, block) as a function on byte lists. It is declared with `Axiom`, but it is a symbol with no definition."
+
+[[item]]
+file = "sims/SwapOrNotSim.v"
+name = "aes128_encrypt_length"
+class = "math"
+meaning = "The output of the cipher has 16 bytes. True for AES-128."
+model = "`aes128_encrypt := fun _ _ => ` a list of 16 zeros."
+
+[[item]]
+file = "sims/SwapOrNotSim.v"
+name = "aes128_encrypt_bytes_valid"
+class = "math"
+meaning = "Each output byte is in `[0, 256)`. True for AES-128."
+model = "The same constant function."
+
+[[item]]
+file = "sims/SwapOrNotSim.v"
+name = "round_key_refinement"
+class = "ideal"
+meaning = "For every state on the domain `2^64`, the AES-derived round key equals the one symbol `round_key r`. The statement quantifies over all keys, so it makes the round key the same for every AES key. It is false for AES. No Rust state has the domain `2^64`."
+model = "The constant cipher above with `round_key := fun _ => 0`."
+
+[[item]]
+file = "sims/SwapOrNotSim.v"
+name = "prf_bit_refinement"
+class = "ideal"
+meaning = "For every state on the domain `2^64`, the AES-derived swap bit equals the one symbol `round_bit r c`. It makes the bit the same for every key. It is false for AES."
+model = "The constant cipher above with `round_bit := fun _ _ => false`."
+
+# --- sims/HintInitSim.v ------------------------------------------------------
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "derive_key"
+class = "symbol"
+meaning = "Block key from the master seed and the block index. The model computes the key and does not pass it to the iPRF."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "derive_key_deterministic"
+class = "trivial"
+meaning = "`derive_key seed idx = derive_key seed idx`."
+model = "Each function."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "derive_key_distinct"
+class = "ideal"
+meaning = "Two different block indices never give the same key. For a hash that is cut to 128 bits this is an assumption (no collision), not a fact."
+model = "`derive_key := fun _ idx => idx`."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "block_in_subset"
+class = "symbol"
+meaning = "Membership of a block in the subset of a hint (seed, subset size, number of blocks, block). The Rust code does not have this function; it compares a PRF value with a cutoff."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "block_in_subset_deterministic"
+class = "trivial"
+meaning = "`block_in_subset ... = block_in_subset ...` with the same arguments."
+model = "Each function."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "block_in_subset_block_range"
+class = "math"
+meaning = "A block in a subset is a block index below the number of blocks."
+model = "`block_in_subset := fun _ size total b => (0 <=? b) && (b <? size) && (b <? total)`."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "subset_from_seed_length"
+class = "ideal"
+meaning = "The subset has exactly `size` blocks. The file comment describes a threshold test on a hash, for which the size is only an expectation. The Rust code gets the exact size from a cutoff at the median, and a hint with a tie at the cutoff is not used."
+model = "The same `block_in_subset`: for `0 < size <= total` it selects the blocks `0 .. size-1`."
+
+[[item]]
+file = "sims/HintInitSim.v"
+name = "hint_init_backup_streaming_eq_batch"
+class = "open"
+meaning = "For a backup hint, the two streaming parities equal the two batch parities. The last step (equality of two folds) has no proof. The theorem for regular hints does not depend on it."
+
+# --- linking/IprfLink.v ------------------------------------------------------
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_swap_or_not_forward"
+class = "symbol"
+meaning = "Placeholder for the Rust function `SwapOrNot::forward`. It is not translated Rust code."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_swap_or_not_inverse"
+class = "symbol"
+meaning = "Placeholder for the Rust function `SwapOrNot::inverse`."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_iprf_forward"
+class = "symbol"
+meaning = "Placeholder for the Rust function `Iprf::forward`."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_iprf_inverse"
+class = "symbol"
+meaning = "Placeholder for the Rust function `Iprf::inverse`."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_swap_or_not_forward_refines"
+class = "link"
+meaning = "The placeholder equals the model PRP. Each theorem of this file about a `rust_` function follows from an axiom of this kind and says nothing about the Rust code."
+model = "Define each placeholder as the model function."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_swap_or_not_inverse_refines"
+class = "link"
+meaning = "The placeholder equals the inverse of the model PRP."
+model = "Define each placeholder as the model function."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_iprf_forward_refines"
+class = "link"
+meaning = "The placeholder equals `iprf_forward_spec`."
+model = "Define each placeholder as the model function."
+
+[[item]]
+file = "linking/IprfLink.v"
+name = "rust_iprf_inverse_refines"
+class = "link"
+meaning = "The placeholder equals `iprf_inverse_spec`."
+model = "Define each placeholder as the model function."
+
+# --- docs/Plinko.v -----------------------------------------------------------
+
+[[item]]
+file = "docs/Plinko.v"
+name = "n"
+class = "interface"
+meaning = "Database size, field of `Module Type PlinkoParams`. No module of this type exists in the file."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "w"
+class = "interface"
+meaning = "Block size, field of `PlinkoParams`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "q"
+class = "interface"
+meaning = "Number of queries before a refresh, field of `PlinkoParams`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "lambda"
+class = "interface"
+meaning = "Security parameter, field of `PlinkoParams`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "w_pos"
+class = "interface"
+meaning = "The block size is positive, field of `PlinkoParams`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "n_divisible"
+class = "interface"
+meaning = "The block size divides the database size, field of `PlinkoParams`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "Key"
+class = "interface"
+meaning = "Key type, field of `Module Type PRFInterface`. No module of this type exists in the file."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "Domain"
+class = "interface"
+meaning = "Domain type, field of `PRFInterface`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "Range"
+class = "interface"
+meaning = "Range type, field of `PRFInterface`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "gen"
+class = "interface"
+meaning = "Key generation, field of `PRFInterface`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "eval"
+class = "interface"
+meaning = "Evaluation, field of `PRFInterface`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "eval_inv"
+class = "interface"
+meaning = "Inverse evaluation, field of `PRFInterface`."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "swap_or_not_round_involutory"
+class = "open"
+meaning = "One round of the sketch PRP is its own inverse. No proof in this file. `plinko/formal` proves the same property for its own model."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "swap_or_not_inverse_correct"
+class = "open"
+meaning = "The inverse of the sketch PRP undoes the forward direction. No proof in this file."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "pmns_inverse_correct"
+class = "open"
+meaning = "The PMNS inverse of the sketch contains each ball that maps to the bin. No proof in this file."
+
+[[item]]
+file = "docs/Plinko.v"
+name = "iprf_inverse_correct"
+class = "open"
+meaning = "The iPRF inverse of the sketch contains each preimage. No proof in this file."

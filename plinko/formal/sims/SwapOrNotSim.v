@@ -1,5 +1,11 @@
 (** SwapOrNotSim.v - Simulation relations for SwapOrNot PRP
 
+    STATUS: model only. Each function with a Rust name in this file is a
+    hand-written Rocq definition. No tool compares it with the Rust source,
+    so a theorem of this file is a statement about the model, not about the
+    Rust code. See docs/TRUST_BASE.md for the assumptions and for the known
+    differences from the code.
+
     Connects the Rust SwapOrNot implementation (plinko/src/iprf.rs)
     to the Rocq specification (specs/SwapOrNotSpec.v).
     

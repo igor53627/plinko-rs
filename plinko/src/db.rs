@@ -95,7 +95,8 @@ impl Database40 {
 
 /// Compute chunk and set sizes for partitioning a database of entries.
 ///
-/// Matches the Coq spec in `plinko/formal/specs/DbSpec.v` (integer arithmetic).
+/// `plinko/formal/specs/DbSpec.v` is a hand-written model of this function
+/// (integer arithmetic). No tool compares the model with this code.
 pub fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
     if db_entries == 0 {
         return (1, 1);

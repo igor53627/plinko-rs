@@ -63,9 +63,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Online protocol (breaking)**: `Client::prepare_query` reserves the hint and one backup hint; the hint leaves the client in `reconstruct_and_replenish` (or `abandon_query`, new). A retry sends the same `Query` again. `prepare_query` returns `NoBackupHintsLeft` before it builds a message, and `QueryInFlight` for an index that has no answer yet. `PreparedQuery::consumed_hint_index` is now `hint_index`; `Client::queries_in_flight` is new. The rules and the open points are in `docs/online_protocol.md`.
 - The client tries the hint candidates of an index in a random order (Fig. 7, `GetHint`).
 - **`Iprf::forward` panics for an input outside the domain (breaking)**. It returned bin 0, which is a valid output.
+- **Formal model of PMNS follows the coin sampler**: `BinomialSpec.v` defines the left count of a node as the number of set coins among the first `count` coins of a keystream, as `coin_binomial` in `plinko/src/binomial.rs` does. `IprfSpec.v` has one symbol `node_coin` in place of `prf_eval` and `encode_node`. The old file specified a formula that the Rust code never used.
+- **Trust base is generated**: `plinko/formal/scripts/trust_base.py` writes `plinko/formal/docs/TRUST_BASE.md` from the `.v` files and `docs/trust_base_notes.toml` (class and meaning of each `Axiom`, `Parameter` and `Admitted`, the known differences between the models and the Rust code). `make verify-axioms` fails when an item has no note or the file is out of date; it printed a warning before. `proofs/Assumptions.v` prints the assumptions of the main theorems.
+- **Documents state that the proofs are about models**: `docs/verification.md`, `plinko/formal/README.md`, `README.md` and the headers of the `sims/` and `linking/` files no longer describe the Rust code as verified. `docs/Plinko.v` is marked as a sketch.
+- **CI**: `formal.yml` runs the trust base check and compiles `docs/Plinko.v` (`make sketch`). The Rocq-of-Rust job had `continue-on-error`; it is now the manual workflow `rocq-of-rust.yml` and fails when a step fails.
 
 ### Fixed
 
+- **Inconsistent axiom in the formal model**: `sr_base_case_no_recurse` (`SwapOrNotSrSpec.v`) contradicted the proven bijection of Sometimes-Recurse, so `False` was derivable. The axiom is removed; `sr_base_case_equiv` now has the condition as a hypothesis.
 - **Decoy index was sequential**: a query for a cached index went to the smallest index that was not cached. It now goes to a uniform index among those that are not cached and not in flight (Fig. 7).
 - **A lost answer lost the hint, and an update during a query gave a wrong answer**: `prepare_query` took the hint out of the client and kept a copy of its parity.
 - **Two queries for one index before the first answer** promoted two backup hints with the same extra index; later updates of that entry missed one of them.
@@ -84,6 +89,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 
+- `plinko/formal/specs/TrueBinomialSpec.v` and its axiom `binomial_theorem_Z`: a model of the inverse-CDF sampler that the Rust code no longer has; no proof used it.
 - `.beads` directory (unused tracking artifact)
 - `analyze_storage_values.rs` (unused)
 - Legacy binaries (`bench_hints_linux_amd64`, `state-syncer-linux-amd64`)

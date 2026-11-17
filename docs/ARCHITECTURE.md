@@ -11,7 +11,7 @@ This repository contains the Plinko PIR stack: data extraction from Ethereum sta
 - **Hint file** (`plinko/src/hints.rs`): Hint set of one client and its on-disk format, shared by the generator and the client.
 - **Protocol client and server model** (`plinko/src/protocol.rs`): Loads a hint file (`Client::from_hints`), builds queries, reconstructs answers, and applies updates. In-memory model with 32-byte entries; see [`online_protocol.md`](online_protocol.md).
 - **GPU benchmark** (`plinko/cuda/`, `plinko/src/gpu.rs`; opt-in features `gpu` and `cuda`): throughput benchmark. It does not compute Plinko hints and is not part of the [trust model](trust_model.md#gpu-path).
-- **Formal verification** (`plinko/formal/`, `docs/Plinko.v`): Rocq specs and proofs aligned with the paper.
+- **Formal models** (`plinko/formal/`; sketch `docs/Plinko.v`): Rocq models of the algorithms and proofs about the models. They do not verify the Rust code; see [`verification.md`](verification.md).
 
 ## Data Flow
 

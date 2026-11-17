@@ -1,6 +1,12 @@
-(** * IprfLink.v - Links rocq-of-rust translated Iprf to simulation layer
-    
-    This module provides the refinement bridge between:
+(** * IprfLink.v - Placeholder for a link to translated Rust code
+
+    STATUS: sketch. `make all` does not build this file. It contains no
+    translated Rust code: each `rust_` function is a [Parameter], and an
+    [Axiom] states that it equals the model. A theorem of this file about a
+    `rust_` function follows from such an axiom and says nothing about the
+    Rust code. See docs/TRUST_BASE.md.
+
+    The intended refinement bridge is between:
     - Translated Rust code (src/iprf.v) from rocq-of-rust
     - Simulation specifications (sims/IprfSim.v)
     
