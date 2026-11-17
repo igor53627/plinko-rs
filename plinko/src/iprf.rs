@@ -8,8 +8,9 @@
 //! The Swap-or-Not PRP is based on Morris-Rogaway (eprint 2013/560).
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
-use aes::Aes128;
+use aes::{Aes128, Block};
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use crate::binomial::PmnsNode;
@@ -190,6 +191,23 @@ fn sr_t_rounds_with_security(n: u64, n0: u64, lambda: u32) -> usize {
     sr_t_rounds_with_params(n, num_stages, lambda)
 }
 
+/// Stage sizes of the Sometimes-Recurse shuffle: `domain`, then its halves,
+/// while the size is above 1. Stage `l` permutes the values below `sizes[l]`.
+fn sr_level_sizes(domain: u64, max_levels: usize) -> Vec<u64> {
+    let mut sizes: Vec<u64> = Vec::with_capacity(max_levels);
+    let mut n: u64 = domain;
+    while n > 1 && sizes.len() < max_levels {
+        sizes.push(n);
+        n /= 2;
+    }
+    sizes
+}
+
+/// AES input prefix of the swap decision of one round.
+fn sr_swap_prefix(level: usize, round: usize) -> [u8; 8] {
+    (((level as u64) << 32) | (round as u64) | 0x80000000).to_be_bytes()
+}
+
 /// Sometimes-Recurse PRP wrapper (Morris-Rogaway Fig. 1)
 ///
 /// Provides full-domain security: secure even when adversary queries all N elements.
@@ -321,6 +339,64 @@ impl SwapOrNotSr {
             val = self.apply_rounds_inverse(level, n, val);
         }
         val
+    }
+
+    /// Inverts every value of `balls`. Element `i` of the result equals
+    /// `inverse(balls.start + i)`.
+    ///
+    /// A value passes stage `l` if it is below the stage size, so the values
+    /// of a range that pass a stage are a prefix of the range. All of them
+    /// share the round key of a round, and their swap decisions are one batch
+    /// of AES blocks. A single `inverse` call derives the round key again for
+    /// each value and waits for each AES block before the next round.
+    ///
+    /// # Panics
+    /// Panics if `balls.end` is above the domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::SwapOrNotSr;
+    ///
+    /// let prp: SwapOrNotSr = SwapOrNotSr::with_security([3u8; 16], 1000, 16);
+    /// let batch: Vec<u64> = prp.inverse_range(490..510);
+    /// let single: Vec<u64> = (490..510).map(|y| prp.inverse(y)).collect();
+    /// assert_eq!(batch, single);
+    /// ```
+    pub fn inverse_range(&self, balls: Range<u64>) -> Vec<u64> {
+        assert!(balls.end <= self.domain, "balls must be < domain");
+        let mut vals: Vec<u64> = balls.clone().collect();
+        let mut partners: Vec<u64> = vec![0u64; vals.len()];
+        let mut blocks: Vec<Block> = vec![Block::default(); vals.len()];
+
+        let sizes: Vec<u64> = sr_level_sizes(self.domain, self.max_levels);
+        for (level, &n) in sizes.iter().enumerate().rev() {
+            let active: usize = n.saturating_sub(balls.start).min(vals.len() as u64) as usize;
+            if active == 0 {
+                continue;
+            }
+            let t: usize = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+            for round in (0..t).rev() {
+                let k_i: u64 = self.derive_round_key(level, round, n);
+                let prefix: [u8; 8] = sr_swap_prefix(level, round);
+
+                // The swap bits are random, so both loops use masks, not branches.
+                for i in 0..active {
+                    // vals[i] < n and k_i < n, so this is (k_i - vals[i]) mod n.
+                    let wrap: u64 = n & u64::from(k_i < vals[i]).wrapping_neg();
+                    let partner: u64 = k_i.wrapping_sub(vals[i]).wrapping_add(wrap);
+                    partners[i] = partner;
+                    blocks[i][0..8].copy_from_slice(&prefix);
+                    blocks[i][8..16].copy_from_slice(&vals[i].max(partner).to_be_bytes());
+                }
+                self.cipher.encrypt_blocks(&mut blocks[..active]);
+                for i in 0..active {
+                    let swap: u64 = u64::from(blocks[i][0] & 1).wrapping_neg();
+                    vals[i] ^= swap & (vals[i] ^ partners[i]);
+                }
+            }
+        }
+        vals
     }
 }
 
@@ -469,6 +545,58 @@ impl SwapOrNotSrTee {
             val = ct_select_u64(skip, val, self.apply_rounds_inverse(level, n_lvl, val));
         }
         val
+    }
+
+    /// Inverts every element of `vals` in place. Each result equals
+    /// `inverse` of the element.
+    ///
+    /// Every element runs every round of every stage; a mask keeps the
+    /// elements that a stage does not hold. The number of AES blocks and the
+    /// memory accesses depend only on the domain and on `vals.len()`, not on
+    /// the values. [`SwapOrNotSrTee::inverse`] runs only the stages that hold
+    /// its input, so its time depends on the input.
+    ///
+    /// # Precondition
+    /// Each element must be below the domain. This is not checked in release
+    /// builds, to avoid a branch on a secret value.
+    pub fn inverse_many_ct(&self, vals: &mut [u64]) {
+        use crate::constant_time::{ct_lt_u64, ct_max_u64};
+
+        debug_assert!(
+            vals.iter().all(|&y| y < self.domain),
+            "each value must be < domain"
+        );
+        let inputs: Vec<u64> = vals.to_vec();
+        let mut active: Vec<u64> = vec![0u64; vals.len()];
+        let mut partners: Vec<u64> = vec![0u64; vals.len()];
+        let mut blocks: Vec<Block> = vec![Block::default(); vals.len()];
+
+        let sizes: Vec<u64> = sr_level_sizes(self.domain, self.max_levels);
+        for (level, &n) in sizes.iter().enumerate().rev() {
+            for (mask, &input) in active.iter_mut().zip(&inputs) {
+                *mask = ct_lt_u64(input, n).wrapping_neg();
+            }
+            let t: usize = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+            for round in (0..t).rev() {
+                let k_i: u64 = self.derive_round_key(level, round, n);
+                let prefix: [u8; 8] = sr_swap_prefix(level, round);
+
+                for i in 0..vals.len() {
+                    // A value outside the stage is replaced by 0 to keep x < n.
+                    let x: u64 = vals[i] & active[i];
+                    let wrap: u64 = n & ct_lt_u64(k_i, x).wrapping_neg();
+                    let partner: u64 = k_i.wrapping_sub(x).wrapping_add(wrap);
+                    partners[i] = partner;
+                    blocks[i][0..8].copy_from_slice(&prefix);
+                    blocks[i][8..16].copy_from_slice(&ct_max_u64(x, partner).to_be_bytes());
+                }
+                self.cipher.encrypt_blocks(&mut blocks);
+                for i in 0..vals.len() {
+                    let swap: u64 = u64::from(blocks[i][0] & 1).wrapping_neg() & active[i];
+                    vals[i] ^= swap & (vals[i] ^ partners[i]);
+                }
+            }
+        }
     }
 }
 
@@ -675,16 +803,20 @@ impl IprfTee {
         let count_u64 = ct_select_u64(exceeds_max, max_preimages, ball_count);
         let count = count_u64 as usize;
         let mut result = [0u64; MAX_PREIMAGES];
+        let mut valid = [0u64; MAX_PREIMAGES];
 
-        for (i, slot) in result.iter_mut().enumerate() {
+        for (i, (slot, keep)) in result.iter_mut().zip(valid.iter_mut()).enumerate() {
             let i_u64 = i as u64;
             let in_range = ct_lt_u64(i_u64, count as u64);
             let z = ball_start + i_u64;
-            // Only call inverse for valid z values; use 0 for out-of-range
+            // Only invert valid z values; use 0 for out-of-range
             let z_valid = ct_lt_u64(z, self.domain);
-            let z_safe = ct_select_u64(z_valid, z, 0);
-            let x = self.prp.inverse(z_safe);
-            *slot = ct_select_u64(in_range & z_valid, x, 0);
+            *slot = ct_select_u64(z_valid, z, 0);
+            *keep = in_range & z_valid;
+        }
+        self.prp.inverse_many_ct(&mut result);
+        for (slot, &keep) in result.iter_mut().zip(valid.iter()) {
+            *slot = ct_select_u64(keep, *slot, 0);
         }
 
         (result, count)
@@ -917,11 +1049,8 @@ impl Iprf {
             return vec![];
         }
         // First find all PMNS preimages, then apply inverse PRP to each
-        let pmns_preimages = self.trace_ball_inverse(y, self.domain, self.range);
-        pmns_preimages
-            .into_iter()
-            .map(|z| self.prp.inverse(z))
-            .collect()
+        let balls: Range<u64> = self.trace_ball_inverse(y, self.domain, self.range);
+        self.prp.inverse_range(balls)
     }
 
     /// Computes all bin boundaries of the PMNS tree once.
@@ -1047,11 +1176,11 @@ impl Iprf {
     ///
     /// # Returns
     ///
-    /// A `Vec<u64>` containing the ball indices that map to bin `y` (the closed-open
-    /// range `start..start+count`).
-    fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Vec<u64> {
+    /// The ball indices that map to bin `y` (the closed-open range
+    /// `start..start+count`).
+    fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Range<u64> {
         if m == 1 {
-            return (0..n).collect();
+            return 0..n;
         }
 
         let top: &[u32] = self.top_left_counts();
@@ -1081,7 +1210,7 @@ impl Iprf {
             depth += 1;
         }
 
-        (ball_start..ball_start + ball_count).collect()
+        ball_start..ball_start + ball_count
     }
 }
 
@@ -1100,8 +1229,8 @@ impl IprfTable<'_> {
         if y >= self.iprf.range {
             return vec![];
         }
-        let balls = self.starts[y as usize]..self.starts[y as usize + 1];
-        balls.map(|z| self.iprf.prp.inverse(z)).collect()
+        let balls: Range<u64> = self.starts[y as usize]..self.starts[y as usize + 1];
+        self.iprf.prp.inverse_range(balls)
     }
 }
 
@@ -1382,7 +1511,7 @@ mod tests {
         for index in 0..8u8 {
             let iprf: Iprf = Iprf::new(pmns_test_key(index), domain, range);
             let loads: Vec<u64> = (0..range)
-                .map(|y| iprf.trace_ball_inverse(y, domain, range).len() as u64)
+                .map(|y| iprf.trace_ball_inverse(y, domain, range).count() as u64)
                 .collect();
 
             assert_eq!(loads.iter().sum::<u64>(), domain, "key {index}");
@@ -1413,7 +1542,7 @@ mod tests {
             let iprf_tee: IprfTee = IprfTee::new(key, domain, range);
 
             for y in 0..range {
-                let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range);
+                let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range).collect();
                 let (start, count) = iprf_tee.trace_ball_inverse_ct(y);
                 assert_eq!(
                     (balls.first().copied(), balls.len() as u64),
@@ -1429,7 +1558,7 @@ mod tests {
         let mut ranges: Vec<(u64, u64)> = Vec::new();
         let mut next_start: u64 = 0;
         for y in 0..range {
-            let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range);
+            let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range).collect();
             if let Some(&first) = balls.first() {
                 assert_eq!(
                     first,
@@ -1616,7 +1745,7 @@ mod tests {
         let loads = |domain: u64| -> Vec<u64> {
             let iprf: Iprf = Iprf::new(key, domain, range);
             (0..range)
-                .map(|y| iprf.trace_ball_inverse(y, domain, range).len() as u64)
+                .map(|y| iprf.trace_ball_inverse(y, domain, range).count() as u64)
                 .collect()
         };
 
@@ -1730,6 +1859,131 @@ mod tests {
                 "SR TEE inverse roundtrip failed for x={}",
                 x
             );
+        }
+    }
+
+    /// Ranges of at most `width` values around the stage boundaries of `domain`.
+    fn boundary_ranges(domain: u64, width: u64) -> Vec<Range<u64>> {
+        let mut ranges: Vec<Range<u64>> =
+            vec![0..width.min(domain), domain.saturating_sub(width)..domain];
+        let mut size: u64 = domain / 2;
+        for _ in 0..3 {
+            let low: u64 = size.saturating_sub(width / 2);
+            ranges.push(low..(low + width).min(domain));
+            size /= 2;
+        }
+        ranges
+    }
+
+    /// `inverse_range` must equal `inverse` for every range of a small domain,
+    /// including the domains with one and two values.
+    #[test]
+    fn test_sr_inverse_range_matches_inverse_on_small_domains() {
+        for domain in 1..=33u64 {
+            let prp: SwapOrNotSr = SwapOrNotSr::with_security([domain as u8; 16], domain, 16);
+            let single: Vec<u64> = (0..domain).map(|y| prp.inverse(y)).collect();
+            for start in 0..=domain {
+                for end in start..=domain {
+                    assert_eq!(
+                        prp.inverse_range(start..end),
+                        single[start as usize..end as usize],
+                        "domain {domain}, range {start}..{end}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Full round counts, domains above 65536: a range that crosses a stage
+    /// boundary holds values with different stage counts.
+    #[test]
+    fn test_sr_inverse_range_matches_inverse_at_stage_boundaries() {
+        for domain in [100_003u64, 131_072] {
+            let prp: SwapOrNotSr = SwapOrNotSr::new([0x5a; 16], domain);
+            for balls in boundary_ranges(domain, 40) {
+                let single: Vec<u64> = balls.clone().map(|y| prp.inverse(y)).collect();
+                assert_eq!(
+                    prp.inverse_range(balls.clone()),
+                    single,
+                    "domain {domain}, range {balls:?}"
+                );
+                for (&x, y) in single.iter().zip(balls) {
+                    assert_eq!(prp.forward(x), y, "domain {domain}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "balls must be < domain")]
+    fn test_sr_inverse_range_rejects_a_ball_outside_the_domain() {
+        let prp: SwapOrNotSr = SwapOrNotSr::with_security([1u8; 16], 100, 16);
+        prp.inverse_range(90..101);
+    }
+
+    /// `inverse_many_ct` must equal `inverse` for values in any order.
+    #[test]
+    fn test_sr_tee_inverse_many_ct_matches_inverse_on_small_domains() {
+        for domain in 1..=33u64 {
+            let key: PrfKey128 = [domain as u8; 16];
+            let prp: SwapOrNotSr = SwapOrNotSr::with_security(key, domain, 16);
+            let prp_tee: SwapOrNotSrTee = SwapOrNotSrTee::with_security(key, domain, 16);
+
+            let mut vals: Vec<u64> = (0..domain).rev().chain(0..domain).collect();
+            let expected: Vec<u64> = vals.iter().map(|&y| prp.inverse(y)).collect();
+            prp_tee.inverse_many_ct(&mut vals);
+            assert_eq!(vals, expected, "domain {domain}");
+        }
+    }
+
+    /// Full round counts, domains above 65536, values of every stage depth in
+    /// one call.
+    #[test]
+    fn test_sr_tee_inverse_many_ct_matches_inverse_at_stage_boundaries() {
+        for domain in [100_003u64, 131_072] {
+            let key: PrfKey128 = [0x5a; 16];
+            let prp: SwapOrNotSr = SwapOrNotSr::new(key, domain);
+            let prp_tee: SwapOrNotSrTee = SwapOrNotSrTee::new(key, domain);
+
+            let mut vals: Vec<u64> = boundary_ranges(domain, 6).into_iter().flatten().collect();
+            vals.reverse();
+            vals.extend([0, 0, domain - 1, 1, domain / 3]);
+            let expected: Vec<u64> = vals.iter().map(|&y| prp.inverse(y)).collect();
+            let expected_tee: Vec<u64> = vals.iter().map(|&y| prp_tee.inverse(y)).collect();
+            assert_eq!(expected_tee, expected, "domain {domain}");
+
+            prp_tee.inverse_many_ct(&mut vals);
+            assert_eq!(vals, expected, "domain {domain}");
+        }
+    }
+
+    /// The batched iPRF inverses must return the single-value PRP inverse of
+    /// each ball of the bin, in ball order, on a domain above 65536.
+    #[test]
+    fn test_iprf_inverse_matches_single_value_prp() {
+        let key: PrfKey128 = pmns_test_key(7);
+        let domain: u64 = 100_003;
+        let range: u64 = 512;
+
+        let iprf: Iprf = Iprf::new(key, domain, range);
+        let table: IprfTable<'_> = iprf.table();
+        let iprf_tee: IprfTee = IprfTee::new(key, domain, range);
+        let tee_table: IprfTeeTable<'_> = iprf_tee.table_ct();
+        assert!(!tee_table.overflowed());
+
+        for y in [0u64, 255, 511] {
+            let balls: Range<u64> = iprf.trace_ball_inverse(y, domain, range);
+            let expected: Vec<u64> = balls.map(|z| iprf.prp.inverse(z)).collect();
+            assert!(expected.len() > 100, "y={y}");
+
+            assert_eq!(iprf.inverse(y), expected, "Iprf::inverse, y={y}");
+            assert_eq!(table.inverse(y), expected, "IprfTable::inverse, y={y}");
+            let (got, count) = tee_table.inverse_ct(y);
+            assert_eq!(got[..count], expected, "IprfTeeTable::inverse_ct, y={y}");
+            assert!(got[count..].iter().all(|&x| x == 0), "y={y}");
+            for &x in expected.iter().step_by(37) {
+                assert_eq!(iprf.forward(x), y);
+            }
         }
     }
 

@@ -95,9 +95,49 @@ hardware AES through `--cfg aes_armv8`):
 | `inverse_ct` per entry in HintInit      | 72.5 ms  | 68.0 ms, plus 9.2 ms per block |
 | Cache build, first call per block       | -        | 1.7 ms                         |
 
-The tree is no longer a relevant cost. What remains in `inverse` is the inverse
+The tree is no longer a relevant cost. What remained in `inverse` was the inverse
 PRP of about 256 balls per offset (512 fixed iterations in the constant-time
-path). HintInit over mainnet is thus still about 7 ms per entry on one thread.
+path); see the next section.
+
+## Batched Inverse PRP
+
+The PRP is a Sometimes-Recurse shuffle. Stage `l` permutes the values below
+`domain / 2^l` with about 640 to 810 Swap-or-Not rounds (128-bit security,
+16,777,216 hints). A round costs one AES block for the round key and one AES
+block for the swap decision of a value.
+
+The balls of one offset are a contiguous range. The code inverts the range in
+one call:
+
+- `SwapOrNotSr::inverse_range(balls)` (standard path and client). The values
+  that a stage holds are a prefix of the range. A round derives its round key
+  once for the range, and the swap decisions of the range are one batch of AES
+  blocks (`encrypt_blocks`), which the CPU computes in parallel. The loops use
+  masks in place of branches, because the swap bits are random.
+- `SwapOrNotSrTee::inverse_many_ct(vals)` (constant-time path). All 512 slots
+  run every round of every stage; a mask keeps a value that a stage does not
+  hold. See [constant_time_mode.md](constant_time_mode.md#fixed-prp-work).
+
+`Iprf::inverse`, `IprfTable::inverse`, `IprfTee::inverse_ct` and
+`IprfTeeTable::inverse_ct` use these functions. The single-value functions
+`SwapOrNotSr::inverse` and `SwapOrNotSrTee::inverse` are unchanged and are the
+reference of the tests. All outputs are equal to those of the single-value
+functions (`test_sr_inverse_range_matches_inverse_at_stage_boundaries`,
+`test_sr_tee_inverse_many_ct_matches_inverse_at_stage_boundaries`,
+`test_iprf_inverse_matches_single_value_prp`; domains 100,003 and 131,072).
+
+Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra,
+hardware AES through `--cfg aes_armv8`), per offset:
+
+| Operation                               | Before   | After    |
+|-----------------------------------------|----------|----------|
+| `inverse` in HintInit (table)           | 7.04 ms  | 0.52 ms  |
+| `inverse` (client, 8 cached levels)     | 7.06 ms  | 0.52 ms  |
+| `inverse` (no table, no cache)          | 7.53 ms  | 1.08 ms  |
+| `inverse_ct` in HintInit (table)        | 68.3 ms  | 16.7 ms  |
+| `inverse_ct` (no table)                 | 72.5 ms  | 21.1 ms  |
+
+`forward` is a single-value function and is not changed.
 
 ## Hint File
 

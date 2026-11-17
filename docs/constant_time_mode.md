@@ -18,6 +18,14 @@ Key techniques used:
 
 - **Branchless index clamping**: Uses `ct_select_usize` for safe array indexing.
 
+### Fixed PRP Work
+
+The inverse PRP of the 512 slots of an entry is one call of `SwapOrNotSrTee::inverse_many_ct`. Every slot runs every round of every Sometimes-Recurse stage. A mask keeps a value that a stage does not hold. The number of AES blocks and the memory accesses of the call depend only on `total_hints`.
+
+Before this change, the path called `SwapOrNotSrTee::inverse` for each slot. That function runs only the stages that hold its input: 15 us at z = 65535 and 213 us at z = 0 for a domain of 65536. The time of an entry thus depended on the position of its balls, which the block key decides. `SwapOrNotSrTee::inverse` still has this property; the constant-time path does not call it.
+
+Not covered: the round key of a round is `AES(...) mod n`, a division with a key-derived dividend, and the division time depends on the operand values on some CPUs.
+
 ## Security Model and Limitations
 
 The CT mode protects against timing side-channels but does NOT provide full memory-access obliviousness. Array indexing patterns (e.g., `regular_hints[j].cutoff` and `regular_hints[j].parity`) may leak information to cache side-channel attackers (Prime+Probe, etc.).
@@ -70,4 +78,4 @@ There is no limit on `total_hints` from the sampler.
 
 ## Performance
 
-Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra, hardware AES): 68 ms per database entry in this mode and 7 ms in the standard path, a factor of about 10. The cost is the 512 fixed inverse-PRP iterations per entry; the standard path does about 256 and its PRP skips the levels that an input does not reach.
+Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra, hardware AES): 16.7 ms per database entry in this mode and 0.52 ms in the standard path, a factor of about 32. The cost is the inverse PRP: this mode runs 512 slots through all 23 stages (about 8.3 million AES blocks per entry); the standard path runs about 256 balls through the stages that hold them, about 2 stages on average. Before the batched PRP ([hint_generation.md](hint_generation.md#batched-inverse-prp)) the numbers were 68 ms and 7 ms.
