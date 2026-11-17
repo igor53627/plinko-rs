@@ -5,10 +5,11 @@
 
 #[cfg(feature = "tee")]
 use crate::hint_gen::ct_path::{process_entries_ct, CtProcessInput};
-use crate::hint_gen::driver::{init_hints, HintParams};
+use crate::hint_gen::driver::{hint_cutoffs, HintParams};
 use crate::hint_gen::fast_path::{process_entries_fast, FastProcessInput};
 use crate::hint_gen::keys::derive_block_keys;
-use crate::hint_gen::types::{parity_word_at, BackupHint, RegularHint, DB_ENTRY_SIZE};
+use crate::hint_gen::types::record_at;
+use plinko::hints::{seed_check, HintGeometry, HintSet};
 #[cfg(feature = "tee")]
 use plinko::iprf::IprfTee;
 use plinko::iprf::{Iprf, PrfKey128};
@@ -16,6 +17,8 @@ use plinko::subsets::{SubsetPrf, INVALID_CUTOFF};
 
 struct Scenario {
     master_seed: [u8; 32],
+    /// Bytes of one database record.
+    record_size: usize,
     n_entries: usize,
     w: usize,
     c: usize,
@@ -24,7 +27,8 @@ struct Scenario {
     invalid: Option<(usize, usize)>,
 }
 
-type Parities = (Vec<[u8; 32]>, Vec<[u8; 32]>, Vec<[u8; 32]>);
+/// Regular parities, backup in-parities, backup out-parities.
+type Parities = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>);
 
 impl Scenario {
     fn params(&self) -> HintParams {
@@ -36,32 +40,47 @@ impl Scenario {
         }
     }
 
-    /// A v3 database: the parity word of entry `i` is non-zero and distinct.
+    /// A database in which every byte of a record depends on the record
+    /// index and on the byte position, and the first and the last byte of a
+    /// record are non-zero.
     fn db_bytes(&self) -> Vec<u8> {
-        let mut db: Vec<u8> = vec![0u8; self.n_entries * DB_ENTRY_SIZE];
-        for i in 0..self.n_entries {
-            let record: &mut [u8] = &mut db[i * DB_ENTRY_SIZE..(i + 1) * DB_ENTRY_SIZE];
-            record[0..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
-            record[31] = 0x80 | (i as u8);
-            record[32..40].fill(0xEE);
+        let mut db: Vec<u8> = vec![0u8; self.n_entries * self.record_size];
+        for (i, record) in db.chunks_exact_mut(self.record_size).enumerate() {
+            for (k, byte) in record.iter_mut().enumerate() {
+                *byte = (i as u8).wrapping_mul(37) ^ (k as u8).wrapping_mul(101) ^ 0x5A;
+            }
+            record[0] |= 0x01;
+            record[self.record_size - 1] |= 0x80;
         }
         db
     }
 
-    fn init(&self, subset_prf: &SubsetPrf) -> (Vec<RegularHint>, Vec<BackupHint>) {
-        let (mut regular, mut backup) = init_hints(subset_prf, self.c, &self.params());
+    fn init(&self, subset_prf: &SubsetPrf) -> HintSet {
+        let (mut regular, mut backup) = hint_cutoffs(subset_prf, self.c, &self.params());
         if let Some((regular_idx, backup_idx)) = self.invalid {
-            regular[regular_idx].cutoff = INVALID_CUTOFF;
-            backup[backup_idx].cutoff = INVALID_CUTOFF;
+            regular[regular_idx] = INVALID_CUTOFF;
+            backup[backup_idx] = INVALID_CUTOFF;
         }
-        (regular, backup)
+        let geometry = HintGeometry {
+            num_entries: self.n_entries as u64,
+            record_size: self.record_size as u32,
+            block_size: self.w as u64,
+            num_blocks: self.c as u64,
+        };
+        HintSet::new(geometry, seed_check(&self.master_seed), regular, backup).expect("hint set")
     }
 
-    fn parities_of(regular: &[RegularHint], backup: &[BackupHint]) -> Parities {
+    fn parities_of(hints: &HintSet) -> Parities {
         (
-            regular.iter().map(|h| h.parity).collect(),
-            backup.iter().map(|h| h.parity_in).collect(),
-            backup.iter().map(|h| h.parity_out).collect(),
+            (0..hints.num_regular())
+                .map(|j| hints.regular_parity(j).to_vec())
+                .collect(),
+            (0..hints.num_backup())
+                .map(|b| hints.backup_parity_in(b).to_vec())
+                .collect(),
+            (0..hints.num_backup())
+                .map(|b| hints.backup_parity_out(b).to_vec())
+                .collect(),
         )
     }
 
@@ -69,7 +88,7 @@ impl Scenario {
         let params: HintParams = self.params();
         let db: Vec<u8> = self.db_bytes();
         let subset_prf: SubsetPrf = SubsetPrf::new(&self.master_seed);
-        let (mut regular, mut backup) = self.init(&subset_prf);
+        let mut hints: HintSet = self.init(&subset_prf);
         let keys: Vec<PrfKey128> = derive_block_keys(&self.master_seed, self.c);
         let block_iprfs: Vec<Iprf> = keys
             .iter()
@@ -78,6 +97,7 @@ impl Scenario {
         process_entries_fast(
             FastProcessInput {
                 db_bytes: &db,
+                record_size: self.record_size,
                 n_entries: self.n_entries,
                 n_effective: self.c * self.w,
                 w: self.w,
@@ -87,11 +107,10 @@ impl Scenario {
                 subset_prf: &subset_prf,
                 threads,
             },
-            &mut regular,
-            &mut backup,
+            &mut hints,
             |_| {},
         );
-        Self::parities_of(&regular, &backup)
+        Self::parities_of(&hints)
     }
 
     #[cfg(feature = "tee")]
@@ -99,7 +118,7 @@ impl Scenario {
         let params: HintParams = self.params();
         let db: Vec<u8> = self.db_bytes();
         let subset_prf: SubsetPrf = SubsetPrf::new(&self.master_seed);
-        let (mut regular, mut backup) = self.init(&subset_prf);
+        let mut hints: HintSet = self.init(&subset_prf);
         let keys: Vec<PrfKey128> = derive_block_keys(&self.master_seed, self.c);
         let block_iprfs_ct: Vec<IprfTee> = keys
             .iter()
@@ -108,6 +127,7 @@ impl Scenario {
         process_entries_ct(
             CtProcessInput {
                 db_bytes: &db,
+                record_size: self.record_size,
                 n_entries: self.n_entries,
                 n_effective: self.c * self.w,
                 w: self.w,
@@ -116,11 +136,10 @@ impl Scenario {
                 block_iprfs_ct: &block_iprfs_ct,
                 subset_prf: &subset_prf,
             },
-            &mut regular,
-            &mut backup,
+            &mut hints,
             |_| {},
         );
-        Self::parities_of(&regular, &backup)
+        Self::parities_of(&hints)
     }
 
     /// Plinko Fig. 7, hint by hint: hint `j` takes the entry at offset
@@ -136,16 +155,18 @@ impl Scenario {
             .map(|key| Iprf::new(*key, params.total_hints as u64, self.w as u64))
             .collect();
 
-        let entry_at = |block: usize, hint_id: u64| -> [u8; 32] {
+        let zero: Vec<u8> = vec![0u8; self.record_size];
+        let entry_at = |block: usize, hint_id: u64| -> &[u8] {
             let offset: usize = block_iprfs[block].forward(hint_id) as usize;
             let index: usize = block * self.w + offset;
             if index < self.n_entries {
-                parity_word_at(&db, index)
+                record_at(&db, self.record_size, index)
             } else {
-                [0u8; 32]
+                &zero
             }
         };
-        let xor = |dst: &mut [u8; 32], src: [u8; 32]| {
+        let xor = |dst: &mut Vec<u8>, src: &[u8]| {
+            assert_eq!(dst.len(), src.len());
             for (d, s) in dst.iter_mut().zip(src) {
                 *d ^= s;
             }
@@ -162,9 +183,9 @@ impl Scenario {
             member
         };
 
-        let mut regular: Vec<[u8; 32]> = vec![[0u8; 32]; params.num_regular];
-        let mut backup_in: Vec<[u8; 32]> = vec![[0u8; 32]; params.num_backup];
-        let mut backup_out: Vec<[u8; 32]> = vec![[0u8; 32]; params.num_backup];
+        let mut regular: Vec<Vec<u8>> = vec![zero.clone(); params.num_regular];
+        let mut backup_in: Vec<Vec<u8>> = vec![zero.clone(); params.num_backup];
+        let mut backup_out: Vec<Vec<u8>> = vec![zero.clone(); params.num_backup];
         let invalid_ids: Vec<usize> = self
             .invalid
             .map(|(regular_idx, backup_idx)| vec![regular_idx, params.num_regular + backup_idx])
@@ -204,8 +225,18 @@ fn assert_paths_match_the_definition(scenario: &Scenario) -> Parities {
     }
 
     assert!(
-        expected.0.iter().filter(|p| **p != [0u8; 32]).count() > expected.0.len() / 2,
+        expected
+            .0
+            .iter()
+            .filter(|p| p.iter().any(|&b| b != 0))
+            .count()
+            > expected.0.len() / 2,
         "the scenario must give non-trivial regular parities"
+    );
+    // The last byte of a record reaches the parities (it is the TAG byte of a v3 record).
+    assert!(
+        expected.0.iter().any(|p| p[scenario.record_size - 1] != 0),
+        "the last byte of the records must be in the parities"
     );
     assert!(
         expected.1 != expected.2,
@@ -232,6 +263,7 @@ fn assert_paths_match_the_definition(scenario: &Scenario) -> Parities {
 fn streaming_paths_match_the_hint_definition() {
     assert_paths_match_the_definition(&Scenario {
         master_seed: [42u8; 32],
+        record_size: 40,
         n_entries: 32,
         w: 8,
         c: 4,
@@ -242,10 +274,11 @@ fn streaming_paths_match_the_hint_definition() {
 
 #[test]
 fn invalid_hints_take_no_entry() {
-    let zero: [u8; 32] = [0u8; 32];
+    let zero: Vec<u8> = vec![0u8; 40];
     let (regular_idx, backup_idx): (usize, usize) = (3, 5);
     let mut scenario = Scenario {
         master_seed: [42u8; 32],
+        record_size: 40,
         n_entries: 32,
         w: 8,
         c: 4,
@@ -270,10 +303,32 @@ fn invalid_hints_take_no_entry() {
 fn streaming_paths_match_the_hint_definition_above_1024_hints() {
     assert_paths_match_the_definition(&Scenario {
         master_seed: [7u8; 32],
+        record_size: 40,
         n_entries: 90,
         w: 16,
         c: 6,
         lambda: 40,
         invalid: None,
     });
+}
+
+/// Record sizes below one word, with a partial last word, and above the
+/// 32 bytes that hint file version 1 had. The last block is padded.
+#[test]
+fn streaming_paths_match_the_hint_definition_for_other_record_sizes() {
+    for record_size in [1usize, 5, 8, 13, 32, 45, 256] {
+        let parities: Parities = assert_paths_match_the_definition(&Scenario {
+            master_seed: [0x31u8; 32],
+            record_size,
+            n_entries: 27,
+            w: 8,
+            c: 4,
+            lambda: 4,
+            invalid: None,
+        });
+        assert!(
+            parities.0.iter().all(|parity| parity.len() == record_size),
+            "record size {record_size}"
+        );
+    }
 }

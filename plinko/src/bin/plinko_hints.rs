@@ -35,6 +35,7 @@ fn main() -> eyre::Result<()> {
 
     let geom = compute_geometry(db_bytes.len(), &args)?;
     info!(
+        record_size = geom.record_size,
         n_entries = geom.n_entries,
         n_effective = geom.n_effective,
         pad_entries = geom.pad_entries,
@@ -76,7 +77,19 @@ fn main() -> eyre::Result<()> {
         "Initializing backup hints"
     );
     let subset_prf: SubsetPrf = SubsetPrf::new(&master_seed);
-    let (mut regular_hints, mut backup_hints) = init_hints(&subset_prf, geom.c, &params);
+    let (regular_cutoffs, backup_cutoffs) = hint_cutoffs(&subset_prf, geom.c, &params);
+    let mut hints: HintSet = HintSet::new(
+        HintGeometry {
+            num_entries: geom.n_entries as u64,
+            // `validate_args` keeps the record size at or below `MAX_RECORD_SIZE`.
+            record_size: geom.record_size as u32,
+            block_size: geom.w as u64,
+            num_blocks: geom.c as u64,
+        },
+        seed_check(&master_seed),
+        regular_cutoffs,
+        backup_cutoffs,
+    )?;
 
     info!(
         step = "4/4",
@@ -106,6 +119,7 @@ fn main() -> eyre::Result<()> {
             hint_gen::ct_path::process_entries_ct(
                 hint_gen::ct_path::CtProcessInput {
                     db_bytes,
+                    record_size: geom.record_size,
                     n_entries: geom.n_entries,
                     n_effective: geom.n_effective,
                     w: geom.w,
@@ -114,8 +128,7 @@ fn main() -> eyre::Result<()> {
                     block_iprfs_ct: &block_iprfs_ct,
                     subset_prf: &subset_prf,
                 },
-                &mut regular_hints,
-                &mut backup_hints,
+                &mut hints,
                 |i| pb.set_position(i as u64),
             );
         }
@@ -130,6 +143,7 @@ fn main() -> eyre::Result<()> {
         hint_gen::fast_path::process_entries_fast(
             hint_gen::fast_path::FastProcessInput {
                 db_bytes,
+                record_size: geom.record_size,
                 n_entries: geom.n_entries,
                 n_effective: geom.n_effective,
                 w: geom.w,
@@ -139,8 +153,7 @@ fn main() -> eyre::Result<()> {
                 subset_prf: &subset_prf,
                 threads,
             },
-            &mut regular_hints,
-            &mut backup_hints,
+            &mut hints,
             |i| pb.set_position(i as u64),
         );
     }
@@ -148,19 +161,9 @@ fn main() -> eyre::Result<()> {
     pb.finish_with_message("Done");
 
     let duration = start.elapsed();
-    print_results(duration, file_len, &regular_hints, &backup_hints, &params);
+    print_results(duration, file_len, &hints, &params);
 
     if let Some(output) = &args.output {
-        let hints = HintSet {
-            geometry: HintGeometry {
-                num_entries: geom.n_entries as u64,
-                block_size: geom.w as u64,
-                num_blocks: geom.c as u64,
-            },
-            seed_check: seed_check(&master_seed),
-            regular: regular_hints,
-            backup: backup_hints,
-        };
         write_hint_file(output, &hints)?;
         info!(path = ?output, bytes = hints.serialized_len(), "Hint file written");
     }

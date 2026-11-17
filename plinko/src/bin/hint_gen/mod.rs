@@ -12,14 +12,13 @@ pub mod fast_path;
 pub mod keys;
 #[cfg(test)]
 mod path_tests;
-pub mod subsets;
 pub mod types;
 
 #[cfg(feature = "tee")]
 pub use driver::validate_hint_params;
 pub use driver::{
-    compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args,
+    compute_geometry, hint_cutoffs, parse_or_generate_seed, print_results, validate_args,
     worker_threads, write_hint_file, HintParams,
 };
 pub use keys::derive_block_keys;
-pub use types::{Args, BackupHint, RegularHint, DB_ENTRY_SIZE};
+pub use types::Args;

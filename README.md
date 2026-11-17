@@ -113,16 +113,16 @@ Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec
 
 ## Protocol costs
 
-Measured on 16,777,216 records (`w = 4096`, λ=128, Apple M3 Ultra, hardware AES; client and server in one process):
+Measured on 16,777,216 records of 40 bytes (`w = 4096`, λ=128, Apple M3 Ultra, hardware AES; client and server in one process):
 
 | Step | Cost |
 |------|------|
-| HintInit (client) | 0.58 ms CPU for each record: 412 s on 24 threads |
-| Hint file | 54.5 MB |
-| Query (client) | 56 ms CPU (median), 8.7 KB message; `c/2` iPRF forward calls |
-| Update (client) | 0.51 to 0.53 ms CPU for each changed record; one iPRF inverse |
+| HintInit (client) | 0.57 ms CPU for each record: 408 s on 24 threads |
+| Hint file | 67.1 MB (`4 + r` bytes for a regular hint and `4 + 2r` bytes for a backup hint; `r` is the record size) |
+| Query (client) | 53 ms CPU (median), 8.7 KB message; `c/2` iPRF forward calls |
+| Update (client) | 0.53 ms CPU for each changed record; one iPRF inverse |
 
-Conditions, scaling rules and the mainnet extrapolation: [`docs/protocol_overview.md`](docs/protocol_overview.md#cost). Index of benchmarks, with the historical TEE and GPU documents: [`docs/benchmarks.md`](docs/benchmarks.md).
+The record size is a parameter (`plinko_hints --record-size`); runs with 32-byte and 256-byte records gave CPU times within 1% of these. Conditions, scaling rules and the mainnet extrapolation: [`docs/protocol_overview.md`](docs/protocol_overview.md#cost). Index of benchmarks, with the historical TEE and GPU documents: [`docs/benchmarks.md`](docs/benchmarks.md).
 
 ## Verification
 

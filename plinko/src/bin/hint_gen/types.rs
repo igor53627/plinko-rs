@@ -1,18 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Hint types of the hint file; the generator fills them in place.
-pub use plinko::hints::{BackupHint, RegularHint};
-
-/// On-disk v3 record size (`database.bin` stride).
-pub use plinko::schema40::ENTRY_SIZE as DB_ENTRY_SIZE;
-
-/// Bytes XOR'd into hint parity (first 32 bytes of each v3 entry).
-pub const PARITY_WORD_SIZE: usize = 32;
-
-/// Alias kept for older call sites; prefer `PARITY_WORD_SIZE` / `DB_ENTRY_SIZE`.
-#[allow(dead_code)]
-pub const WORD_SIZE: usize = PARITY_WORD_SIZE;
+/// Record size of a v3 `database.bin` (`plinko::schema40`), the default of `--record-size`.
+pub const DEFAULT_RECORD_SIZE: usize = plinko::schema40::ENTRY_SIZE;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Plinko PIR Hint Generator (Paper-compliant)", long_about = None)]
@@ -21,6 +11,11 @@ pub struct Args {
     /// Path to the flat binary database file produced by the extraction pipeline.
     #[arg(short, long, default_value = "/mnt/plinko/data/database.bin")]
     pub db_path: PathBuf,
+
+    /// Bytes of one database record. The file is an array of records of this
+    /// size, and a hint parity is the XOR of whole records.
+    #[arg(short, long, default_value_t = DEFAULT_RECORD_SIZE)]
+    pub record_size: usize,
 
     /// Security parameter (number of regular hints per block).
     #[arg(short, long, default_value = "128")]
@@ -82,11 +77,32 @@ impl Args {
     }
 }
 
-/// Load the 32-byte parity word for logical entry `index` in a v3 `database.bin` mmap.
+/// Returns record `index` of a database of `record_size`-byte records.
+///
+/// # Panics
+/// Panics if the record is not inside `db_bytes`.
 #[inline]
-pub fn parity_word_at(db_bytes: &[u8], index: usize) -> [u8; PARITY_WORD_SIZE] {
-    let offset = index * DB_ENTRY_SIZE;
-    db_bytes[offset..offset + PARITY_WORD_SIZE]
-        .try_into()
-        .expect("v3 entry must be at least 32 bytes")
+pub fn record_at(db_bytes: &[u8], record_size: usize, index: usize) -> &[u8] {
+    &db_bytes[index * record_size..(index + 1) * record_size]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_at_returns_the_whole_record() {
+        let db: Vec<u8> = (0u8..21).collect();
+        assert_eq!(record_at(&db, 7, 0), [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(record_at(&db, 7, 2), [14, 15, 16, 17, 18, 19, 20]);
+        assert_eq!(record_at(&db, 21, 0), db.as_slice());
+    }
+
+    #[test]
+    fn default_record_size_is_the_v3_record() {
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        assert_eq!(args.record_size, 40);
+        let args: Args = Args::parse_from(["plinko_hints", "--record-size", "256"]);
+        assert_eq!(args.record_size, 256);
+    }
 }

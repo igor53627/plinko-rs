@@ -24,7 +24,8 @@ const ACCOUNT_MAP_ENTRY_SIZE: u64 = 24;
 const STORAGE_MAP_ENTRY_SIZE: u64 = 56;
 /// Subset cutoff of a hint (see `plinko::subsets`).
 const HINT_CUTOFF_SIZE: u64 = 4;
-const HINT_PARITY_SIZE: u64 = 32;
+/// A parity is the XOR of whole records.
+const HINT_PARITY_SIZE: u64 = ENTRY_SIZE;
 
 // --- Measured throughput constants ---
 
@@ -201,13 +202,13 @@ fn main() -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE,
         "storage_mapping_bytes",
     )?;
-    // Regular hints: each is cutoff(4B) + parity(32B) = 36 bytes
+    // Regular hints: each is cutoff(4B) + parity(40B) = 44 bytes
     let regular_hint_bytes = checked_mul(
         num_regular,
         HINT_CUTOFF_SIZE + HINT_PARITY_SIZE,
         "regular_hint_bytes",
     )?;
-    // Backup hints: each is cutoff(4B) + parity_in(32B) + parity_out(32B) = 68 bytes
+    // Backup hints: each is cutoff(4B) + parity_in(40B) + parity_out(40B) = 84 bytes
     let backup_hint_bytes = checked_mul(
         num_backup,
         HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE,

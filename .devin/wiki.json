@@ -21,7 +21,7 @@
       "author": "maintainer"
     },
     {
-      "content": "Hint file: plinko_hints --output writes all hints of one client to one file (plinko::hints::HintSet; magic PLNKHINT, version 1, geometry, hint counts, seed check, 36-byte regular and 68-byte backup records, BLAKE3 checksum; layout in docs/data_format.md). The protocol client loads it with Client::from_hints and needs the master seed (--seed-file); the file never contains the seed. plinko/tests/hint_file_e2e_test.rs runs the binary and checks queries and updates.",
+      "content": "Hint file: plinko_hints --output writes all hints of one client to one file (plinko::hints::HintSet; magic PLNKHINT, version 2, record size, geometry, hint counts, seed check, regular records of 4 + r bytes and backup records of 4 + 2r bytes for a record size r, BLAKE3 checksum; layout in docs/data_format.md). The record size is a parameter: plinko_hints --record-size (default 40, the v3 record), ProtocolParams::record_size. A parity is the XOR of whole records. The file does not contain the master seed (--seed-file); Client::from_hints loads it and rejects another record size, geometry, hint count or seed.",
       "author": "maintainer"
     },
     {

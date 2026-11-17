@@ -108,7 +108,7 @@ w = 65536 with hardware AES). No table was built at mainnet scale.
 Notes:
 
 - "Today" has no keyword lookup; it is the base for the comparison. Its hint
-  file is given for a parity of 40 bytes (872 MB with the current 32 bytes).
+  file is given for a parity of 40 bytes, which is the size since TASK-31.
 - The hint file grows with the PIR entry size, because a parity has the size
   of one PIR entry.
 - HintInit cost follows the number of PIR entries, because the iPRF inverse is
@@ -159,12 +159,10 @@ lookups per hint set, and a change of one record changes a 320-byte entry.
 
 ## Consequences For The Code
 
-1. **The PIR entry size becomes a parameter.** `plinko::hints` (parity size;
-   the file header has the field already), `plinko::protocol` (`Entry` is
-   32 bytes today) and `plinko_hints` (40-byte stride, 32-byte parity window)
-   take the entry size from the table parameters. The parity covers the full
-   entry, and other data sets can use other record sizes. This step is
-   TASK-31.
+1. **The PIR entry size is a parameter** (done in TASK-31): `plinko::hints`,
+   `plinko::protocol` and `plinko_hints --record-size` take the record size of
+   the database, and the parity covers the full record. A bucket of this
+   proposal is one record.
 2. **A table builder.** The cuckoo build needs random access to the table.
    With d = 2 the builder keeps, for each slot, the index of the other
    candidate bucket of its key (4 bytes), so that it can move a record without
@@ -199,8 +197,8 @@ lookups per hint set, and a change of one record changes a 320-byte entry.
 
 1. Library module `plinko::keyword`: hashing, slot and bucket codec, in-memory
    cuckoo builder, tag match. Unit tests with a build at a load of 0.90.
-2. Entry size as a parameter in `hints`, `protocol` and `plinko_hints`; the
-   existing end-to-end tests run with 32-byte and with 160-byte entries.
+2. Entry size as a parameter in `hints`, `protocol` and `plinko_hints` (done
+   in TASK-31; the end-to-end tests run with 1, 13, 40, 45 and 256 bytes).
 3. Builder binary and the changes of `gen_synthetic` and the extractor.
 4. Keyword client and an end-to-end test: build a table from synthetic
    accounts and slots, run `plinko_hints`, look up an address, an

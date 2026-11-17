@@ -15,7 +15,7 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 
 ### `database.bin` ordering
 
-Flat mmap file used by `plinko_hints` (40-byte stride; see [`hint_generation.md`](hint_generation.md)):
+Flat mmap file used by `plinko_hints` (see [`hint_generation.md`](hint_generation.md)). The hint generator and the protocol work with any array of fixed-size records (`--record-size`); the v3 layout below is the output of the extractor and of `gen_synthetic`, with 40-byte records:
 
 1. Indices `0 .. accounts-1`: account entries (Reth `PlainAccountState` walk order).
 2. Indices `accounts .. total_entries-1`: storage entries (Reth storage walk order).
@@ -76,27 +76,31 @@ Synthetic datasets ([`gen_synthetic`](../plinko/src/bin/gen_synthetic.rs)) add `
 ## Hint file (`hints.bin`)
 
 Written by `plinko_hints --output` and read by the protocol client
-(`plinko::hints::HintSet`). All integers are little-endian. Version 1:
+(`plinko::hints::HintSet`). All integers are little-endian. Version 2, where
+`r` is the record size of the database in bytes (`plinko_hints --record-size`,
+default 40):
 
-| Offset   | Size    | Field                                                  |
-|----------|---------|--------------------------------------------------------|
-| 0        | 8       | magic `PLNKHINT`                                       |
-| 8        | 4       | version (`1`)                                          |
-| 12       | 4       | parity size in bytes (`32`)                            |
-| 16       | 8       | `num_entries`: real entries of `database.bin`          |
-| 24       | 8       | `block_size` (`w`)                                     |
-| 32       | 8       | `num_blocks` (`c`), padding included                   |
-| 40       | 8       | `num_regular`                                          |
-| 48       | 8       | `num_backup`                                           |
-| 56       | 8       | seed check: `SHA-256(master_seed \|\| "plinko_seed_check")[0..8]` |
-| 64       | 36 each | regular hints: cutoff (`u32`), parity (32 bytes)       |
-| ...      | 68 each | backup hints: cutoff (`u32`), parity in, parity out    |
-| end - 32 | 32      | BLAKE3 hash of all bytes before it                     |
+| Offset   | Size          | Field                                                  |
+|----------|---------------|--------------------------------------------------------|
+| 0        | 8             | magic `PLNKHINT`                                       |
+| 8        | 4             | version (`2`)                                          |
+| 12       | 4             | `record_size` (`r`), 1 to 1,048,576                    |
+| 16       | 8             | `num_entries`: real records of the database            |
+| 24       | 8             | `block_size` (`w`)                                     |
+| 32       | 8             | `num_blocks` (`c`), padding included                   |
+| 40       | 8             | `num_regular`                                          |
+| 48       | 8             | `num_backup`                                           |
+| 56       | 8             | seed check: `SHA-256(master_seed \|\| "plinko_seed_check")[0..8]` |
+| 64       | `4 + r` each  | regular hints: cutoff (`u32`), parity (`r` bytes)      |
+| ...      | `4 + 2r` each | backup hints: cutoff (`u32`), parity in, parity out    |
+| end - 32 | 32            | BLAKE3 hash of all bytes before it                     |
 
 - Regular hint `j` has hint ID `j`; backup hint `b` has hint ID `num_regular + b`.
 - A cutoff defines the block subset of a hint ([`hint_generation.md`](hint_generation.md#block-subsets)). Cutoff `0` marks an invalid hint with zero parities.
-- A parity is the XOR of the first 32 bytes of the selected records.
-- Size: `96 + num_regular × 36 + num_backup × 68` bytes. Mainnet with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 872,415,328 bytes (computed).
+- A parity is the XOR of the selected records, over all `r` bytes of a record.
+- Size: `96 + num_regular × (4 + r) + num_backup × (4 + 2r)` bytes. Mainnet v3 (`r` = 40) with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 1,073,741,920 bytes (computed).
+- The reader rejects a file of another version and a record size outside the range. `Client::from_hints` rejects a hint set whose record size differs from the parameters of the client.
+- Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record. No code reads it; run `plinko_hints` again.
 - The file holds no master seed. The file and the seed are client-secret.
 
 ## Limits of the extractor

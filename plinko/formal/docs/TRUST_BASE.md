@@ -60,7 +60,8 @@ log of `make all` shows what each proof uses. Result with Rocq 9.3.0:
 - **`sims/HintInitSim.v`.** One iPRF with no key serves all blocks: the model
   computes the block key and does not use it. The block subsets come from an
   abstract predicate; the Rust code uses a PRF cutoff (`plinko/src/subsets.rs`).
-  The theorem for backup hints has no proof.
+  The theorem for backup hints has no proof. The zero entry of the model has
+  32 bytes; in the Rust code the record size is a parameter.
 - **`specs/DbSpec.v`.** The file models `derive_plinko_params` of
   `plinko/src/db.rs`. Only `bench_gpu_hints` and `cost_estimate` call that
   function. `plinko_hints` and the client use another geometry

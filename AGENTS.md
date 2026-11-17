@@ -93,8 +93,11 @@ journalctl -u plinko_hints_0p01_prodW -n 200
 
 ## Data Format
 
-- v3 `database.bin`: 40-byte records (see `docs/data_format.md`)
-- Hint parity XOR uses the first 32 bytes of each record. For account entries this includes the account TAG bytes at offsets `24..32`; account padding and storage TAG/padding bytes are outside the XOR window.
+- A database is an array of fixed-size records. The record size is a parameter:
+  `plinko_hints --record-size` (default 40), `ProtocolParams::record_size`, and the
+  `record_size` field of the hint file (version 2, `docs/data_format.md`).
+- A hint parity is the XOR of whole records. No code may read a part of a record into a parity.
+- v3 `database.bin` (extractor, `gen_synthetic`): 40-byte records, layout in `docs/data_format.md`.
 
 ## Style
 

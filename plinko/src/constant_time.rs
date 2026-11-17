@@ -27,7 +27,7 @@
 //!
 //! - `ct_lt_u64`: Compare loop index against preimage count
 //! - `ct_select_usize`: Clamp array indices without branching
-//! - `ct_xor_32_masked`: Conditionally XOR parity values
+//! - `ct_xor_masked`: Conditionally XOR parity values
 //! - `ct_min_u64`, `ct_saturating_sub_u64`: Coin masks in `binomial::coin_binomial_ct`
 
 /// Branchless select: returns a if choice is 1, b if choice is 0
@@ -105,11 +105,17 @@ pub fn ct_saturating_sub_u64(a: u64, b: u64) -> u64 {
 ///
 /// Caller must ensure `mask` is either 0 or 1. Other values produce incorrect results.
 /// In Plinko's CT HintInit, masks are derived from `ct_lt_u64` which guarantees this.
+///
+/// # Panics
+///
+/// Panics if `dst` and `src` have different lengths. The lengths are public
+/// (the record size of the database).
 #[inline]
-pub fn ct_xor_32_masked(dst: &mut [u8; 32], src: &[u8; 32], mask: u64) {
+pub fn ct_xor_masked(dst: &mut [u8], src: &[u8], mask: u64) {
+    assert_eq!(dst.len(), src.len(), "ct_xor_masked: length mismatch");
     let m = (mask.wrapping_neg()) as u8;
-    for i in 0..32 {
-        dst[i] ^= src[i] & m;
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d ^= s & m;
     }
 }
 

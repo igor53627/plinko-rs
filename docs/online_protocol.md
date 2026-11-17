@@ -173,8 +173,11 @@ offsets, and an offset outside a block.
 - **Formal model.** No machine-checked statement covers the online phase or
   the shared offsets. The Rocq models have no Query, Answer and Recon
   ([verification.md](verification.md)).
-- **Entry size.** The model has entries of 32 bytes in memory; a record of
-  `database.bin` has 40 bytes.
+- **Malformed answer.** `reconstruct_and_replenish` returns
+  `RecordSizeMismatch` for a parity that does not have the record size. The
+  call consumed the prepared query, so the query ends as with `abandon_query`:
+  the hint is removed and no backup hint is used. A caller that wants to retry
+  must check the size of the answer before the call.
 - **Reference check.** `scripts/differential_protocol_transcript.sh` compares
   the answers and the number of queries left with the Python reference. It does
   not compare the messages. The reference selects the smallest free index as

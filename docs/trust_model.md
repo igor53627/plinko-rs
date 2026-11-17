@@ -21,10 +21,10 @@ not implement it.
 
 ## Parties
 
-| Party  | Runs                                                      | Holds                                               |
-|--------|-----------------------------------------------------------|-----------------------------------------------------|
-| Client | HintInit (`plinko_hints`), Query, Recon, UpdateHint       | Master seed, hint file, cache of answers            |
-| Server | Publishes `database.bin` and updates, Answer              | `database.bin`                                      |
+| Party  | Runs                                                | Holds                                    |
+|--------|-----------------------------------------------------|------------------------------------------|
+| Client | HintInit (`plinko_hints`), Query, Recon, UpdateHint | Master seed, hint file, cache of answers |
+| Server | Publishes `database.bin` and updates, Answer        | `database.bin`                           |
 
 There is no third party. A machine that the client rents to run HintInit holds
 the master seed and is thus part of the client (see
@@ -32,11 +32,11 @@ the master seed and is thus part of the client (see
 
 ## Secrets
 
-| Secret            | Where it is                                 | What a holder can do                                                          |
-|-------------------|---------------------------------------------|-------------------------------------------------------------------------------|
-| Master seed       | `--seed-file` of `plinko_hints`, the client | Compute all block keys and all block subsets, and so the set of each hint     |
-| Hint file         | `--output` of `plinko_hints`, the client    | Client-secret; the parities and cutoffs belong to one client                  |
-| PMNS level cache  | Client memory (29 MB at mainnet, computed)  | Derived from the block keys; as secret as the master seed                     |
+| Secret           | Where it is                                 | What a holder can do                                                      |
+|------------------|---------------------------------------------|---------------------------------------------------------------------------|
+| Master seed      | `--seed-file` of `plinko_hints`, the client | Compute all block keys and all block subsets, and so the set of each hint |
+| Hint file        | `--output` of `plinko_hints`, the client    | Client-secret; the parities and cutoffs belong to one client              |
+| PMNS level cache | Client memory (29 MB at mainnet, computed)  | Derived from the block keys; as secret as the master seed                 |
 
 A party that holds the master seed and sees the queries can find the queried
 index of each query. For one offset of the query it computes the iPRF inverse
@@ -100,16 +100,16 @@ These points are outside the privacy claim today.
 Mainnet v3: 1,834,095,877 records, w = 65536, c = 27988, lambda = 128. Details
 and measurement conditions: [hint_generation.md](hint_generation.md#mainnet-cost).
 
-| Item                               | Cost                                         | Source                                   |
-|------------------------------------|----------------------------------------------|------------------------------------------|
-| Download of `database.bin`         | 73.4 GB (73,363,835,080 bytes)               | `data_format.md`                         |
-| HintInit, CPU                      | About 300 core-hours                         | Extrapolated from 24-block runs          |
-| HintInit, wall time on 24 cores    | About 13 hours                               | Extrapolated from the 24-thread run      |
-| HintInit, wall time on 8 cores     | About 37 hours                               | Extrapolated from the 8-thread run       |
-| HintInit, memory                   | 1.8 GB plus the mapped database pages        | Measured, 24 blocks, mainnet hint count  |
-| Hint file                          | 872 MB (872,415,328 bytes)                   | Computed                                 |
-| Update of the hints                | 0.52 ms CPU per changed record               | Measured (`inverse`, one thread)         |
-| Query, client side                 | About 0.4 s CPU                              | Computed: 13,994 `forward` calls, 28.5 us each |
+| Item                            | Cost                                  | Source                                                   |
+|---------------------------------|---------------------------------------|----------------------------------------------------------|
+| Download of `database.bin`      | 73.4 GB (73,363,835,080 bytes)        | `data_format.md`                                         |
+| HintInit, CPU                   | About 300 core-hours                  | Extrapolated from 24-block runs                          |
+| HintInit, wall time on 24 cores | About 13 hours                        | Extrapolated from the 24-thread run                      |
+| HintInit, wall time on 8 cores  | About 37 hours                        | Extrapolated from the 8-thread run                       |
+| HintInit, memory                | 2.1 GB plus the mapped database pages | Measured, 24 blocks, mainnet hint count, 40-byte records |
+| Hint file                       | 1.07 GB (1,073,741,920 bytes)         | Computed, 40-byte parities                               |
+| Update of the hints             | 0.52 ms CPU per changed record        | Measured (`inverse`, one thread)                         |
+| Query, client side              | About 0.4 s CPU                       | Computed: 13,994 `forward` calls, 28.5 us each           |
 
 The measurements are from an Apple M3 Ultra with hardware AES. No mainnet run
 was done. A build without hardware AES is about 20 times slower.
@@ -120,13 +120,13 @@ HintInit ends.
 
 ## Alternatives
 
-| HintInit is run by                    | Seed is held by   | Privacy against the server                                   | Status                         |
-|---------------------------------------|-------------------|--------------------------------------------------------------|--------------------------------|
-| Client                                | Client            | Yes (paper model)                                            | This design; implemented       |
-| Server, in the clear                  | Server            | None                                                         | Rejected                       |
-| Rented machine or GPU cloud           | Its operator      | Only if the operator does not give the seed to the server    | Not part of the design         |
-| TEE at the server or at a cloud       | The enclave       | Only if the enclave and its side channels hold               | Not part of the design         |
-| Server under FHE (paper, Section 5.1) | Client            | Yes                                                          | Not implemented                |
+| HintInit is run by                    | Seed is held by | Privacy against the server                                | Status                   |
+|---------------------------------------|-----------------|-----------------------------------------------------------|--------------------------|
+| Client                                | Client          | Yes (paper model)                                         | This design; implemented |
+| Server, in the clear                  | Server          | None                                                      | Rejected                 |
+| Rented machine or GPU cloud           | Its operator    | Only if the operator does not give the seed to the server | Not part of the design   |
+| TEE at the server or at a cloud       | The enclave     | Only if the enclave and its side channels hold            | Not part of the design   |
+| Server under FHE (paper, Section 5.1) | Client          | Yes                                                       | Not implemented          |
 
 The rented machine and the TEE add a trust assumption that single-server PIR
 is meant to remove.

@@ -1,57 +1,65 @@
 //! End-to-end tests from the `plinko_hints` binary to the protocol client.
 //!
-//! The generator reads a v3 `database.bin` and writes a hint file. The client
-//! loads the file and answers queries against a server that holds the same
-//! database.
+//! The generator reads a database file of fixed-size records and writes a
+//! hint file. The client loads the file and answers queries against a server
+//! that holds the same database.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use plinko::hints::{HintFileError, HintSet};
-use plinko::protocol::{
-    compute_hints, Client, Entry, ProtocolError, ProtocolParams, Server, ENTRY_SIZE,
-};
-use plinko::schema40::ENTRY_SIZE as DB_ENTRY_SIZE;
+use plinko::hints::{HintFileError, HintGeometry, HintSet};
+use plinko::protocol::{compute_hints, Client, ProtocolError, ProtocolParams, Server};
+
+/// Record size of a v3 `database.bin`, the default of `plinko_hints --record-size`.
+const V3_RECORD_SIZE: usize = 40;
 
 const MASTER_SEED: [u8; 32] = [0x5Cu8; 32];
 const QUERY_SEED: [u8; 32] = [0xA7u8; 32];
 
-fn make_entry(tag: u64) -> Entry {
-    let mut entry = [0u8; ENTRY_SIZE];
-    entry[0..8].copy_from_slice(&tag.to_le_bytes());
-    for (i, byte) in entry.iter_mut().enumerate().skip(8) {
-        *byte = (tag as u8).wrapping_mul(31).wrapping_add(i as u8) | 0x01;
-    }
-    entry
+/// A record in which every byte is non-zero and depends on the tag and on the
+/// byte position.
+fn make_record(tag: u64, record_size: usize) -> Vec<u8> {
+    (0..record_size)
+        .map(|k| {
+            let mixed: u8 = (tag as u8).wrapping_mul(31) ^ ((tag >> 8) as u8);
+            (mixed ^ (k as u8).wrapping_mul(97)) | 0x01
+        })
+        .collect()
 }
 
-fn make_db(num_entries: usize) -> Vec<Entry> {
-    (0..num_entries).map(|i| make_entry(i as u64 + 1)).collect()
+/// A database: `num_entries` records one after another.
+fn make_db(num_entries: usize, record_size: usize) -> Vec<u8> {
+    (0..num_entries)
+        .flat_map(|i| make_record(i as u64 + 1, record_size))
+        .collect()
 }
 
-/// A v3 `database.bin`: the protocol entry is the first 32 bytes of a record.
-/// Bytes 32..40 are outside the parity window and must not change a hint.
-fn database_bytes(entries: &[Entry]) -> Vec<u8> {
-    let mut bytes: Vec<u8> = Vec::with_capacity(entries.len() * DB_ENTRY_SIZE);
-    for (i, entry) in entries.iter().enumerate() {
-        bytes.extend_from_slice(entry);
-        bytes.extend_from_slice(&[0xE0 | (i as u8 & 0x0F); DB_ENTRY_SIZE - ENTRY_SIZE]);
-    }
-    bytes
+fn record(database: &[u8], record_size: usize, index: usize) -> &[u8] {
+    &database[index * record_size..(index + 1) * record_size]
 }
 
 struct Scenario {
     name: &'static str,
+    /// Value of `--record-size`; `None` leaves the default of the binary (40).
+    record_size: Option<usize>,
     num_entries: usize,
     block_size: usize,
     lambda: usize,
     /// Value of `--threads`; `None` leaves the default of the binary.
     threads: Option<usize>,
+    /// Pass `--constant-time` (needs the `tee` feature).
+    constant_time: bool,
+}
+
+impl Scenario {
+    fn record_size(&self) -> usize {
+        self.record_size.unwrap_or(V3_RECORD_SIZE)
+    }
 }
 
 struct Generated {
-    entries: Vec<Entry>,
+    database: Vec<u8>,
     hint_path: PathBuf,
 }
 
@@ -68,8 +76,8 @@ fn generate(scenario: &Scenario) -> Generated {
     let seed_path: PathBuf = dir.join("seed.hex");
     let hint_path: PathBuf = dir.join("hints.bin");
 
-    let entries: Vec<Entry> = make_db(scenario.num_entries);
-    fs::write(&db_path, database_bytes(&entries)).expect("write database");
+    let database: Vec<u8> = make_db(scenario.num_entries, scenario.record_size());
+    fs::write(&db_path, &database).expect("write database");
     let seed_hex: String = MASTER_SEED.iter().map(|b| format!("{b:02x}")).collect();
     fs::write(&seed_path, format!("{seed_hex}\n")).expect("write seed file");
     // An earlier output with permissive mode: the run must replace it, not reuse it.
@@ -94,9 +102,15 @@ fn generate(scenario: &Scenario) -> Generated {
         .arg(&hint_path)
         .args(
             scenario
+                .record_size
+                .map(|record_size| format!("--record-size={record_size}")),
+        )
+        .args(
+            scenario
                 .threads
                 .map(|threads| format!("--threads={threads}")),
         )
+        .args(scenario.constant_time.then_some("--constant-time"))
         .output()
         .expect("run plinko_hints");
     assert!(
@@ -122,7 +136,10 @@ fn generate(scenario: &Scenario) -> Generated {
         "temporary files remain: {leftovers:?}"
     );
 
-    Generated { entries, hint_path }
+    Generated {
+        database,
+        hint_path,
+    }
 }
 
 fn load(path: &Path) -> HintSet {
@@ -135,7 +152,8 @@ fn load(path: &Path) -> HintSet {
 fn query_and_check(
     client: &mut Client,
     server: &Server,
-    entries: &[Entry],
+    database: &[u8],
+    record_size: usize,
     candidates: impl Iterator<Item = usize>,
     count: usize,
 ) -> Vec<usize> {
@@ -150,10 +168,14 @@ fn query_and_check(
             Err(error) => panic!("prepare_query({index}) failed: {error}"),
         };
         let response = server.answer(&prepared.query).expect("answer");
-        let got: Entry = client
+        let got: Vec<u8> = client
             .reconstruct_and_replenish(prepared, response)
             .expect("reconstruct");
-        assert_eq!(got, entries[index], "wrong answer for index {index}");
+        assert_eq!(
+            got,
+            record(database, record_size, index),
+            "wrong answer for index {index}"
+        );
         queried.push(index);
     }
     assert_eq!(queried.len(), count, "too few indices have a hint");
@@ -163,32 +185,37 @@ fn query_and_check(
 /// Loads the generated file into a client and runs queries, an update, and more queries.
 fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) {
     let params: ProtocolParams = ProtocolParams::for_hint_set(&hints).expect("params of the file");
+    let record_size: usize = scenario.record_size();
     let expected: ProtocolParams = ProtocolParams::new(
         scenario.num_entries,
+        record_size,
         Some(scenario.block_size),
         scenario.lambda,
         None,
     )
     .expect("expected params");
+    assert_eq!(params.record_size, record_size);
+    assert_eq!(params.num_entries, scenario.num_entries);
     assert_eq!(params.num_blocks, expected.num_blocks);
     assert_eq!(params.num_regular_hints, expected.num_regular_hints);
     assert_eq!(params.num_backup_hints, expected.num_backup_hints);
 
-    let mut entries: Vec<Entry> = generated.entries.clone();
-    let mut server: Server = Server::new(params.clone(), &entries).expect("server");
+    let mut database: Vec<u8> = generated.database.clone();
+    let mut server: Server = Server::new(params.clone(), &database).expect("server");
     let mut client: Client =
         Client::from_hints(params.clone(), MASTER_SEED, QUERY_SEED, hints).expect("client");
 
-    let n: usize = entries.len();
+    let n: usize = params.num_entries;
     let spread = |start: usize| (0..n).map(move |k| (start + k * 37) % n);
-    let first: Vec<usize> = query_and_check(&mut client, &server, &entries, spread(0), 5);
+    let first: Vec<usize> =
+        query_and_check(&mut client, &server, &database, record_size, spread(0), 5);
 
     // Change one index that was queried (it is in the client cache and in a
     // promoted hint) and many indices that were not.
-    let mut updates: Vec<(usize, Entry)> = Vec::new();
+    let mut updates: Vec<(usize, Vec<u8>)> = Vec::new();
     for index in (0..n).filter(|index| index % 3 != 1 || *index == first[0]) {
-        let value: Entry = make_entry(0xBEEF_0000 + index as u64);
-        entries[index] = value;
+        let value: Vec<u8> = make_record(0xBEEF_0000 + index as u64, record_size);
+        database[index * record_size..(index + 1) * record_size].copy_from_slice(&value);
         updates.push((index, value));
     }
     let deltas = server.apply_updates(&updates).expect("server update");
@@ -205,7 +232,8 @@ fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) 
     let candidates = [fresh_changed, fresh_unchanged]
         .into_iter()
         .chain(spread(n / 2));
-    let second: Vec<usize> = query_and_check(&mut client, &server, &entries, candidates, 6);
+    let second: Vec<usize> =
+        query_and_check(&mut client, &server, &database, record_size, candidates, 6);
     assert!(
         second.iter().any(|index| index % 3 != 1),
         "no changed entry was queried after the update"
@@ -214,39 +242,61 @@ fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) 
     // A cached index is answered with the updated value.
     let prepared = client.prepare_query(first[0]).expect("re-query");
     let response = server.answer(&prepared.query).expect("answer");
-    let got: Entry = client
+    let got: Vec<u8> = client
         .reconstruct_and_replenish(prepared, response)
         .expect("reconstruct");
-    assert_eq!(got, entries[first[0]], "stale value for a cached index");
+    assert_eq!(
+        got,
+        record(&database, record_size, first[0]),
+        "stale value for a cached index"
+    );
+}
+
+/// Runs the generator, compares its file with `compute_hints`, and runs the
+/// online phase with the file.
+fn check_generator_file(scenario: &Scenario) -> Generated {
+    let generated: Generated = generate(scenario);
+    let hints: HintSet = load(&generated.hint_path);
+    let record_size: usize = scenario.record_size();
+    assert_eq!(hints.record_size(), record_size);
+
+    let params: ProtocolParams = ProtocolParams::for_hint_set(&hints).expect("params");
+    let in_memory: HintSet =
+        compute_hints(&params, &MASTER_SEED, &generated.database).expect("compute_hints");
+    // Every byte position of a record reaches the parities, the last one included.
+    for position in 0..record_size {
+        assert!(
+            (0..in_memory.num_regular()).any(|j| in_memory.regular_parity(j)[position] != 0),
+            "byte {position} of the records is in no regular parity"
+        );
+    }
+    assert!(
+        hints == in_memory,
+        "generator file differs from compute_hints"
+    );
+
+    run_online_phase(scenario, &generated, hints);
+    generated
 }
 
 #[test]
 fn generator_file_equals_the_client_hint_set_and_answers_queries() {
     // 97 entries in 8 blocks of 16: the last block is partly padding, and the
-    // eighth block is all padding.
+    // eighth block is all padding. No `--record-size`: 40-byte v3 records.
     let scenario = Scenario {
         name: "small",
+        record_size: None,
         num_entries: 97,
         block_size: 16,
         lambda: 8,
         threads: None,
+        constant_time: false,
     };
-    let generated: Generated = generate(&scenario);
-    let hints: HintSet = load(&generated.hint_path);
-
-    let params: ProtocolParams = ProtocolParams::for_hint_set(&hints).expect("params");
-    let in_memory: HintSet =
-        compute_hints(&params, &MASTER_SEED, &generated.entries).expect("compute_hints");
-    assert!(
-        in_memory
-            .regular
-            .iter()
-            .any(|hint| hint.parity != [0u8; 32]),
-        "the scenario must give non-zero parities"
-    );
-    assert!(
-        hints == in_memory,
-        "generator file differs from compute_hints"
+    let generated: Generated = check_generator_file(&scenario);
+    assert_eq!(
+        fs::metadata(&generated.hint_path).expect("metadata").len(),
+        96 + 128 * 44 + 128 * 84,
+        "hint file size for 40-byte records"
     );
 
     #[cfg(unix)]
@@ -262,8 +312,101 @@ fn generator_file_equals_the_client_hint_set_and_answers_queries() {
             "the hint file must not be group or world readable"
         );
     }
+}
 
-    run_online_phase(&scenario, &generated, hints);
+/// Record sizes that are not 40: one byte, a partial last word, a size that
+/// is not a multiple of 8 above the old 32-byte window, and a large record.
+#[test]
+fn generator_file_answers_queries_for_other_record_sizes() {
+    for (name, record_size) in [
+        ("record_1", 1usize),
+        ("record_13", 13),
+        ("record_45", 45),
+        ("record_256", 256),
+    ] {
+        let generated: Generated = check_generator_file(&Scenario {
+            name,
+            record_size: Some(record_size),
+            num_entries: 97,
+            block_size: 16,
+            lambda: 8,
+            threads: Some(3),
+            constant_time: false,
+        });
+        assert_eq!(
+            fs::metadata(&generated.hint_path).expect("metadata").len() as usize,
+            96 + 128 * (4 + record_size) + 128 * (4 + 2 * record_size),
+            "hint file size for record size {record_size}"
+        );
+    }
+}
+
+/// The constant-time path must write the same file as the standard path.
+#[cfg(feature = "tee")]
+#[test]
+fn constant_time_path_writes_the_same_file_for_each_record_size() {
+    for (name, record_size) in [
+        ("ct_record_1", 1usize),
+        ("ct_record_13", 13),
+        ("ct_record_40", 40),
+        ("ct_record_45", 45),
+        ("ct_record_256", 256),
+    ] {
+        // 43 entries in 6 blocks of 8: the last block is partly padding.
+        let scenario_for = |name: &'static str, constant_time: bool| Scenario {
+            name,
+            record_size: Some(record_size),
+            num_entries: 43,
+            block_size: 8,
+            lambda: 8,
+            threads: Some(1),
+            constant_time,
+        };
+        let standard: Generated = generate(&scenario_for(name, false));
+        let standard_bytes: Vec<u8> = fs::read(&standard.hint_path).expect("read hint file");
+        let constant_time: Generated = check_generator_file(&scenario_for(name, true));
+        let constant_time_bytes: Vec<u8> =
+            fs::read(&constant_time.hint_path).expect("read hint file");
+        assert!(
+            constant_time_bytes == standard_bytes,
+            "record size {record_size}: the constant-time file differs"
+        );
+    }
+}
+
+/// A file whose length is not a multiple of the record size has no meaning.
+#[test]
+fn generator_rejects_a_database_that_is_not_whole_records() {
+    let dir: PathBuf = work_dir("partial_record");
+    let db_path: PathBuf = dir.join("database.bin");
+    let seed_path: PathBuf = dir.join("seed.hex");
+    let hint_path: PathBuf = dir.join("hints.bin");
+    // 8 records of 40 bytes: 320 bytes are not a multiple of 45.
+    fs::write(&db_path, make_db(8, V3_RECORD_SIZE)).expect("write database");
+    let seed_hex: String = MASTER_SEED.iter().map(|b| format!("{b:02x}")).collect();
+    fs::write(&seed_path, seed_hex).expect("write seed file");
+    if hint_path.exists() {
+        fs::rename(&hint_path, dir.join("hints.bin.old")).expect("move old hint file");
+    }
+
+    let output: Output = Command::new(env!("CARGO_BIN_EXE_plinko_hints"))
+        .arg("--db-path")
+        .arg(&db_path)
+        .arg("--record-size=45")
+        .arg("--entries-per-block=4")
+        .arg("--seed-file")
+        .arg(&seed_path)
+        .arg("--output")
+        .arg(&hint_path)
+        .output()
+        .expect("run plinko_hints");
+    assert!(!output.status.success(), "the run must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("multiple of the record size"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!hint_path.exists(), "no hint file must be written");
 }
 
 /// The hint file must not depend on the number of worker threads.
@@ -275,10 +418,12 @@ fn generator_file_is_the_same_for_every_thread_count() {
         .map(|(name, threads)| {
             let generated: Generated = generate(&Scenario {
                 name,
+                record_size: None,
                 num_entries: 120,
                 block_size: 16,
                 lambda: 8,
                 threads: Some(threads),
+                constant_time: false,
             });
             fs::read(&generated.hint_path).expect("read hint file")
         })
@@ -286,10 +431,10 @@ fn generator_file_is_the_same_for_every_thread_count() {
 
     let one_thread: HintSet = HintSet::read_from(files[0].as_slice()).expect("hint file");
     assert!(
-        one_thread
-            .backup
+        (0..one_thread.num_backup()).any(|b| one_thread
+            .backup_parity_out(b)
             .iter()
-            .any(|hint| hint.parity_out != [0u8; 32]),
+            .any(|&byte| byte != 0)),
         "the scenario must give non-zero parities"
     );
     assert!(files[1] == files[0], "3 threads differ from 1 thread");
@@ -305,21 +450,24 @@ fn generator_file_is_the_same_for_every_thread_count() {
 fn generator_file_answers_queries_above_65536_hints() {
     let scenario = Scenario {
         name: "large",
+        record_size: None,
         num_entries: 1000,
         block_size: 512,
         lambda: 65,
         threads: None,
+        constant_time: false,
     };
     let generated: Generated = generate(&scenario);
     let hints: HintSet = load(&generated.hint_path);
-    assert_eq!(hints.regular.len() + hints.backup.len(), 66_560);
+    assert_eq!(hints.num_regular() + hints.num_backup(), 66_560);
     run_online_phase(&scenario, &generated, hints);
 }
 
 #[test]
 fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
-    let entries: Vec<Entry> = make_db(40);
-    let params: ProtocolParams = ProtocolParams::new(40, Some(8), 2, None).expect("params");
+    let entries: Vec<u8> = make_db(40, V3_RECORD_SIZE);
+    let params: ProtocolParams =
+        ProtocolParams::new(40, V3_RECORD_SIZE, Some(8), 2, None).expect("params");
     let hints: HintSet = compute_hints(&params, &MASTER_SEED, &entries).expect("hints");
 
     let mismatch = |result: Result<Client, ProtocolError>| -> &'static str {
@@ -344,7 +492,8 @@ fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
     );
 
     // 41 entries need the same six blocks; only num_entries differs.
-    let other_size: ProtocolParams = ProtocolParams::new(41, Some(8), 2, None).expect("params");
+    let other_size: ProtocolParams =
+        ProtocolParams::new(41, V3_RECORD_SIZE, Some(8), 2, None).expect("params");
     assert_eq!(other_size.num_blocks, params.num_blocks);
     assert_eq!(
         mismatch(Client::from_hints(
@@ -356,7 +505,21 @@ fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
         "database geometry"
     );
 
-    let other_lambda: ProtocolParams = ProtocolParams::new(40, Some(8), 3, None).expect("params");
+    // The same geometry and hint counts; only the record size differs.
+    let other_record_size: ProtocolParams =
+        ProtocolParams::new(40, 32, Some(8), 2, None).expect("params");
+    assert_eq!(
+        mismatch(Client::from_hints(
+            other_record_size,
+            MASTER_SEED,
+            QUERY_SEED,
+            hints.clone()
+        )),
+        "record size"
+    );
+
+    let other_lambda: ProtocolParams =
+        ProtocolParams::new(40, V3_RECORD_SIZE, Some(8), 3, None).expect("params");
     assert_eq!(
         mismatch(Client::from_hints(
             other_lambda,
@@ -368,7 +531,7 @@ fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
     );
 
     let other_backup: ProtocolParams =
-        ProtocolParams::new(40, Some(8), 2, Some(15)).expect("params");
+        ProtocolParams::new(40, V3_RECORD_SIZE, Some(8), 2, Some(15)).expect("params");
     assert_eq!(
         mismatch(Client::from_hints(
             other_backup,
@@ -380,8 +543,16 @@ fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
     );
 
     // A header whose block count is not the block count of its database size.
-    let mut wrong_blocks: HintSet = hints.clone();
-    wrong_blocks.geometry.num_blocks += 2;
+    let wrong_blocks: HintSet = HintSet::new(
+        HintGeometry {
+            num_blocks: hints.geometry().num_blocks + 2,
+            ..hints.geometry()
+        },
+        hints.seed_check(),
+        hints.regular_cutoffs().to_vec(),
+        hints.backup_cutoffs().to_vec(),
+    )
+    .expect("hint set");
     assert!(matches!(
         ProtocolParams::for_hint_set(&wrong_blocks),
         Err(ProtocolError::HintSetMismatch(_))
@@ -393,7 +564,7 @@ fn generator_refuses_output_without_a_seed() {
     let dir: PathBuf = work_dir("no_seed");
     let db_path: PathBuf = dir.join("database.bin");
     let hint_path: PathBuf = dir.join("hints.bin");
-    fs::write(&db_path, database_bytes(&make_db(8))).expect("write database");
+    fs::write(&db_path, make_db(8, V3_RECORD_SIZE)).expect("write database");
     if hint_path.exists() {
         fs::rename(&hint_path, dir.join("hints.bin.old")).expect("move old hint file");
     }
@@ -413,8 +584,9 @@ fn generator_refuses_output_without_a_seed() {
 
 #[test]
 fn a_corrupted_generator_file_is_rejected_on_load() {
-    let entries: Vec<Entry> = make_db(40);
-    let params: ProtocolParams = ProtocolParams::new(40, Some(8), 2, None).expect("params");
+    let entries: Vec<u8> = make_db(40, V3_RECORD_SIZE);
+    let params: ProtocolParams =
+        ProtocolParams::new(40, V3_RECORD_SIZE, Some(8), 2, None).expect("params");
     let hints: HintSet = compute_hints(&params, &MASTER_SEED, &entries).expect("hints");
     let mut bytes: Vec<u8> = Vec::new();
     hints.write_to(&mut bytes).expect("write");

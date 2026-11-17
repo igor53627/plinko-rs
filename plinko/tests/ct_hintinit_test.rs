@@ -8,7 +8,7 @@
 
 #![cfg(feature = "tee")]
 
-use plinko::constant_time::{ct_eq_u64, ct_lt_u64, ct_select_usize, ct_xor_32_masked};
+use plinko::constant_time::{ct_eq_u64, ct_lt_u64, ct_select_usize, ct_xor_masked};
 use plinko::iprf::{Iprf, IprfTee};
 use plinko::protocol::derive_block_keys;
 use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
@@ -195,17 +195,17 @@ fn hintinit_ct(
             let update_backup_out =
                 in_range & is_backup & backup_has_subset & (1 - in_backup_subset);
 
-            ct_xor_32_masked(
+            ct_xor_masked(
                 &mut regular_hints[regular_idx].parity,
                 &entry,
                 update_regular,
             );
-            ct_xor_32_masked(
+            ct_xor_masked(
                 &mut backup_hints[backup_idx_clamped].parity_in,
                 &entry,
                 update_backup_in,
             );
-            ct_xor_32_masked(
+            ct_xor_masked(
                 &mut backup_hints[backup_idx_clamped].parity_out,
                 &entry,
                 update_backup_out,
@@ -441,9 +441,9 @@ fn test_ct_xor_masked_correctness() {
     let src = [0x55u8; 32];
 
     let mut test_dst = dst;
-    ct_xor_32_masked(&mut test_dst, &src, 0);
+    ct_xor_masked(&mut test_dst, &src, 0);
     assert_eq!(test_dst, dst, "mask=0 should not modify dst");
 
-    ct_xor_32_masked(&mut dst, &src, 1);
+    ct_xor_masked(&mut dst, &src, 1);
     assert_eq!(dst, [0xFFu8; 32], "mask=1 should XOR");
 }

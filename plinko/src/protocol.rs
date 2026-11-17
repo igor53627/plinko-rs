@@ -12,11 +12,11 @@
 //! The rules of the online phase (decoy, query format, retry, query limit) and
 //! the deviations from the paper are in `docs/online_protocol.md`.
 //!
-//! Simplified in-memory model: logical entries are fixed 32-byte words.
-//! Production `database.bin` uses the v3 40-byte on-disk layout (`schema40`);
-//! see `hint_gen` and [`docs/data_format.md`](../../docs/data_format.md).
+//! In-memory model: the database is a flat byte array of `num_entries`
+//! records of `record_size` bytes each ([`ProtocolParams::record_size`]). A
+//! parity, an answer and an update delta have the record size.
 
-use crate::hints::{self, HintGeometry, HintSet};
+use crate::hints::{self, HintGeometry, HintSet, MAX_RECORD_SIZE};
 use crate::iprf::{Iprf, IprfTable, PrfKey128};
 use crate::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::seq::SliceRandom;
@@ -31,11 +31,6 @@ use std::fmt::{Display, Formatter};
 ///
 /// Eight levels take 1020 bytes per block: about 29 MB for the 27,988 blocks of mainnet.
 pub const CLIENT_CACHED_PMNS_LEVELS: u32 = 8;
-
-/// Fixed entry size used by the protocol model.
-pub const ENTRY_SIZE: usize = 32;
-/// Database entry type.
-pub type Entry = [u8; ENTRY_SIZE];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
@@ -74,6 +69,11 @@ pub enum ProtocolError {
     },
     /// A hint set does not belong to these parameters or to this master seed.
     HintSetMismatch(&'static str),
+    /// A record, a parity or a delta does not have the record size of the database.
+    RecordSizeMismatch {
+        expected: usize,
+        got: usize,
+    },
 }
 
 impl Display for ProtocolError {
@@ -116,6 +116,12 @@ impl Display for ProtocolError {
             Self::HintSetMismatch(what) => {
                 write!(f, "hint set does not match the client: {what}")
             }
+            Self::RecordSizeMismatch { expected, got } => {
+                write!(
+                    f,
+                    "record size mismatch: expected {expected} bytes, got {got}"
+                )
+            }
         }
     }
 }
@@ -126,6 +132,8 @@ impl Error for ProtocolError {}
 #[derive(Clone, Debug)]
 pub struct ProtocolParams {
     pub num_entries: usize,
+    /// Bytes of one database record.
+    pub record_size: usize,
     pub block_size: usize,
     pub num_blocks: usize,
     pub num_regular_hints: usize,
@@ -151,13 +159,32 @@ pub fn default_block_size(num_entries: usize) -> usize {
     raw.max(1).next_power_of_two()
 }
 
+const PADDED_DATABASE_TOO_LARGE: &str = "the padded database does not fit in memory";
+
 impl ProtocolParams {
     /// Create parameters with defaults similar to the Python runnable spec:
+    /// - `record_size`: bytes of one database record, 1 to [`MAX_RECORD_SIZE`]
     /// - `block_size`: [`default_block_size`] if omitted; must be a power of two,
     ///   because the iPRF range is the block size
     /// - `num_backup_hints`: `lambda * block_size` if omitted
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::InvalidParams`] for a value outside its range,
+    /// and for a database that does not fit in memory with its padding
+    /// (`num_blocks * block_size * record_size` bytes).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::protocol::ProtocolParams;
+    ///
+    /// let params = ProtocolParams::new(1000, 40, None, 128, None).unwrap();
+    /// assert_eq!((params.record_size, params.block_size, params.num_blocks), (40, 32, 32));
+    /// assert!(ProtocolParams::new(1000, 0, None, 128, None).is_err());
+    /// ```
     pub fn new(
         num_entries: usize,
+        record_size: usize,
         block_size: Option<usize>,
         lambda: usize,
         num_backup_hints: Option<usize>,
@@ -167,6 +194,16 @@ impl ProtocolParams {
         }
         if lambda == 0 {
             return Err(ProtocolError::InvalidParams("lambda must be > 0"));
+        }
+        if !(1..=MAX_RECORD_SIZE).contains(&record_size) {
+            return Err(ProtocolError::InvalidParams(
+                "record_size must be in the range 1 to MAX_RECORD_SIZE",
+            ));
+        }
+        if num_entries.checked_mul(record_size).is_none() {
+            return Err(ProtocolError::InvalidParams(
+                "num_entries * record_size overflow",
+            ));
         }
 
         let block_size = block_size.unwrap_or_else(|| default_block_size(num_entries));
@@ -181,7 +218,16 @@ impl ProtocolParams {
             num_blocks = 2;
         }
         if num_blocks % 2 != 0 {
-            num_blocks += 1;
+            num_blocks = num_blocks
+                .checked_add(1)
+                .ok_or(ProtocolError::InvalidParams(PADDED_DATABASE_TOO_LARGE))?;
+        }
+        // The server holds the padded database in one buffer.
+        let padded_bytes: Option<usize> = num_blocks
+            .checked_mul(block_size)
+            .and_then(|entries| entries.checked_mul(record_size));
+        if !padded_bytes.is_some_and(|bytes| bytes <= isize::MAX as usize) {
+            return Err(ProtocolError::InvalidParams(PADDED_DATABASE_TOO_LARGE));
         }
 
         let num_regular_hints = lambda
@@ -202,6 +248,7 @@ impl ProtocolParams {
 
         Ok(Self {
             num_entries,
+            record_size,
             block_size,
             num_blocks,
             num_regular_hints,
@@ -214,7 +261,7 @@ impl ProtocolParams {
     ///
     /// `lambda` is the number of regular hints divided by the block size.
     pub fn for_hint_set(hints: &HintSet) -> Result<Self, ProtocolError> {
-        let geometry: HintGeometry = hints.geometry;
+        let geometry: HintGeometry = hints.geometry();
         let num_entries: usize = usize::try_from(geometry.num_entries)
             .map_err(|_| ProtocolError::HintSetMismatch("num_entries is too large"))?;
         let block_size: usize = usize::try_from(geometry.block_size)
@@ -223,17 +270,18 @@ impl ProtocolParams {
             return Err(ProtocolError::HintSetMismatch("block_size is zero"));
         }
 
-        let lambda: usize = hints.regular.len() / block_size;
-        if lambda * block_size != hints.regular.len() {
+        let lambda: usize = hints.num_regular() / block_size;
+        if lambda * block_size != hints.num_regular() {
             return Err(ProtocolError::HintSetMismatch(
                 "the number of regular hints is not a multiple of block_size",
             ));
         }
         let params: Self = Self::new(
             num_entries,
+            hints.record_size(),
             Some(block_size),
             lambda,
-            Some(hints.backup.len()),
+            Some(hints.num_backup()),
         )?;
         if params.hint_geometry() != geometry {
             return Err(ProtocolError::HintSetMismatch(
@@ -247,6 +295,8 @@ impl ProtocolParams {
     pub fn hint_geometry(&self) -> HintGeometry {
         HintGeometry {
             num_entries: self.num_entries as u64,
+            // `new` keeps the record size at or below `MAX_RECORD_SIZE`.
+            record_size: self.record_size as u32,
             block_size: self.block_size as u64,
             num_blocks: self.num_blocks as u64,
         }
@@ -268,10 +318,12 @@ impl ProtocolParams {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Change of one database record: `delta = old value XOR new value`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryUpdate {
     pub index: usize,
-    pub delta: Entry,
+    /// `record_size` bytes.
+    pub delta: Vec<u8>,
 }
 
 /// Query format with shared offsets: one bitmask and `num_blocks/2` offsets.
@@ -286,32 +338,47 @@ pub struct Query {
     pub offsets: Vec<u32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Answer of the server: the XOR of the selected records of each subset.
+/// Each parity has `record_size` bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
-    pub parity_0: Entry,
-    pub parity_1: Entry,
+    pub parity_0: Vec<u8>,
+    pub parity_1: Vec<u8>,
 }
 
 /// Server for the in-memory protocol model.
 pub struct Server {
     params: ProtocolParams,
-    database: Vec<Entry>,
+    /// `n_effective_entries() * record_size` bytes; the padding records are zero.
+    database: Vec<u8>,
 }
 
 impl Server {
-    pub fn new(params: ProtocolParams, entries: &[Entry]) -> Result<Self, ProtocolError> {
-        if entries.len() != params.num_entries {
-            return Err(ProtocolError::InvalidParams(
-                "entries length must equal num_entries",
-            ));
-        }
+    /// Creates a server for `database`, the records of the database one after another.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::InvalidParams`] if `database` does not have
+    /// `num_entries * record_size` bytes.
+    pub fn new(params: ProtocolParams, database: &[u8]) -> Result<Self, ProtocolError> {
+        check_database_len(&params, database)?;
 
-        let mut database = entries.to_vec();
-        database.resize(params.n_effective_entries(), [0u8; ENTRY_SIZE]);
+        let mut database: Vec<u8> = database.to_vec();
+        database.resize(params.n_effective_entries() * params.record_size, 0u8);
 
         Ok(Self { params, database })
     }
 
+    /// Returns the record at `index`, or `None` if `index >= num_entries`.
+    pub fn record(&self, index: usize) -> Option<&[u8]> {
+        (index < self.params.num_entries).then(|| self.record_at(index))
+    }
+
+    fn record_at(&self, index: usize) -> &[u8] {
+        let size: usize = self.params.record_size;
+        &self.database[index * size..(index + 1) * size]
+    }
+
+    /// Computes the two parities of a query (Plinko Fig. 7, `Answer`).
     pub fn answer(&self, query: &Query) -> Result<Response, ProtocolError> {
         let half = self.params.num_blocks / 2;
         if query.offsets.len() != half {
@@ -329,13 +396,13 @@ impl Server {
             });
         }
 
-        let mut parity_0 = [0u8; ENTRY_SIZE];
-        let mut parity_1 = [0u8; ENTRY_SIZE];
+        let mut parity_0: Vec<u8> = vec![0u8; self.params.record_size];
+        let mut parity_1: Vec<u8> = vec![0u8; self.params.record_size];
         let mut idx_0 = 0usize;
         let mut idx_1 = 0usize;
 
         for block in 0..self.params.num_blocks {
-            let (parity, rank): (&mut Entry, &mut usize) = if bit_is_set(&query.mask, block) {
+            let (parity, rank): (&mut [u8], &mut usize) = if bit_is_set(&query.mask, block) {
                 (&mut parity_0, &mut idx_0)
             } else {
                 (&mut parity_1, &mut idx_1)
@@ -352,7 +419,7 @@ impl Server {
             }
             xor_entry(
                 parity,
-                &self.database[block * self.params.block_size + offset],
+                self.record_at(block * self.params.block_size + offset),
             );
             *rank += 1;
         }
@@ -367,52 +434,53 @@ impl Server {
         Ok(Response { parity_0, parity_1 })
     }
 
+    /// Writes new values of records and returns one delta for each of them.
+    ///
+    /// Each update is `(index, new value)`. On an error no record is changed.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::InvalidIndex`] for an index outside the
+    /// database and [`ProtocolError::RecordSizeMismatch`] for a value that
+    /// does not have `record_size` bytes.
     pub fn apply_updates(
         &mut self,
-        updates: &[(usize, Entry)],
+        updates: &[(usize, Vec<u8>)],
     ) -> Result<Vec<EntryUpdate>, ProtocolError> {
-        let mut deltas = Vec::with_capacity(updates.len());
+        let size: usize = self.params.record_size;
+        for (index, new_value) in updates {
+            check_index(&self.params, *index)?;
+            check_record_len(&self.params, new_value)?;
+        }
 
-        for (index, new_value) in updates.iter().copied() {
-            if index >= self.params.num_entries {
-                return Err(ProtocolError::InvalidIndex {
-                    index,
-                    num_entries: self.params.num_entries,
-                });
-            }
-            let old = self.database[index];
-            let mut delta = old;
-            xor_entry(&mut delta, &new_value);
-            self.database[index] = new_value;
-            deltas.push(EntryUpdate { index, delta });
+        let mut deltas: Vec<EntryUpdate> = Vec::with_capacity(updates.len());
+        for (index, new_value) in updates {
+            let record: &mut [u8] = &mut self.database[index * size..(index + 1) * size];
+            let mut delta: Vec<u8> = record.to_vec();
+            xor_entry(&mut delta, new_value);
+            record.copy_from_slice(new_value);
+            deltas.push(EntryUpdate {
+                index: *index,
+                delta,
+            });
         }
 
         Ok(deltas)
     }
 }
 
-#[derive(Clone)]
+/// State of one hint slot. Its parity is in the hint set of the client: the
+/// parity of a regular hint, or the "in" parity of a promoted backup hint.
+#[derive(Clone, Copy)]
 struct HintSlot {
     /// Cutoff of the original (pre-complement) subset; see [`crate::subsets`].
     cutoff: u32,
     complemented: bool,
-    parity: Entry,
     extra_index: Option<usize>,
 }
 
 #[derive(Clone)]
-struct BackupHint {
-    /// Cutoff of the `c/2`-block subset; see [`crate::subsets`].
-    cutoff: u32,
-    parity_in: Entry,
-    parity_out: Entry,
-    /// `false` after promotion, and for a hint with no valid cutoff.
-    available: bool,
-}
-
-#[derive(Clone, Copy)]
 struct CacheEntry {
-    value: Entry,
+    value: Vec<u8>,
     hint_idx: usize,
 }
 
@@ -440,8 +508,13 @@ pub struct Client {
     params: ProtocolParams,
     iprfs: Vec<Iprf>,
     subset_prf: SubsetPrf,
+    /// Cutoffs and parities. The parity of slot `j` is the parity of regular
+    /// hint `j`, or the "in" parity of backup hint `j - num_regular_hints`
+    /// after its promotion (the "out" parity is not used after that).
+    hints: HintSet,
     slots: Vec<Option<HintSlot>>,
-    backups: Vec<BackupHint>,
+    /// `false` after promotion, and for a backup hint with no valid cutoff.
+    backup_available: Vec<bool>,
     cache: HashMap<usize, CacheEntry>,
     rng: ChaCha20Rng,
     /// Queried index and hint slot of each query in flight.
@@ -449,71 +522,70 @@ pub struct Client {
 }
 
 impl Client {
-    /// Run offline HintInit from a flat database.
+    /// Run offline HintInit from a flat database of `num_entries * record_size` bytes.
     ///
     /// Equal to [`compute_hints`] followed by [`Client::from_hints`].
     pub fn offline_init(
         params: ProtocolParams,
         master_seed: [u8; 32],
         query_rng_seed: [u8; 32],
-        entries: &[Entry],
+        database: &[u8],
     ) -> Result<Self, ProtocolError> {
-        let hints: HintSet = compute_hints(&params, &master_seed, entries)?;
+        let hints: HintSet = compute_hints(&params, &master_seed, database)?;
         Self::from_hints(params, master_seed, query_rng_seed, hints)
     }
 
     /// Builds a client from a hint set, for example one that `plinko_hints` wrote to a file.
     ///
-    /// Returns [`ProtocolError::HintSetMismatch`] if the geometry or the hint
-    /// counts differ from `params`, or if the hints were made with another
-    /// master seed. The function does not recompute cutoffs or parities.
+    /// Returns [`ProtocolError::HintSetMismatch`] if the record size, the
+    /// geometry or the hint counts differ from `params`, or if the hints were
+    /// made with another master seed. The function does not recompute cutoffs
+    /// or parities.
     pub fn from_hints(
         params: ProtocolParams,
         master_seed: [u8; 32],
         query_rng_seed: [u8; 32],
         hints: HintSet,
     ) -> Result<Self, ProtocolError> {
-        if hints.geometry != params.hint_geometry() {
+        if hints.record_size() != params.record_size {
+            return Err(ProtocolError::HintSetMismatch("record size"));
+        }
+        if hints.geometry() != params.hint_geometry() {
             return Err(ProtocolError::HintSetMismatch("database geometry"));
         }
-        if hints.regular.len() != params.num_regular_hints {
+        if hints.num_regular() != params.num_regular_hints {
             return Err(ProtocolError::HintSetMismatch("number of regular hints"));
         }
-        if hints.backup.len() != params.num_backup_hints {
+        if hints.num_backup() != params.num_backup_hints {
             return Err(ProtocolError::HintSetMismatch("number of backup hints"));
         }
-        if hints.seed_check != hints::seed_check(&master_seed) {
+        if hints.seed_check() != hints::seed_check(&master_seed) {
             return Err(ProtocolError::HintSetMismatch("master seed"));
         }
 
         let mut slots: Vec<Option<HintSlot>> = Vec::with_capacity(params.num_total_hints);
-        slots.extend(hints.regular.iter().map(|hint| {
-            (hint.cutoff != INVALID_CUTOFF).then_some(HintSlot {
-                cutoff: hint.cutoff,
+        slots.extend(hints.regular_cutoffs().iter().map(|&cutoff| {
+            (cutoff != INVALID_CUTOFF).then_some(HintSlot {
+                cutoff,
                 complemented: false,
-                parity: hint.parity,
                 extra_index: None,
             })
         }));
         slots.resize(params.num_total_hints, None);
 
-        let backups: Vec<BackupHint> = hints
-            .backup
+        let backup_available: Vec<bool> = hints
+            .backup_cutoffs()
             .iter()
-            .map(|hint| BackupHint {
-                cutoff: hint.cutoff,
-                parity_in: hint.parity_in,
-                parity_out: hint.parity_out,
-                available: hint.cutoff != INVALID_CUTOFF,
-            })
+            .map(|&cutoff| cutoff != INVALID_CUTOFF)
             .collect();
 
         Ok(Self {
             iprfs: block_iprfs(&params, &master_seed),
             subset_prf: SubsetPrf::new(&master_seed),
             params,
+            hints,
             slots,
-            backups,
+            backup_available,
             cache: HashMap::new(),
             rng: ChaCha20Rng::from_seed(query_rng_seed),
             in_flight: HashMap::new(),
@@ -533,12 +605,7 @@ impl Client {
         &mut self,
         requested_index: usize,
     ) -> Result<PreparedQuery, ProtocolError> {
-        if requested_index >= self.params.num_entries {
-            return Err(ProtocolError::InvalidIndex {
-                index: requested_index,
-                num_entries: self.params.num_entries,
-            });
-        }
+        check_index(&self.params, requested_index)?;
         if self.remaining_backup_hints() <= self.in_flight.len() {
             return Err(ProtocolError::NoBackupHintsLeft);
         }
@@ -565,18 +632,18 @@ impl Client {
                 continue;
             }
 
-            let Some(slot) = self.slots[hint_idx].as_ref() else {
+            let Some(slot) = self.slots[hint_idx] else {
                 continue;
             };
 
-            if !self.slot_block_in_subset(hint_idx, slot, block)
+            if !self.slot_block_in_subset(hint_idx, &slot, block)
                 && slot.extra_index != Some(queried_index)
             {
                 continue;
             }
 
             let real_is_first = (self.rng.next_u32() & 1) == 0;
-            let Some(query) = self.try_build_query(hint_idx, queried_index, slot, real_is_first)
+            let Some(query) = self.try_build_query(hint_idx, queried_index, &slot, real_is_first)
             else {
                 continue;
             };
@@ -599,22 +666,34 @@ impl Client {
     /// Computes the answer, consumes the hint of the query, and promotes a
     /// backup hint in its place (Plinko Fig. 7, `Recon`).
     ///
+    /// Returns the record at the requested index (`record_size` bytes).
+    ///
+    /// # Errors
     /// Returns [`ProtocolError::UnknownPreparedQuery`] if `prepared` is not a
-    /// query in flight of this client.
+    /// query in flight of this client; the client does not change.
+    ///
+    /// Returns [`ProtocolError::RecordSizeMismatch`] if a parity of `response`
+    /// does not have the record size. Such a response is not an answer. The
+    /// call consumed `prepared`, so the query ends as with
+    /// [`Client::abandon_query`]: its hint is removed, the index is not
+    /// cached, and no backup hint is used. Check the size of a response
+    /// before this call to keep the retry possible.
     pub fn reconstruct_and_replenish(
         &mut self,
         prepared: PreparedQuery,
         response: Response,
-    ) -> Result<Entry, ProtocolError> {
-        let hint: HintSlot = self.take_in_flight(&prepared)?;
-        let mut queried_entry = if prepared.real_is_first {
+    ) -> Result<Vec<u8>, ProtocolError> {
+        self.take_in_flight(&prepared)?;
+        check_record_len(&self.params, &response.parity_0)?;
+        check_record_len(&self.params, &response.parity_1)?;
+        let mut queried_entry: Vec<u8> = if prepared.real_is_first {
             response.parity_0
         } else {
             response.parity_1
         };
-        xor_entry(&mut queried_entry, &hint.parity);
+        xor_entry(&mut queried_entry, self.slot_parity(prepared.hint_idx));
 
-        let promoted_hint_idx = self.promote_backup(prepared.queried_index, queried_entry)?;
+        let promoted_hint_idx = self.promote_backup(prepared.queried_index, &queried_entry)?;
         self.cache.insert(
             prepared.queried_index,
             CacheEntry {
@@ -623,16 +702,13 @@ impl Client {
             },
         );
 
-        if prepared.requested_index == prepared.queried_index {
-            return Ok(queried_entry);
-        }
-
+        // For a decoy query the requested index is another, older cache entry.
         let Some(entry) = self.cache.get(&prepared.requested_index) else {
             return Err(ProtocolError::NoHintForIndex {
                 index: prepared.requested_index,
             });
         };
-        Ok(entry.value)
+        Ok(entry.value.clone())
     }
 
     /// Stops a query in flight that gets no answer.
@@ -645,16 +721,19 @@ impl Client {
         self.take_in_flight(&prepared).map(|_| ())
     }
 
-    /// Apply server updates in O(expected preimages) per updated entry.
+    /// Apply server updates: one iPRF inverse for each updated record.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::InvalidIndex`] for an index outside the
+    /// database and [`ProtocolError::RecordSizeMismatch`] for a delta that
+    /// does not have `record_size` bytes. On an error no hint is changed.
     pub fn apply_updates(&mut self, updates: &[EntryUpdate]) -> Result<(), ProtocolError> {
         for update in updates {
-            if update.index >= self.params.num_entries {
-                return Err(ProtocolError::InvalidIndex {
-                    index: update.index,
-                    num_entries: self.params.num_entries,
-                });
-            }
+            check_index(&self.params, update.index)?;
+            check_record_len(&self.params, &update.delta)?;
+        }
 
+        for update in updates {
             let block = self.params.block_of(update.index);
             let offset = self.params.offset_in_block(update.index);
             let hint_indices = self.iprfs[block].inverse(offset as u64);
@@ -665,36 +744,30 @@ impl Client {
                     continue;
                 }
 
-                if j < self.params.num_regular_hints {
-                    let should_update = self.slots[j]
-                        .as_ref()
-                        .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
-                    if should_update {
-                        xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
-                    }
-                } else {
-                    let backup_idx = j - self.params.num_regular_hints;
-
-                    let should_update = self.slots[j]
-                        .as_ref()
-                        .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
-                    if should_update {
-                        xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
-                    } else if self.backups[backup_idx].available {
-                        let cutoff: u32 = self.backups[backup_idx].cutoff;
+                let slot_has_block: bool = self.slots[j]
+                    .as_ref()
+                    .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
+                if slot_has_block {
+                    xor_entry(self.slot_parity_mut(j), &update.delta);
+                } else if let Some(backup_idx) = j.checked_sub(self.params.num_regular_hints) {
+                    if self.backup_available[backup_idx] {
+                        let cutoff: u32 = self.hints.backup_cutoffs()[backup_idx];
                         if self.subset_prf.contains(hint_idx, block, cutoff) {
-                            xor_entry(&mut self.backups[backup_idx].parity_in, &update.delta);
+                            xor_entry(self.hints.backup_parity_in_mut(backup_idx), &update.delta);
                         } else {
-                            xor_entry(&mut self.backups[backup_idx].parity_out, &update.delta);
+                            xor_entry(self.hints.backup_parity_out_mut(backup_idx), &update.delta);
                         }
                     }
                 }
             }
 
-            if let Some(cache) = self.cache.get_mut(&update.index) {
+            let cached_slot: Option<usize> = self.cache.get_mut(&update.index).map(|cache| {
                 xor_entry(&mut cache.value, &update.delta);
-                if let Some(slot) = self.slots[cache.hint_idx].as_mut() {
-                    xor_entry(&mut slot.parity, &update.delta);
+                cache.hint_idx
+            });
+            if let Some(slot_idx) = cached_slot {
+                if self.slots[slot_idx].is_some() {
+                    xor_entry(self.slot_parity_mut(slot_idx), &update.delta);
                 }
             }
         }
@@ -702,8 +775,27 @@ impl Client {
         Ok(())
     }
 
+    /// Returns the number of backup hints that are not promoted.
     pub fn remaining_backup_hints(&self) -> usize {
-        self.backups.iter().filter(|b| b.available).count()
+        self.backup_available
+            .iter()
+            .filter(|&&available| available)
+            .count()
+    }
+
+    /// Parity of hint slot `hint_idx`; see the `hints` field.
+    fn slot_parity(&self, hint_idx: usize) -> &[u8] {
+        match hint_idx.checked_sub(self.params.num_regular_hints) {
+            None => self.hints.regular_parity(hint_idx),
+            Some(backup_idx) => self.hints.backup_parity_in(backup_idx),
+        }
+    }
+
+    fn slot_parity_mut(&mut self, hint_idx: usize) -> &mut [u8] {
+        match hint_idx.checked_sub(self.params.num_regular_hints) {
+            None => self.hints.regular_parity_mut(hint_idx),
+            Some(backup_idx) => self.hints.backup_parity_in_mut(backup_idx),
+        }
     }
 
     #[inline]
@@ -823,33 +915,36 @@ impl Client {
     fn promote_backup(
         &mut self,
         queried_index: usize,
-        queried_entry: Entry,
+        queried_entry: &[u8],
     ) -> Result<usize, ProtocolError> {
-        let Some(backup_idx) = self.backups.iter().position(|b| b.available) else {
+        let Some(backup_idx) = self
+            .backup_available
+            .iter()
+            .position(|&available| available)
+        else {
             return Err(ProtocolError::NoBackupHintsLeft);
         };
 
         let queried_block = self.params.block_of(queried_index);
         let promoted_idx = self.params.num_regular_hints + backup_idx;
-        let backup = &mut self.backups[backup_idx];
+        let cutoff: u32 = self.hints.backup_cutoffs()[backup_idx];
         let queried_in_subset =
             self.subset_prf
-                .contains(promoted_idx as u64, queried_block, backup.cutoff);
+                .contains(promoted_idx as u64, queried_block, cutoff);
 
-        let mut parity = if queried_in_subset {
-            backup.parity_out
-        } else {
-            backup.parity_in
-        };
-        xor_entry(&mut parity, &queried_entry);
-
-        let cutoff: u32 = backup.cutoff;
-        backup.available = false;
+        // The slot parity lives in the "in" parity of the backup hint.
+        if queried_in_subset {
+            let parity_out: Vec<u8> = self.hints.backup_parity_out(backup_idx).to_vec();
+            self.hints
+                .backup_parity_in_mut(backup_idx)
+                .copy_from_slice(&parity_out);
+        }
+        xor_entry(self.hints.backup_parity_in_mut(backup_idx), queried_entry);
+        self.backup_available[backup_idx] = false;
 
         self.slots[promoted_idx] = Some(HintSlot {
             cutoff,
             complemented: queried_in_subset,
-            parity,
             extra_index: Some(queried_index),
         });
 
@@ -866,82 +961,116 @@ impl Client {
 
 /// Runs HintInit (Plinko Fig. 7) over an in-memory database.
 ///
-/// `plinko_hints` computes the same hint set from a `database.bin` file, where
-/// an entry is the first 32 bytes of a record.
+/// `database` holds the `num_entries` records one after another. `plinko_hints`
+/// computes the same hint set from a database file with the same bytes.
+///
+/// # Errors
+/// Returns [`ProtocolError::InvalidParams`] if `database` does not have
+/// `num_entries * record_size` bytes.
 pub fn compute_hints(
     params: &ProtocolParams,
     master_seed: &[u8; 32],
-    entries: &[Entry],
+    database: &[u8],
 ) -> Result<HintSet, ProtocolError> {
-    if entries.len() != params.num_entries {
-        return Err(ProtocolError::InvalidParams(
-            "entries length must equal num_entries",
-        ));
-    }
+    check_database_len(params, database)?;
 
     let iprfs: Vec<Iprf> = block_iprfs(params, master_seed);
     let subset_prf: SubsetPrf = SubsetPrf::new(master_seed);
     let mut scratch: Vec<u32> = Vec::with_capacity(params.num_blocks);
 
-    let mut regular: Vec<hints::RegularHint> = (0..params.num_regular_hints)
-        .map(|j| hints::RegularHint {
-            cutoff: subset_prf.cutoff(
+    let regular_cutoffs: Vec<u32> = (0..params.num_regular_hints)
+        .map(|j| {
+            subset_prf.cutoff(
                 j as u64,
                 params.num_blocks,
                 regular_subset_size(params.num_blocks),
                 &mut scratch,
-            ),
-            parity: [0u8; ENTRY_SIZE],
+            )
         })
         .collect();
 
-    let mut backup: Vec<hints::BackupHint> = (0..params.num_backup_hints)
-        .map(|b| hints::BackupHint {
-            cutoff: subset_prf.cutoff(
+    let backup_cutoffs: Vec<u32> = (0..params.num_backup_hints)
+        .map(|b| {
+            subset_prf.cutoff(
                 (params.num_regular_hints + b) as u64,
                 params.num_blocks,
                 backup_subset_size(params.num_blocks),
                 &mut scratch,
-            ),
-            parity_in: [0u8; ENTRY_SIZE],
-            parity_out: [0u8; ENTRY_SIZE],
+            )
         })
         .collect();
 
+    let mut hint_set: HintSet = HintSet::new(
+        params.hint_geometry(),
+        hints::seed_check(master_seed),
+        regular_cutoffs,
+        backup_cutoffs,
+    )
+    .map_err(|_| ProtocolError::InvalidParams("the hint parities do not fit in memory"))?;
+
+    let size: usize = params.record_size;
     for (block, iprf) in iprfs.iter().enumerate() {
         let table: IprfTable<'_> = iprf.table();
         for offset in 0..params.block_size {
             let i = block * params.block_size + offset;
-            let entry: Entry = entries.get(i).copied().unwrap_or([0u8; ENTRY_SIZE]);
+            // A padding record is zero and changes no parity.
+            let Some(entry) = database.get(i * size..(i + 1) * size) else {
+                continue;
+            };
 
             for hint_id in table.inverse(offset as u64) {
                 let j = hint_id as usize;
                 if j < params.num_regular_hints {
-                    let hint: &mut hints::RegularHint = &mut regular[j];
-                    if subset_prf.contains(hint_id, block, hint.cutoff) {
-                        xor_entry(&mut hint.parity, &entry);
+                    let cutoff: u32 = hint_set.regular_cutoffs()[j];
+                    if subset_prf.contains(hint_id, block, cutoff) {
+                        xor_entry(hint_set.regular_parity_mut(j), entry);
                     }
                 } else if j < params.num_total_hints {
-                    let hint: &mut hints::BackupHint = &mut backup[j - params.num_regular_hints];
-                    if hint.cutoff == INVALID_CUTOFF {
+                    let b: usize = j - params.num_regular_hints;
+                    let cutoff: u32 = hint_set.backup_cutoffs()[b];
+                    if cutoff == INVALID_CUTOFF {
                         continue;
                     }
-                    if subset_prf.contains(hint_id, block, hint.cutoff) {
-                        xor_entry(&mut hint.parity_in, &entry);
+                    if subset_prf.contains(hint_id, block, cutoff) {
+                        xor_entry(hint_set.backup_parity_in_mut(b), entry);
                     } else {
-                        xor_entry(&mut hint.parity_out, &entry);
+                        xor_entry(hint_set.backup_parity_out_mut(b), entry);
                     }
                 }
             }
         }
     }
 
-    Ok(HintSet {
-        geometry: params.hint_geometry(),
-        seed_check: hints::seed_check(master_seed),
-        regular,
-        backup,
-    })
+    Ok(hint_set)
+}
+
+fn check_database_len(params: &ProtocolParams, database: &[u8]) -> Result<(), ProtocolError> {
+    if database.len() != params.num_entries * params.record_size {
+        return Err(ProtocolError::InvalidParams(
+            "database length must equal num_entries * record_size",
+        ));
+    }
+    Ok(())
+}
+
+fn check_index(params: &ProtocolParams, index: usize) -> Result<(), ProtocolError> {
+    if index >= params.num_entries {
+        return Err(ProtocolError::InvalidIndex {
+            index,
+            num_entries: params.num_entries,
+        });
+    }
+    Ok(())
+}
+
+fn check_record_len(params: &ProtocolParams, record: &[u8]) -> Result<(), ProtocolError> {
+    if record.len() != params.record_size {
+        return Err(ProtocolError::RecordSizeMismatch {
+            expected: params.record_size,
+            got: record.len(),
+        });
+    }
+    Ok(())
 }
 
 fn block_iprfs(params: &ProtocolParams, master_seed: &[u8; 32]) -> Vec<Iprf> {
@@ -983,10 +1112,12 @@ fn bit_is_set(mask: &[u8], bit: usize) -> bool {
     ((mask[bit / 8] >> (bit % 8)) & 1) == 1
 }
 
+/// XORs `src` into `dst`. Both have the record size of the database.
 #[inline]
-fn xor_entry(dst: &mut Entry, src: &Entry) {
-    for i in 0..ENTRY_SIZE {
-        dst[i] ^= src[i];
+fn xor_entry(dst: &mut [u8], src: &[u8]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d ^= s;
     }
 }
 
@@ -995,18 +1126,20 @@ mod tests {
     use super::*;
 
     const NUM_ENTRIES: usize = 64;
+    const RECORD_SIZE: usize = 24;
 
     fn client_with_taken(cached: &[usize], in_flight: &[usize]) -> Client {
         let params: ProtocolParams =
-            ProtocolParams::new(NUM_ENTRIES, Some(8), 2, None).expect("params");
-        let entries: Vec<Entry> = vec![[0u8; ENTRY_SIZE]; NUM_ENTRIES];
-        let mut client: Client = Client::offline_init(params, [0x01u8; 32], [0x02u8; 32], &entries)
-            .expect("offline init");
+            ProtocolParams::new(NUM_ENTRIES, RECORD_SIZE, Some(8), 2, None).expect("params");
+        let database: Vec<u8> = vec![0u8; NUM_ENTRIES * RECORD_SIZE];
+        let mut client: Client =
+            Client::offline_init(params, [0x01u8; 32], [0x02u8; 32], &database)
+                .expect("offline init");
         for &index in cached {
             client.cache.insert(
                 index,
                 CacheEntry {
-                    value: [0u8; ENTRY_SIZE],
+                    value: vec![0u8; RECORD_SIZE],
                     hint_idx: 0,
                 },
             );

@@ -1,7 +1,6 @@
 //! Driver helpers for plinko_hints binary - geometry, validation, and initialization.
 
-use crate::hint_gen::{BackupHint, RegularHint, DB_ENTRY_SIZE};
-use plinko::hints::HintSet;
+use plinko::hints::{HintSet, MAX_RECORD_SIZE};
 #[cfg(feature = "tee")]
 use plinko::iprf::MAX_PREIMAGES;
 use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
@@ -16,6 +15,8 @@ use super::Args;
 
 /// Database geometry parameters computed from args and DB size.
 pub struct Geometry {
+    /// Bytes of one database record (`--record-size`).
+    pub record_size: usize,
     /// Number of real entries in the database file.
     pub n_entries: usize,
     /// Effective entry count after padding (always a multiple of `w`).
@@ -38,8 +39,8 @@ pub struct HintParams {
     pub total_hints: usize,
 }
 
-/// Return type for [`init_hints`]: `(regular_hints, backup_hints)`.
-pub type HintInitOutput = (Vec<RegularHint>, Vec<BackupHint>);
+/// Return type for [`hint_cutoffs`]: `(regular_cutoffs, backup_cutoffs)`.
+pub type HintCutoffs = (Vec<u32>, Vec<u32>);
 
 impl HintParams {
     pub fn from_args(args: &Args, w: usize) -> Self {
@@ -58,6 +59,12 @@ impl HintParams {
 pub fn validate_args(args: &Args) -> eyre::Result<()> {
     if args.lambda == 0 {
         eyre::bail!("lambda must be >= 1");
+    }
+    if !(1..=MAX_RECORD_SIZE).contains(&args.record_size) {
+        eyre::bail!(
+            "record_size must be in the range 1 to {MAX_RECORD_SIZE}, got {}",
+            args.record_size
+        );
     }
     if let Some(w) = args.entries_per_block {
         if !w.is_power_of_two() {
@@ -128,15 +135,16 @@ pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
 
 /// Compute database geometry from file length and arguments.
 pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geometry> {
+    let record_size: usize = args.record_size;
     #[allow(clippy::manual_is_multiple_of)]
-    if db_len_bytes % DB_ENTRY_SIZE != 0 {
+    if record_size == 0 || db_len_bytes % record_size != 0 {
         eyre::bail!(
-            "DB size must be a multiple of {} bytes (v3 entry size)",
-            DB_ENTRY_SIZE
+            "DB size ({db_len_bytes} bytes) must be a multiple of the record size \
+             ({record_size} bytes, --record-size)"
         );
     }
 
-    let n_entries = db_len_bytes / DB_ENTRY_SIZE;
+    let n_entries = db_len_bytes / record_size;
     if n_entries == 0 {
         eyre::bail!("Database must contain at least one entry");
     }
@@ -196,6 +204,7 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     }
 
     Ok(Geometry {
+        record_size,
         n_entries,
         n_effective,
         w,
@@ -298,54 +307,50 @@ fn write_and_publish(
     Ok(())
 }
 
-/// Initialize hint structures and compute the cutoff of each block subset.
+/// Computes the cutoff of the block subset of each hint.
 ///
 /// Regular hint `j` has hint ID `j` and a subset of `c/2 + 1` blocks. Backup
 /// hint `b` has hint ID `num_regular + b` and a subset of `c/2` blocks.
-pub fn init_hints(subset_prf: &SubsetPrf, c: usize, params: &HintParams) -> HintInitOutput {
+pub fn hint_cutoffs(subset_prf: &SubsetPrf, c: usize, params: &HintParams) -> HintCutoffs {
     let mut scratch: Vec<u32> = Vec::with_capacity(c);
 
-    let regular_hints: Vec<RegularHint> = (0..params.num_regular)
-        .map(|j| RegularHint {
-            cutoff: subset_prf.cutoff(j as u64, c, regular_subset_size(c), &mut scratch),
-            parity: [0u8; 32],
-        })
+    let regular_cutoffs: Vec<u32> = (0..params.num_regular)
+        .map(|j| subset_prf.cutoff(j as u64, c, regular_subset_size(c), &mut scratch))
         .collect();
 
-    let backup_hints: Vec<BackupHint> = (0..params.num_backup)
-        .map(|b| BackupHint {
-            cutoff: subset_prf.cutoff(
+    let backup_cutoffs: Vec<u32> = (0..params.num_backup)
+        .map(|b| {
+            subset_prf.cutoff(
                 (params.num_regular + b) as u64,
                 c,
                 backup_subset_size(c),
                 &mut scratch,
-            ),
-            parity_in: [0u8; 32],
-            parity_out: [0u8; 32],
+            )
         })
         .collect();
 
-    (regular_hints, backup_hints)
+    (regular_cutoffs, backup_cutoffs)
+}
+
+fn is_non_zero(parity: &[u8]) -> bool {
+    parity.iter().any(|&b| b != 0)
+}
+
+fn count_invalid(cutoffs: &[u32]) -> usize {
+    cutoffs
+        .iter()
+        .filter(|&&cutoff| cutoff == INVALID_CUTOFF)
+        .count()
 }
 
 /// Print final results summary.
-pub fn print_results(
-    duration: Duration,
-    file_len: usize,
-    regular_hints: &[RegularHint],
-    backup_hints: &[BackupHint],
-    params: &HintParams,
-) {
+pub fn print_results(duration: Duration, file_len: usize, hints: &HintSet, params: &HintParams) {
     let throughput_mb = (file_len as f64 / 1024.0 / 1024.0) / duration.as_secs_f64();
 
-    let non_zero_regular = regular_hints
-        .iter()
-        .filter(|h| h.parity.iter().any(|&b| b != 0))
+    let non_zero_regular = (0..hints.num_regular())
+        .filter(|&j| is_non_zero(hints.regular_parity(j)))
         .count();
-    let invalid_regular = regular_hints
-        .iter()
-        .filter(|h| h.cutoff == INVALID_CUTOFF)
-        .count();
+    let invalid_regular = count_invalid(hints.regular_cutoffs());
 
     info!(
         duration_secs = format_args!("{:.2}", duration.as_secs_f64()),
@@ -357,18 +362,13 @@ pub fn print_results(
     );
 
     if params.num_backup > 0 {
-        let non_zero_backup_in = backup_hints
-            .iter()
-            .filter(|h| h.parity_in.iter().any(|&b| b != 0))
+        let non_zero_backup_in = (0..hints.num_backup())
+            .filter(|&b| is_non_zero(hints.backup_parity_in(b)))
             .count();
-        let non_zero_backup_out = backup_hints
-            .iter()
-            .filter(|h| h.parity_out.iter().any(|&b| b != 0))
+        let non_zero_backup_out = (0..hints.num_backup())
+            .filter(|&b| is_non_zero(hints.backup_parity_out(b)))
             .count();
-        let invalid_backup = backup_hints
-            .iter()
-            .filter(|h| h.cutoff == INVALID_CUTOFF)
-            .count();
+        let invalid_backup = count_invalid(hints.backup_cutoffs());
         info!(
             non_zero_parity_in = non_zero_backup_in,
             non_zero_parity_out = non_zero_backup_out,
@@ -497,11 +497,45 @@ mod tests {
     }
 
     #[test]
+    fn record_size_sets_the_entry_count() {
+        let args: Args = Args::parse_from(["plinko_hints", "--record-size", "7"]);
+        assert!(validate_args(&args).is_ok());
+        let geometry: Geometry = compute_geometry(7 * 100, &args).expect("geometry");
+        assert_eq!((geometry.record_size, geometry.n_entries), (7, 100));
+
+        let error: String = compute_geometry(7 * 100 + 3, &args)
+            .err()
+            .expect("the size is not a multiple of 7")
+            .to_string();
+        assert!(error.contains("multiple of the record size"), "{error}");
+
+        // 280 bytes are 7 v3 records, and 40 records of 7 bytes.
+        let v3: Args = Args::parse_from(["plinko_hints"]);
+        assert_eq!(compute_geometry(280, &v3).expect("geometry").n_entries, 7);
+        assert_eq!(
+            compute_geometry(280, &args).expect("geometry").n_entries,
+            40
+        );
+
+        for record_size in ["0", "1048577"] {
+            let args: Args = Args::parse_from(["plinko_hints", "--record-size", record_size]);
+            let error: String = validate_args(&args)
+                .expect_err("record size must be rejected")
+                .to_string();
+            assert!(
+                error.contains("record_size must be in the range"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn default_geometry_matches_the_protocol_client() {
         let args: Args = Args::parse_from(["plinko_hints"]);
         let geometry_of = |n_entries: usize| -> (usize, usize) {
             let geometry: Geometry =
-                compute_geometry(n_entries * DB_ENTRY_SIZE, &args).expect("geometry");
+                compute_geometry(n_entries * args.record_size, &args).expect("geometry");
+            assert_eq!(geometry.n_entries, n_entries);
             (geometry.w, geometry.c)
         };
 
@@ -509,8 +543,9 @@ mod tests {
 
         // Includes databases that fill less than two blocks, and odd block counts.
         for n_entries in (1..=70).chain([1_000, 65_537, 1_834_095_877]) {
-            let client = plinko::protocol::ProtocolParams::new(n_entries, None, 128, None)
-                .expect("client params");
+            let client =
+                plinko::protocol::ProtocolParams::new(n_entries, args.record_size, None, 128, None)
+                    .expect("client params");
             assert_eq!(
                 geometry_of(n_entries),
                 (client.block_size, client.num_blocks),

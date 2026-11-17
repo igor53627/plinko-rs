@@ -8,7 +8,7 @@ and what it does not.
 
 - `Server::apply_updates` (`plinko/src/protocol.rs`) writes new values and
   returns one `EntryUpdate { index, delta }` for each changed record, where
-  `delta = old value XOR new value`.
+  `delta = old value XOR new value` (`record_size` bytes).
 - `Client::apply_updates` applies the deltas to the hints. For a changed
   record it computes the iPRF inverse with the key of the block, which gives
   the candidate hints (`2 * lambda` on average). For each candidate:
@@ -25,8 +25,9 @@ Both are in-memory functions. Tests: `protocol_e2e_test.rs` and
 
 ## Cost
 
-Measured: 0.51 to 0.53 ms of client CPU for each changed record (one thread,
-Apple M3 Ultra, hardware AES; 16,777,216 records, `w = 4096`). The cost is one
+Measured: 0.52 to 0.54 ms of client CPU for each changed record (one thread,
+Apple M3 Ultra, hardware AES; 16,777,216 records, `w = 4096`; record sizes of
+32, 40 and 256 bytes). The cost is one
 iPRF inverse; it is 0.52 ms at the mainnet hint count
 ([trust_model.md](trust_model.md#cost-for-the-client)). A build without
 hardware AES is about 20 times slower.

@@ -2,9 +2,11 @@
 
 Implements Plinko's HintInit (Fig. 7 of the paper).
 
-Reads v3 `database.bin` (40-byte records). Geometry uses the record count (`file_size / 40`).
-The CPU streaming paths XOR the first 32 bytes of each record into hint parity; the CUDA path
-expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
+Reads a database file that is an array of fixed-size records. `--record-size` gives the
+record size in bytes (1 to 1,048,576; default 40, the v3 `database.bin` record). Geometry
+uses the record count (`file_size / record_size`); a file that is not a whole number of
+records is an error. A hint parity is the XOR of whole records, so it has the record size.
+The GPU benchmark (`plinko/src/gpu.rs`, `gpu` feature) works with 40-byte records only.
 
 ## Key Design (per paper)
 
@@ -20,10 +22,9 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 | File         | Purpose                                                                        |
 |--------------|--------------------------------------------------------------------------------|
 | mod.rs       | Module wiring and re-exports                                                   |
-| types.rs     | `Args` and constants; the hint types come from the library (`plinko::hints`)   |
+| types.rs     | `Args` (with `--record-size`) and `record_at`; the hint set is `plinko::hints::HintSet` |
 | keys.rs      | iPRF block key derivation                                                      |
-| subsets.rs   | Parity XOR helper (block subsets are in the library module `plinko::subsets`)  |
-| driver.rs    | Geometry, validation, seed handling, hint initialization, hint file output     |
+| driver.rs    | Geometry, validation, seed handling, hint cutoffs, hint file output            |
 | fast_path.rs | Standard streaming path (non-constant-time, worker threads), `FastProcessInput` |
 | ct_path.rs   | Constant-time streaming path, `CtProcessInput`; only with the `tee` feature    |
 | path_tests.rs | Tests of the streaming paths against the hint definition of Fig. 7            |
@@ -33,8 +34,9 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 - The streaming processors now take typed input structs instead of long argument lists:
   - `ct_path::process_entries_ct(CtProcessInput, ...)` (`tee` feature)
   - `fast_path::process_entries_fast(FastProcessInput, ...)`
-- `driver::print_results` now takes only the parameters it uses:
-  - `print_results(duration, file_len, regular_hints, backup_hints, params)`
+- Both processors write the parities into a `plinko::hints::HintSet`, which holds the
+  cutoffs and has the record size of the database. `driver::hint_cutoffs` computes the cutoffs.
+- `driver::print_results(duration, file_len, hints, params)` logs the counts.
 - Related CPU benchmark/generator path in `plinko/src/gpu.rs` (`gpu` feature) now uses `CpuHintInput` for `generate_hints`.
 - The constant-time variants of the PRP and the iPRF are in `plinko/src/iprf/tee.rs` (`tee` feature). See [FEATURE_FLAGS.md](FEATURE_FLAGS.md).
 
@@ -47,9 +49,17 @@ cargo build --release -p plinko --bin plinko_hints
 # Make a master seed (client-secret)
 (umask 077 && openssl rand -hex 32 > ./data/master_seed.hex)
 
-# Generate hints (standard mode)
+# Generate hints (standard mode; 40-byte records by default)
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
+  --lambda 128 \
+  --seed-file ./data/master_seed.hex \
+  --output ./data/hints.bin
+
+# A database of 256-byte records
+./target/release/plinko_hints \
+  --db-path ./data/records.bin \
+  --record-size 256 \
   --lambda 128 \
   --seed-file ./data/master_seed.hex \
   --output ./data/hints.bin
@@ -152,9 +162,17 @@ depend on the thread count or on the schedule
 (`generator_file_is_the_same_for_every_thread_count`, and the unit tests in
 `path_tests.rs` with 1, 2, 3 and 16 threads).
 
-The accumulators take 32 bytes per regular hint and 64 bytes per backup hint in
-addition to the hints, until the streaming phase ends. The constant-time path
+An accumulator holds a record as 64-bit words in little-endian order; a record
+size that is not a multiple of 8 leaves the last word partly unused. The
+accumulators take the record size, rounded up to 8 bytes, per regular hint and
+two times that per backup hint in addition to the hints, until the streaming
+phase ends. The constant-time path
 uses one thread and rejects `--threads` above 1.
+
+The measurements below were made with 32-byte parities, before the record size
+was a parameter. Runs with records of 32, 40 and 256 bytes gave CPU times within 1% of each other
+([protocol_overview.md](protocol_overview.md#measured-16777216-records)); the
+peak memory grows with the record size.
 
 Measured with w = 65536 and 16,777,216 hints (Apple M3 Ultra, 24 performance
 cores, hardware AES), full `plinko_hints` runs with `--output`:
@@ -168,6 +186,13 @@ cores, hardware AES), full `plinko_hints` runs with `--output`:
 
 The hint files of the two 2-block runs are byte-identical, and so are those of
 the 24-block runs.
+
+The 24-block run on 24 threads with 40-byte parities (2026-11-17, the record
+size as a parameter): 42.5 s of wall time, 925.3 s of CPU time and a peak memory
+footprint of 2.11 GB (2.18 GB of resident memory with the mapped database
+pages). The hint file has 1,073,741,920 bytes. The memory is the hint set and
+the accumulators of the worker threads: `2 * lambda * w * 3r` bytes, which is
+2.01 GB for `r = 40`, plus the cutoffs.
 
 ### Mainnet Cost
 
@@ -223,8 +248,9 @@ library module `plinko::hints`.
 - The file and the seed are client-secret. Whoever holds both can link each
   query of the client to its hint.
 - The fast path and the constant-time path give byte-identical files for the
-  same seed and database (`scripts/local_e2e_hint_pipeline.sh` checks this;
-  the script builds with the `tee` feature).
+  same seed and database (`scripts/local_e2e_hint_pipeline.sh` checks this for
+  40-byte records, and `constant_time_path_writes_the_same_file_for_each_record_size`
+  in `hint_file_e2e_test.rs` for 1, 13, 40, 45 and 256 bytes; both need the `tee` feature).
 
 The protocol client loads the file:
 
@@ -238,8 +264,8 @@ let params = ProtocolParams::for_hint_set(&hints)?;
 let client = Client::from_hints(params, master_seed, query_rng_seed, hints)?;
 ```
 
-`Client::from_hints` rejects a hint set with another geometry, other hint
-counts, or another master seed. `plinko/tests/hint_file_e2e_test.rs` runs the
+`Client::from_hints` rejects a hint set with another record size, another
+geometry, other hint counts, or another master seed. `plinko/tests/hint_file_e2e_test.rs` runs the
 binary, loads the file, and checks queries and an update.
 
 ## Block Subsets
