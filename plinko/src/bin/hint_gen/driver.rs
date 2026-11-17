@@ -1,9 +1,13 @@
 //! Driver helpers for plinko_hints binary - geometry, validation, and initialization.
 
 use crate::hint_gen::{BackupHint, RegularHint, DB_ENTRY_SIZE};
+use plinko::hints::HintSet;
 use plinko::iprf::MAX_PREIMAGES;
 use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::RngCore;
+use std::fs::{File, OpenOptions};
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -64,6 +68,21 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     }
     if args.backup_hints == Some(0) {
         eyre::bail!("num_backup must be > 0 (backup hints are required for correctness)");
+    }
+    if let Some(output) = &args.output {
+        if args.seed.is_none() && args.seed_file.is_none() {
+            eyre::bail!(
+                "--output requires --seed or --seed-file: \
+                 a client cannot use a hint file without its master seed"
+            );
+        }
+        if args.allow_truncation {
+            eyre::bail!("--output cannot be used with --allow-truncation");
+        }
+        let parent: &Path = output.parent().unwrap_or(Path::new(""));
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            eyre::bail!("output directory {} does not exist", parent.display());
+        }
     }
     Ok(())
 }
@@ -167,32 +186,98 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     })
 }
 
-/// Parse seed from hex string or generate random seed.
-pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
-    if let Some(ref hex_seed) = args.seed {
-        let hex_clean = hex_seed.strip_prefix("0x").unwrap_or(hex_seed);
-        if hex_clean.len() != 64 {
-            eyre::bail!("--seed must be exactly 32 bytes (64 hex chars)");
-        }
-        let mut seed = [0u8; 32];
-        for (i, chunk) in hex_clean.as_bytes().chunks(2).enumerate() {
-            let hex_str = std::str::from_utf8(chunk)?;
-            seed[i] = u8::from_str_radix(hex_str, 16)
-                .map_err(|_| eyre::eyre!("invalid hex in --seed at position {}", i * 2))?;
-        }
-        if args.print_seed {
-            eprintln!("Using provided seed: 0x{}", hex_clean);
-        }
-        Ok(seed)
-    } else {
-        let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
-        if args.print_seed {
-            let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
-            eprintln!("Generated seed: 0x{}", hex);
-        }
-        Ok(seed)
+/// Parses a master seed of 64 hex characters, with an optional `0x` prefix.
+fn parse_seed_hex(text: &str, source: &str) -> eyre::Result<[u8; 32]> {
+    let hex_clean: &str = text.strip_prefix("0x").unwrap_or(text);
+    if hex_clean.len() != 64 || !hex_clean.is_ascii() {
+        eyre::bail!("{source} must be exactly 32 bytes (64 hex chars)");
     }
+    let mut seed = [0u8; 32];
+    for (i, byte) in seed.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex_clean[2 * i..2 * i + 2], 16)
+            .map_err(|_| eyre::eyre!("invalid hex in {source} at position {}", i * 2))?;
+    }
+    Ok(seed)
+}
+
+/// Takes the master seed from `--seed` or `--seed-file`, or generates a random seed.
+pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
+    let provided: Option<[u8; 32]> = if let Some(hex_seed) = &args.seed {
+        Some(parse_seed_hex(hex_seed, "--seed")?)
+    } else if let Some(path) = &args.seed_file {
+        let text: String = std::fs::read_to_string(path)
+            .map_err(|error| eyre::eyre!("cannot read --seed-file {}: {error}", path.display()))?;
+        Some(parse_seed_hex(text.trim(), "--seed-file")?)
+    } else {
+        None
+    };
+
+    let seed: [u8; 32] = match provided {
+        Some(seed) => seed,
+        None => {
+            let mut seed = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut seed);
+            seed
+        }
+    };
+    if args.print_seed {
+        let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
+        let origin: &str = if provided.is_some() {
+            "Using provided seed"
+        } else {
+            "Generated seed"
+        };
+        eprintln!("{origin}: 0x{hex}");
+    }
+    Ok(seed)
+}
+
+/// Writes the hint set to `path` through a temporary file in the same directory.
+///
+/// The temporary file is `<path>.<pid>.tmp`. It is created exclusively, so a
+/// run never writes into a file that another run or another user made. The
+/// file is client-secret; on Unix it gets mode 0600.
+pub fn write_hint_file(path: &Path, hints: &HintSet) -> eyre::Result<()> {
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp_path: PathBuf = PathBuf::from(tmp_name);
+
+    let mut options: OpenOptions = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file: File = options
+        .open(&tmp_path)
+        .map_err(|error| eyre::eyre!("cannot create {}: {error}", tmp_path.display()))?;
+
+    let written: eyre::Result<()> = write_and_publish(file, &tmp_path, path, hints);
+    if written.is_err() {
+        // Best effort: the temporary file is ours and is incomplete.
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    written
+}
+
+fn write_and_publish(
+    file: File,
+    tmp_path: &Path,
+    path: &Path,
+    hints: &HintSet,
+) -> eyre::Result<()> {
+    let mut writer = BufWriter::new(file);
+    hints.write_to(&mut writer)?;
+    let file: File = writer
+        .into_inner()
+        .map_err(|error| eyre::eyre!("cannot flush {}: {error}", tmp_path.display()))?;
+    file.sync_all()?;
+    drop(file);
+
+    std::fs::rename(tmp_path, path)
+        .map_err(|error| eyre::eyre!("cannot move hint file to {}: {error}", path.display()))?;
+    Ok(())
 }
 
 /// Initialize hint structures and compute the cutoff of each block subset.
@@ -293,6 +378,70 @@ mod tests {
 
         let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "65536"]);
         assert!(validate_args(&args).is_ok());
+    }
+
+    #[test]
+    fn output_requires_a_reproducible_seed() {
+        let seed_hex: String = "ab".repeat(32);
+
+        let args: Args = Args::parse_from(["plinko_hints", "--output", "hints.bin"]);
+        let error: String = validate_args(&args).expect_err("no seed").to_string();
+        assert!(error.contains("--seed or --seed-file"), "{error}");
+
+        let args: Args =
+            Args::parse_from(["plinko_hints", "--output", "hints.bin", "--seed", &seed_hex]);
+        assert!(validate_args(&args).is_ok());
+
+        let args: Args = Args::parse_from([
+            "plinko_hints",
+            "--output",
+            "hints.bin",
+            "--seed-file",
+            "seed.hex",
+        ]);
+        assert!(validate_args(&args).is_ok());
+
+        let args: Args = Args::parse_from([
+            "plinko_hints",
+            "--output",
+            "hints.bin",
+            "--seed",
+            &seed_hex,
+            "--allow-truncation",
+        ]);
+        assert!(validate_args(&args).is_err());
+
+        let conflict = Args::try_parse_from([
+            "plinko_hints",
+            "--seed",
+            &seed_hex,
+            "--seed-file",
+            "seed.hex",
+        ]);
+        assert!(conflict.is_err(), "--seed and --seed-file must conflict");
+    }
+
+    #[test]
+    fn seed_hex_is_parsed_strictly() {
+        let mut expected = [0u8; 32];
+        expected[0] = 0x01;
+        expected[31] = 0xFE;
+        let hex: String = format!("01{}fe", "00".repeat(30));
+
+        assert_eq!(parse_seed_hex(&hex, "--seed").expect("plain"), expected);
+        assert_eq!(
+            parse_seed_hex(&format!("0x{hex}"), "--seed").expect("prefixed"),
+            expected
+        );
+        assert!(parse_seed_hex(&hex[2..], "--seed").is_err(), "too short");
+        assert!(
+            parse_seed_hex(&format!("{hex}00"), "--seed").is_err(),
+            "too long"
+        );
+        assert!(
+            parse_seed_hex(&format!("zz{}", &hex[2..]), "--seed").is_err(),
+            "not hex"
+        );
     }
 
     #[test]

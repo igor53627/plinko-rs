@@ -2,7 +2,8 @@
 //!
 //! This module provides a practical, in-memory protocol flow on top of the
 //! existing iPRF primitive:
-//! - offline hint initialization (regular + backup)
+//! - offline hint initialization (regular + backup), or a hint set that
+//!   `plinko_hints` wrote to a file (see [`crate::hints`])
 //! - online query construction
 //! - server answer computation
 //! - client reconstruction + backup promotion
@@ -12,6 +13,7 @@
 //! Production `database.bin` uses the v3 40-byte on-disk layout (`schema40`);
 //! see `hint_gen` and [`docs/data_format.md`](../../docs/data_format.md).
 
+use crate::hints::{self, HintGeometry, HintSet};
 use crate::iprf::{Iprf, PrfKey128};
 use crate::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::{RngCore, SeedableRng};
@@ -29,12 +31,25 @@ pub type Entry = [u8; ENTRY_SIZE];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
     InvalidParams(&'static str),
-    InvalidIndex { index: usize, num_entries: usize },
+    InvalidIndex {
+        index: usize,
+        num_entries: usize,
+    },
     NoDecoyIndexAvailable,
-    NoHintForIndex { index: usize },
+    NoHintForIndex {
+        index: usize,
+    },
     NoBackupHintsLeft,
-    QueryShapeMismatch { expected_offsets: usize, got: usize },
-    OffsetOutOfRange { block: usize, offset: usize },
+    QueryShapeMismatch {
+        expected_offsets: usize,
+        got: usize,
+    },
+    OffsetOutOfRange {
+        block: usize,
+        offset: usize,
+    },
+    /// A hint set does not belong to these parameters or to this master seed.
+    HintSetMismatch(&'static str),
 }
 
 impl Display for ProtocolError {
@@ -58,6 +73,9 @@ impl Display for ProtocolError {
             }
             Self::OffsetOutOfRange { block, offset } => {
                 write!(f, "offset {offset} out of range for block {block}")
+            }
+            Self::HintSetMismatch(what) => {
+                write!(f, "hint set does not match the client: {what}")
             }
         }
     }
@@ -151,6 +169,48 @@ impl ProtocolParams {
             num_backup_hints,
             num_total_hints,
         })
+    }
+
+    /// Derives the parameters that a hint set was generated for.
+    ///
+    /// `lambda` is the number of regular hints divided by the block size.
+    pub fn for_hint_set(hints: &HintSet) -> Result<Self, ProtocolError> {
+        let geometry: HintGeometry = hints.geometry;
+        let num_entries: usize = usize::try_from(geometry.num_entries)
+            .map_err(|_| ProtocolError::HintSetMismatch("num_entries is too large"))?;
+        let block_size: usize = usize::try_from(geometry.block_size)
+            .map_err(|_| ProtocolError::HintSetMismatch("block_size is too large"))?;
+        if block_size == 0 {
+            return Err(ProtocolError::HintSetMismatch("block_size is zero"));
+        }
+
+        let lambda: usize = hints.regular.len() / block_size;
+        if lambda * block_size != hints.regular.len() {
+            return Err(ProtocolError::HintSetMismatch(
+                "the number of regular hints is not a multiple of block_size",
+            ));
+        }
+        let params: Self = Self::new(
+            num_entries,
+            Some(block_size),
+            lambda,
+            Some(hints.backup.len()),
+        )?;
+        if params.hint_geometry() != geometry {
+            return Err(ProtocolError::HintSetMismatch(
+                "num_blocks is not the block count of this database size",
+            ));
+        }
+        Ok(params)
+    }
+
+    /// Database geometry that hints for these parameters must have.
+    pub fn hint_geometry(&self) -> HintGeometry {
+        HintGeometry {
+            num_entries: self.num_entries as u64,
+            block_size: self.block_size as u64,
+            num_blocks: self.num_blocks as u64,
+        }
     }
 
     #[inline]
@@ -336,101 +396,68 @@ pub struct Client {
 
 impl Client {
     /// Run offline HintInit from a flat database.
+    ///
+    /// Equal to [`compute_hints`] followed by [`Client::from_hints`].
     pub fn offline_init(
         params: ProtocolParams,
         master_seed: [u8; 32],
         query_rng_seed: [u8; 32],
         entries: &[Entry],
     ) -> Result<Self, ProtocolError> {
-        if entries.len() != params.num_entries {
-            return Err(ProtocolError::InvalidParams(
-                "entries length must equal num_entries",
-            ));
+        let hints: HintSet = compute_hints(&params, &master_seed, entries)?;
+        Self::from_hints(params, master_seed, query_rng_seed, hints)
+    }
+
+    /// Builds a client from a hint set, for example one that `plinko_hints` wrote to a file.
+    ///
+    /// Returns [`ProtocolError::HintSetMismatch`] if the geometry or the hint
+    /// counts differ from `params`, or if the hints were made with another
+    /// master seed. The function does not recompute cutoffs or parities.
+    pub fn from_hints(
+        params: ProtocolParams,
+        master_seed: [u8; 32],
+        query_rng_seed: [u8; 32],
+        hints: HintSet,
+    ) -> Result<Self, ProtocolError> {
+        if hints.geometry != params.hint_geometry() {
+            return Err(ProtocolError::HintSetMismatch("database geometry"));
+        }
+        if hints.regular.len() != params.num_regular_hints {
+            return Err(ProtocolError::HintSetMismatch("number of regular hints"));
+        }
+        if hints.backup.len() != params.num_backup_hints {
+            return Err(ProtocolError::HintSetMismatch("number of backup hints"));
+        }
+        if hints.seed_check != hints::seed_check(&master_seed) {
+            return Err(ProtocolError::HintSetMismatch("master seed"));
         }
 
-        let block_keys = derive_block_keys(&master_seed, params.num_blocks);
-        let iprfs: Vec<Iprf> = block_keys
+        let mut slots: Vec<Option<HintSlot>> = Vec::with_capacity(params.num_total_hints);
+        slots.extend(hints.regular.iter().map(|hint| {
+            (hint.cutoff != INVALID_CUTOFF).then_some(HintSlot {
+                cutoff: hint.cutoff,
+                complemented: false,
+                parity: hint.parity,
+                extra_index: None,
+            })
+        }));
+        slots.resize(params.num_total_hints, None);
+
+        let backups: Vec<BackupHint> = hints
+            .backup
             .iter()
-            .map(|key| {
-                Iprf::new(
-                    *key,
-                    params.num_total_hints as u64,
-                    params.block_size as u64,
-                )
+            .map(|hint| BackupHint {
+                cutoff: hint.cutoff,
+                parity_in: hint.parity_in,
+                parity_out: hint.parity_out,
+                available: hint.cutoff != INVALID_CUTOFF,
             })
             .collect();
 
-        let subset_prf = SubsetPrf::new(&master_seed);
-        let mut scratch: Vec<u32> = Vec::with_capacity(params.num_blocks);
-
-        let mut slots: Vec<Option<HintSlot>> = vec![None; params.num_total_hints];
-        for (j, slot) in slots.iter_mut().enumerate().take(params.num_regular_hints) {
-            let cutoff: u32 = subset_prf.cutoff(
-                j as u64,
-                params.num_blocks,
-                regular_subset_size(params.num_blocks),
-                &mut scratch,
-            );
-            if cutoff != INVALID_CUTOFF {
-                *slot = Some(HintSlot {
-                    cutoff,
-                    complemented: false,
-                    parity: [0u8; ENTRY_SIZE],
-                    extra_index: None,
-                });
-            }
-        }
-
-        let mut backups = Vec::with_capacity(params.num_backup_hints);
-        for j in 0..params.num_backup_hints {
-            let cutoff: u32 = subset_prf.cutoff(
-                (params.num_regular_hints + j) as u64,
-                params.num_blocks,
-                backup_subset_size(params.num_blocks),
-                &mut scratch,
-            );
-            backups.push(BackupHint {
-                cutoff,
-                parity_in: [0u8; ENTRY_SIZE],
-                parity_out: [0u8; ENTRY_SIZE],
-                available: cutoff != INVALID_CUTOFF,
-            });
-        }
-
-        let mut padded = entries.to_vec();
-        padded.resize(params.n_effective_entries(), [0u8; ENTRY_SIZE]);
-
-        for (i, entry) in padded.iter().copied().enumerate() {
-            let block = i / params.block_size;
-            let offset = i % params.block_size;
-            let hint_indices = iprfs[block].inverse(offset as u64);
-
-            for hint_idx in hint_indices {
-                let j = hint_idx as usize;
-                if j < params.num_regular_hints {
-                    if let Some(slot) = slots[j].as_mut() {
-                        if subset_prf.contains(hint_idx, block, slot.cutoff) {
-                            xor_entry(&mut slot.parity, &entry);
-                        }
-                    }
-                } else if j < params.num_total_hints {
-                    let backup = &mut backups[j - params.num_regular_hints];
-                    if !backup.available {
-                        continue;
-                    }
-                    if subset_prf.contains(hint_idx, block, backup.cutoff) {
-                        xor_entry(&mut backup.parity_in, &entry);
-                    } else {
-                        xor_entry(&mut backup.parity_out, &entry);
-                    }
-                }
-            }
-        }
-
         Ok(Self {
+            iprfs: block_iprfs(&params, &master_seed),
+            subset_prf: SubsetPrf::new(&master_seed),
             params,
-            iprfs,
-            subset_prf,
             slots,
             backups,
             cache: HashMap::new(),
@@ -709,6 +736,97 @@ impl Client {
             .contains(hint_idx as u64, block, slot.cutoff);
         in_original ^ slot.complemented
     }
+}
+
+/// Runs HintInit (Plinko Fig. 7) over an in-memory database.
+///
+/// `plinko_hints` computes the same hint set from a `database.bin` file, where
+/// an entry is the first 32 bytes of a record.
+pub fn compute_hints(
+    params: &ProtocolParams,
+    master_seed: &[u8; 32],
+    entries: &[Entry],
+) -> Result<HintSet, ProtocolError> {
+    if entries.len() != params.num_entries {
+        return Err(ProtocolError::InvalidParams(
+            "entries length must equal num_entries",
+        ));
+    }
+
+    let iprfs: Vec<Iprf> = block_iprfs(params, master_seed);
+    let subset_prf: SubsetPrf = SubsetPrf::new(master_seed);
+    let mut scratch: Vec<u32> = Vec::with_capacity(params.num_blocks);
+
+    let mut regular: Vec<hints::RegularHint> = (0..params.num_regular_hints)
+        .map(|j| hints::RegularHint {
+            cutoff: subset_prf.cutoff(
+                j as u64,
+                params.num_blocks,
+                regular_subset_size(params.num_blocks),
+                &mut scratch,
+            ),
+            parity: [0u8; ENTRY_SIZE],
+        })
+        .collect();
+
+    let mut backup: Vec<hints::BackupHint> = (0..params.num_backup_hints)
+        .map(|b| hints::BackupHint {
+            cutoff: subset_prf.cutoff(
+                (params.num_regular_hints + b) as u64,
+                params.num_blocks,
+                backup_subset_size(params.num_blocks),
+                &mut scratch,
+            ),
+            parity_in: [0u8; ENTRY_SIZE],
+            parity_out: [0u8; ENTRY_SIZE],
+        })
+        .collect();
+
+    for i in 0..params.n_effective_entries() {
+        let entry: Entry = entries.get(i).copied().unwrap_or([0u8; ENTRY_SIZE]);
+        let block = i / params.block_size;
+        let offset = i % params.block_size;
+
+        for hint_id in iprfs[block].inverse(offset as u64) {
+            let j = hint_id as usize;
+            if j < params.num_regular_hints {
+                let hint: &mut hints::RegularHint = &mut regular[j];
+                if subset_prf.contains(hint_id, block, hint.cutoff) {
+                    xor_entry(&mut hint.parity, &entry);
+                }
+            } else if j < params.num_total_hints {
+                let hint: &mut hints::BackupHint = &mut backup[j - params.num_regular_hints];
+                if hint.cutoff == INVALID_CUTOFF {
+                    continue;
+                }
+                if subset_prf.contains(hint_id, block, hint.cutoff) {
+                    xor_entry(&mut hint.parity_in, &entry);
+                } else {
+                    xor_entry(&mut hint.parity_out, &entry);
+                }
+            }
+        }
+    }
+
+    Ok(HintSet {
+        geometry: params.hint_geometry(),
+        seed_check: hints::seed_check(master_seed),
+        regular,
+        backup,
+    })
+}
+
+fn block_iprfs(params: &ProtocolParams, master_seed: &[u8; 32]) -> Vec<Iprf> {
+    derive_block_keys(master_seed, params.num_blocks)
+        .iter()
+        .map(|key| {
+            Iprf::new(
+                *key,
+                params.num_total_hints as u64,
+                params.block_size as u64,
+            )
+        })
+        .collect()
 }
 
 pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {

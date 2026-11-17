@@ -34,17 +34,25 @@ Reth node data directory (`reth-db`, MDBX on disk):
 Reads flat `database.bin` only (not MDBX):
 
 ```bash
+(umask 077 && openssl rand -hex 32 > ./data/master_seed.hex)
+
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
-  --lambda 128
+  --lambda 128 \
+  --seed-file ./data/master_seed.hex \
+  --output ./data/hints.bin
 ```
+
+The seed and `hints.bin` are client-secret. Whoever holds both can link each query of the client to its hint. Format: [`data_format.md`](data_format.md#hint-file-hintsbin).
 
 ## Constant-time mode (TEE)
 
 ```bash
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
-  --lambda 128 --constant-time
+  --lambda 128 --constant-time \
+  --seed-file ./data/master_seed.hex \
+  --output ./data/hints.bin
 ```
 
 ## Production notes

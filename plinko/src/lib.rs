@@ -6,11 +6,13 @@
 //! - `constant_time`: Data-oblivious operations for TEE execution
 //! - `binomial`: True derandomized binomial sampling for PMNS
 //! - `subsets`: Block subsets of hints, from a PRF and one cutoff per hint
+//! - `hints`: Hint set of a client and its on-disk format
 
 pub mod binomial;
 pub mod constant_time;
 pub mod db;
 pub mod gpu;
+pub mod hints;
 pub mod iprf;
 pub mod protocol;
 pub mod schema40;

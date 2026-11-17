@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - GPU benchmark results and optimization kanban tracking
   - Legacy docs archived, stale binaries removed
 
+- **Hint file**: `plinko_hints --output <file>` writes all hints to one versioned file (`PLNKHINT`, version 1: geometry, hint counts, seed check, cutoffs and parities, BLAKE3 checksum; see `docs/data_format.md`). The new library module `plinko::hints` (`HintSet`, `RegularHint`, `BackupHint`) is shared by the generator and the client.
+- **Client loads a hint file**: `Client::from_hints` builds a client from a `HintSet` and rejects another geometry, other hint counts, or another master seed (`ProtocolError::HintSetMismatch`). `ProtocolParams::for_hint_set` derives the parameters from the file. `protocol::compute_hints` runs HintInit in memory; `Client::offline_init` now calls it.
+- `plinko_hints --seed-file <file>` reads the master seed from a file, so that the seed is not in the process list. `--output` requires `--seed` or `--seed-file`.
+- End-to-end test `plinko/tests/hint_file_e2e_test.rs`: runs the `plinko_hints` binary, compares its file with the in-memory hint set, and checks queries and an update; an ignored test does the same with 66,560 hints.
+- `scripts/local_e2e_hint_pipeline.sh` compares the hint files of the fast and the constant-time run byte for byte.
+
 ### Changed
 
 - **Exact integer PMNS sampler (breaking)**: `binomial_sample` and `binomial_sample_tee` are replaced by `coin_binomial` and `coin_binomial_ct`. A split is the number of set bits among the first `count` bits of an AES-128 counter keystream of the tree node, which is exactly Binomial(count, 1/2) for a uniform keystream (computationally indistinguishable from it under the AES PRF assumption) and identical on every platform and in both modes. All iPRF outputs change.

@@ -27,6 +27,9 @@ DATA_DIR="$WORK_DIR/data"
 FAST_LOG="$WORK_DIR/hints_fast.log"
 CT_LOG="$WORK_DIR/hints_ct.log"
 GEN_LOG="$WORK_DIR/gen.log"
+SEED_FILE="$WORK_DIR/master_seed.hex"
+FAST_HINTS="$WORK_DIR/hints_fast.bin"
+CT_HINTS="$WORK_DIR/hints_ct.bin"
 COST_JSON="$WORK_DIR/cost_estimate.json"
 
 log() {
@@ -92,12 +95,15 @@ if [[ ! -s "$DB_PATH" ]]; then
   exit 1
 fi
 
+(umask 077 && printf '%s\n' "$MASTER_SEED" > "$SEED_FILE")
+
 log "running plinko_hints (fast path)"
 RUST_LOG="${RUST_LOG:-info}" RUST_LOG_STYLE=never "$HINTS_BIN" \
   --db-path "$DB_PATH" \
   --lambda "$LAMBDA" \
   --entries-per-block "$ENTRIES_PER_BLOCK" \
-  --seed "$MASTER_SEED" 2>&1 | tee "$FAST_LOG" >/dev/null
+  --seed-file "$SEED_FILE" \
+  --output "$FAST_HINTS" 2>&1 | tee "$FAST_LOG" >/dev/null
 
 log "running plinko_hints (constant-time path)"
 RUST_LOG="${RUST_LOG:-info}" RUST_LOG_STYLE=never "$HINTS_BIN" \
@@ -105,7 +111,8 @@ RUST_LOG="${RUST_LOG:-info}" RUST_LOG_STYLE=never "$HINTS_BIN" \
   --lambda "$LAMBDA" \
   --entries-per-block "$ENTRIES_PER_BLOCK" \
   --constant-time \
-  --seed "$MASTER_SEED" 2>&1 | tee "$CT_LOG" >/dev/null
+  --seed-file "$SEED_FILE" \
+  --output "$CT_HINTS" 2>&1 | tee "$CT_LOG" >/dev/null
 
 log "comparing key result metrics between fast and CT runs"
 for key in \
@@ -118,6 +125,18 @@ for key in \
   invalid_backup; do
   compare_metric "$key"
 done
+
+log "comparing hint files of the fast and CT runs"
+if [[ ! -s "$FAST_HINTS" || ! -s "$CT_HINTS" ]]; then
+  echo "ERROR: a hint file is missing or empty" >&2
+  exit 1
+fi
+if ! cmp -s "$FAST_HINTS" "$CT_HINTS"; then
+  echo "ERROR: fast and constant-time hint files differ" >&2
+  cmp "$FAST_HINTS" "$CT_HINTS" >&2 || true
+  exit 1
+fi
+log "hint files are byte-identical ($(wc -c < "$FAST_HINTS" | tr -d ' ') bytes)"
 
 log "running cost_estimate smoke"
 "$COST_BIN" --entries 1000 --json > "$COST_JSON"

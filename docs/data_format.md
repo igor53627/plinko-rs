@@ -11,6 +11,7 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 | `storage-mapping.bin` | `storage_slots` × (`Address(20)` \|\| `SlotKey(32)` \|\| `Index(4)` LE) | yes |
 | `code_store.bin` | `[count: u32 LE][hash₀: 32B]…` | yes (if any contract code) |
 | `metadata.json` | JSON snapshot descriptor | yes |
+| `hints.bin` | Hint set of one client (see [Hint file](#hint-file-hintsbin)) | no (`plinko_hints --output`) |
 
 ### `database.bin` ordering
 
@@ -71,6 +72,32 @@ Written by [`src/main.rs`](../src/main.rs):
 ```
 
 Synthetic datasets ([`gen_synthetic`](../plinko/src/bin/gen_synthetic.rs)) add `"synthetic": true`, `"seed"`, `"scale_percent"`, `"unique_bytecodes"`, and `"size_bytes"`.
+
+## Hint file (`hints.bin`)
+
+Written by `plinko_hints --output` and read by the protocol client
+(`plinko::hints::HintSet`). All integers are little-endian. Version 1:
+
+| Offset   | Size    | Field                                                  |
+|----------|---------|--------------------------------------------------------|
+| 0        | 8       | magic `PLNKHINT`                                       |
+| 8        | 4       | version (`1`)                                          |
+| 12       | 4       | parity size in bytes (`32`)                            |
+| 16       | 8       | `num_entries`: real entries of `database.bin`          |
+| 24       | 8       | `block_size` (`w`)                                     |
+| 32       | 8       | `num_blocks` (`c`), padding included                   |
+| 40       | 8       | `num_regular`                                          |
+| 48       | 8       | `num_backup`                                           |
+| 56       | 8       | seed check: `SHA-256(master_seed \|\| "plinko_seed_check")[0..8]` |
+| 64       | 36 each | regular hints: cutoff (`u32`), parity (32 bytes)       |
+| ...      | 68 each | backup hints: cutoff (`u32`), parity in, parity out    |
+| end - 32 | 32      | BLAKE3 hash of all bytes before it                     |
+
+- Regular hint `j` has hint ID `j`; backup hint `b` has hint ID `num_regular + b`.
+- A cutoff defines the block subset of a hint ([`hint_generation.md`](hint_generation.md#block-subsets)). Cutoff `0` marks an invalid hint with zero parities.
+- A parity is the XOR of the first 32 bytes of the selected records.
+- Size: `96 + num_regular × 36 + num_backup × 68` bytes. Mainnet with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 872,415,328 bytes (computed).
+- The file holds no master seed. The file and the seed are client-secret.
 
 ## Mainnet v3 reference counts
 

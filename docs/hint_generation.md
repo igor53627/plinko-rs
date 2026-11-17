@@ -20,10 +20,10 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 | File         | Purpose                                                                        |
 |--------------|--------------------------------------------------------------------------------|
 | mod.rs       | Module wiring and re-exports                                                   |
-| types.rs     | Core data types (`Args`, hints, constants)                                     |
+| types.rs     | `Args` and constants; the hint types come from the library (`plinko::hints`)   |
 | keys.rs      | iPRF block key derivation                                                      |
 | subsets.rs   | Parity XOR helper (block subsets are in the library module `plinko::subsets`)  |
-| driver.rs    | Geometry, validation, seed handling, hint initialization, and result summaries |
+| driver.rs    | Geometry, validation, seed handling, hint initialization, hint file output     |
 | fast_path.rs | Standard streaming path (non-constant-time), accepts `FastProcessInput`        |
 | ct_path.rs   | Constant-time streaming path for TEE mode, accepts `CtProcessInput`            |
 
@@ -42,18 +42,60 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 # Build (from repo root)
 cargo build --release -p plinko --bin plinko_hints
 
+# Make a master seed (client-secret)
+(umask 077 && openssl rand -hex 32 > ./data/master_seed.hex)
+
 # Generate hints (standard mode)
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
-  --lambda 128
+  --lambda 128 \
+  --seed-file ./data/master_seed.hex \
+  --output ./data/hints.bin
 
 # Generate hints (constant-time mode for TEE)
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
-  --lambda 128 --constant-time
+  --lambda 128 --constant-time \
+  --seed-file ./data/master_seed.hex \
+  --output ./data/hints.bin
 ```
 
+Without `--output` the run only logs counts. `--output` requires `--seed` or
+`--seed-file`, because a client cannot use the hints without the master seed.
+`--seed` puts the seed in the process list; use `--seed-file`.
+
 See [constant_time_mode.md](constant_time_mode.md) for TEE security details.
+
+## Hint File
+
+`--output` writes one file with all regular and backup hints. The layout is in
+[`data_format.md`](data_format.md#hint-file-hintsbin) and the code is in the
+library module `plinko::hints`.
+
+- The generator writes to `<output>.<pid>.tmp`, which it creates exclusively,
+  and then renames it. On Unix the file has mode 0600.
+- The file holds no seed. It holds an 8-byte check value of the seed, so that a
+  client detects a wrong seed.
+- The file and the seed are client-secret. Whoever holds both can link each
+  query of the client to its hint.
+- The fast path and the constant-time path give byte-identical files for the
+  same seed and database (`scripts/local_e2e_hint_pipeline.sh` checks this).
+
+The protocol client loads the file:
+
+```rust
+use plinko::hints::HintSet;
+use plinko::protocol::{Client, ProtocolParams};
+
+let file = std::fs::File::open("hints.bin")?;
+let hints = HintSet::read_from(std::io::BufReader::new(file))?;
+let params = ProtocolParams::for_hint_set(&hints)?;
+let client = Client::from_hints(params, master_seed, query_rng_seed, hints)?;
+```
+
+`Client::from_hints` rejects a hint set with another geometry, other hint
+counts, or another master seed. `plinko/tests/hint_file_e2e_test.rs` runs the
+binary, loads the file, and checks queries and an update.
 
 ## Block Subsets
 

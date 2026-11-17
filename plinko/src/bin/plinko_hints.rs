@@ -5,6 +5,7 @@ mod hint_gen;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
+use plinko::hints::{seed_check, HintGeometry, HintSet};
 use plinko::iprf::{Iprf, IprfTee};
 use plinko::subsets::SubsetPrf;
 use std::fs::File;
@@ -139,6 +140,21 @@ fn main() -> eyre::Result<()> {
 
     let duration = start.elapsed();
     print_results(duration, file_len, &regular_hints, &backup_hints, &params);
+
+    if let Some(output) = &args.output {
+        let hints = HintSet {
+            geometry: HintGeometry {
+                num_entries: geom.n_entries as u64,
+                block_size: geom.w as u64,
+                num_blocks: geom.c as u64,
+            },
+            seed_check: seed_check(&master_seed),
+            regular: regular_hints,
+            backup: backup_hints,
+        };
+        write_hint_file(output, &hints)?;
+        info!(path = ?output, bytes = hints.serialized_len(), "Hint file written");
+    }
 
     Ok(())
 }

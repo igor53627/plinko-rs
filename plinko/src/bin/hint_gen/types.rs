@@ -1,6 +1,9 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+/// Hint types of the hint file; the generator fills them in place.
+pub use plinko::hints::{BackupHint, RegularHint};
+
 /// On-disk v3 record size (`database.bin` stride).
 pub use plinko::schema40::ENTRY_SIZE as DB_ENTRY_SIZE;
 
@@ -36,8 +39,18 @@ pub struct Args {
     pub allow_truncation: bool,
 
     /// Deterministic master seed as a 64-char hex string; random if omitted.
+    /// The process list shows this value; prefer `--seed-file`.
     #[arg(long)]
     pub seed: Option<String>,
+
+    /// File that holds the master seed as 64 hex characters.
+    #[arg(long, conflicts_with = "seed")]
+    pub seed_file: Option<PathBuf>,
+
+    /// Write the hint set to this file (format: `plinko::hints`).
+    /// Requires `--seed` or `--seed-file`; the file does not contain the seed.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Print the master seed to stdout after generation/parsing.
     #[arg(long)]
@@ -55,27 +68,4 @@ pub fn parity_word_at(db_bytes: &[u8], index: usize) -> [u8; PARITY_WORD_SIZE] {
     db_bytes[offset..offset + PARITY_WORD_SIZE]
         .try_into()
         .expect("v3 entry must be at least 32 bytes")
-}
-
-/// A regular PIR hint: the XOR parity of database entries in a pseudorandom
-/// subset of `c/2 + 1` blocks.
-pub struct RegularHint {
-    /// Cutoff that defines the block subset (see `plinko::subsets`).
-    /// `INVALID_CUTOFF` marks a hint with no valid subset; its parity stays zero.
-    pub cutoff: u32,
-    /// XOR accumulator over all entries in the subset.
-    pub parity: [u8; 32],
-}
-
-/// A backup hint used for puncturing: splits blocks into an "in" subset of
-/// `c/2` blocks and its complement "out", maintaining separate XOR parities
-/// for each half.
-pub struct BackupHint {
-    /// Cutoff that defines the in/out partition (see `plinko::subsets`).
-    /// `INVALID_CUTOFF` marks a hint with no valid partition; its parities stay zero.
-    pub cutoff: u32,
-    /// XOR parity over entries whose block is *in* the subset.
-    pub parity_in: [u8; 32],
-    /// XOR parity over entries whose block is *outside* the subset.
-    pub parity_out: [u8; 32],
 }
