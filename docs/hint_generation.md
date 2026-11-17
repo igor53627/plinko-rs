@@ -16,16 +16,16 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 
 ## Module Structure
 
-| File | Size (bytes) | Purpose |
-|------|--------------|---------|
-| mod.rs | 772 | Module wiring and re-exports |
-| types.rs | 3218 | Core data types (`Args`, hints, constants) |
-| bitset.rs | 4516 | `BlockBitset` for constant-time membership checks |
-| keys.rs | 3885 | iPRF block key and subset-seed derivation |
-| subsets.rs | 3014 | Regular/backup subset block computation |
-| driver.rs | 11013 | Geometry, validation, seed handling, hint initialization, and result summaries |
-| fast_path.rs | 2727 | Standard streaming path (non-constant-time), accepts `FastProcessInput` |
-| ct_path.rs | 8790 | Constant-time streaming path for TEE mode, accepts `CtProcessInput` |
+| File         | Purpose                                                                        |
+|--------------|--------------------------------------------------------------------------------|
+| mod.rs       | Module wiring and re-exports                                                   |
+| types.rs     | Core data types (`Args`, hints, constants)                                     |
+| bitset.rs    | `BlockBitset` for constant-time membership checks                              |
+| keys.rs      | iPRF block key and subset-seed derivation                                      |
+| subsets.rs   | Regular/backup subset block computation                                        |
+| driver.rs    | Geometry, validation, seed handling, hint initialization, and result summaries |
+| fast_path.rs | Standard streaming path (non-constant-time), accepts `FastProcessInput`        |
+| ct_path.rs   | Constant-time streaming path for TEE mode, accepts `CtProcessInput`            |
 
 ## API Notes
 

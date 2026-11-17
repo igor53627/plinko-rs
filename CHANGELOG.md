@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **iPRF range must be a power of two (breaking)**: `Iprf::new` and `IprfTee::new` panic otherwise, `ProtocolParams::new` returns an error, and `plinko_hints --entries-per-block` rejects other values. The default `w` of `plinko_hints` is now the smallest power of two >= sqrt(N) (mainnet v3: 65536 instead of 42826), the same as the protocol client.
 - **PMNS key separation**: the keystream key is `SHA-256(key || "pmns" || n || m)[0..16]`; the node id is no longer a truncated hash.
 - Removed the `puruspe` dependency.
+- **Agent rules**: `AGENTS.md` has a local-only phase section (no GitHub, `backlog/` tasks, `jj`, CodeRabbit CLI review) and no longer describes the Codex Cloud workflow, the remote Rocq checker, DeepWiki updates, or PR formatting. It states that the formal models are not checked against the Rust source. The module table in `docs/hint_generation.md` has no file-size column.
 
 ### Fixed
 

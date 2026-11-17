@@ -1,102 +1,20 @@
 # Plinko RS - Agent Rules
 
-## Code Environment
+## Local-Only Phase (No GitHub)
 
-- **Codex Code Env ID**: `694e8588110c8191945f9b9dfbf0b7d1`
+The repository is not on GitHub at this time; `origin` is a local Git server. Until the owner
+publishes it again, this section replaces the GitHub rules of the global agent instructions
+(issue tracking, PR workflow, branch cleanup) and the CI references below.
 
-## Codex Cloud Tasks
+- Do not use `gh`. Do not create issues, pull requests, or review comments.
+- Track work in `backlog/` with the `backlog` CLI. A task is necessary for work that spans more
+  than one commit and for each deferred item (follow-up, revert, TODO). A small fix needs no task.
+- Version control is `jj` in a colocated repository, without feature branches. `jj` does not run
+  Git hooks, so check each commit message with `.githooks/commit-msg <file>` (see Commit Messages).
+- Review local changes before a commit: `coderabbit review --uncommitted --agent`.
+- Push only when the owner asks.
 
-For complex or long-running tasks (formal proofs, large refactors), use Codex Cloud:
-
-```bash
-# Submit a task to Codex Cloud (runs remotely with gpt-5.2-codex + xhigh reasoning)
-codex cloud exec --env 694e8588110c8191945f9b9dfbf0b7d1 --attempts 3 "Your task description"
-
-# Check task status
-codex cloud status <task_id>
-
-# View diff from completed task
-codex cloud diff <task_id>
-
-# Apply changes locally
-codex cloud apply <task_id>
-```
-
-Options:
-- `--attempts N`: Run N parallel attempts (best-of-N), use 3 for complex proofs
-- `--branch <branch>`: Target a specific git branch
-
-## GitHub CLI hygiene
-
-- When using `gh` to create or edit issues/PRs, ensure newlines are real (not literal `\n`); prefer `--body-file` or a here-doc.
-- If a posted issue/PR body contains literal `\n`, fix it immediately with `gh issue edit`/`gh pr edit`.
-
-## Codex Cloud + Remote Rocq Verification
-
-For Coq/Rocq proof synthesis with verification, use the remote build server.
-See [docs/codex-cloud-verification.md](docs/codex-cloud-verification.md) for full details.
-
-### Quick Start
-
-```bash
-# Submit proof task with verification
-codex cloud exec --env 694e8588110c8191945f9b9dfbf0b7d1 --attempts 3 "
-Prove \`lemma_name\` in plinko/formal/specs/SomeSpec.v
-
-Verify using:
-curl -s -X POST http://108.61.166.134/verify-project \\
-  -H 'Content-Type: application/json' \\
-  -d '{\"files\": {...}, \"main\": \"Plinko/Specs/SomeSpec.v\", \"timeout\": 120}'
-
-Read .v files from plinko/formal/specs/, key as Plinko/Specs/<name>.v.
-"
-```
-
-### Verification Server
-
-- **Host**: `108.61.166.134:80`
-- **Endpoints**: `GET /health`, `POST /verify`, `POST /verify-project`
-- **Service**: `rocq-verify.service` (Python API + Rocq 9.1.0)
-
-### Check Server Status
-
-```bash
-ssh root@108.61.166.134 "systemctl status rocq-verify nginx"
-ssh root@108.61.166.134 "tail -f /var/log/nginx/access.log"
-```
-
-### Evaluating Multiple Attempts
-
-When using `--attempts N`, always check ALL attempts before applying:
-
-```bash
-# View each attempt's diff
-for i in 1 2 3; do echo "=== Attempt $i ==="; codex cloud diff <task_id> --attempt $i | head -20; done
-
-# Apply specific attempt
-codex cloud apply <task_id> --attempt <N>
-```
-
-**Evaluation criteria (in priority order):**
-
-1. **Compiles** - Must verify with remote Rocq server (mandatory, disqualifies if fails)
-2. **No new axioms/Admitted** - Solution shouldn't introduce new proof debt
-3. **Minimal changes** - Fewer lines = less risk of breaking other proofs
-4. **Semantic correctness** - Doesn't change function definitions unless necessary
-5. **Proof quality**:
-   - Direct proofs > convoluted ones
-   - Reuses existing lemmas > duplicates logic
-   - Clear structure (induction base/step separated)
-6. **Helper lemmas** - General/reusable > one-off hacks
-
-**Quick comparison:**
-```bash
-# Line count per attempt
-for i in 1 2 3; do echo "Attempt $i: $(codex cloud diff <task_id> --attempt $i 2>&1 | grep -c '^[+-]') lines"; done
-
-# Check for new Admitted/Axiom
-for i in 1 2 3; do echo "Attempt $i:"; codex cloud diff <task_id> --attempt $i 2>&1 | grep -E "^\+.*Admitted|^\+.*Axiom"; done
-```
+Remove this section when the repository is on GitHub again.
 
 ## Canonical Protocol Reference
 
@@ -109,6 +27,8 @@ Prefer these for implementation and verification (see also `README.md`):
 
 **`docs/plinko_paper_index.json`** is an agent catalog of paper parts 1–6. Dataset layout: **`docs/data_format.md`** (v3). Use local extract `--limit`, synthetic data, or in-repo tests.
 
+If the parsed JSON and the paper PDF (`docs/2024-318.pdf`) disagree, the PDF is correct.
+
 ## Host: root@aya
 
 - **Reth DB location**: `/mnt/mainnet/data`
@@ -118,11 +38,11 @@ Prefer these for implementation and verification (see also `README.md`):
 ## Build Commands
 
 ```bash
-# Build plinko binary
+# Build the extractor (workspace root package)
 cargo build --release
 
-# Build hints generator
-cd plinko && cargo build --release --bin plinko_hints
+# Build the hints generator
+cargo build --release -p plinko --bin plinko_hints
 ```
 
 ## Run Commands
@@ -134,15 +54,18 @@ cd plinko && cargo build --release --bin plinko_hints
   --output-dir /mnt/mainnet/plinko
 
 # Generate hints (standard mode)
-./plinko/target/release/plinko_hints \
+./target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128
 
 # Generate hints (constant-time mode for TEE)
-./plinko/target/release/plinko_hints \
+./target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128 --constant-time
 ```
+
+`--entries-per-block` (w) must be a power of two. The default is the smallest power of two that
+is at least sqrt(N).
 
 ### Run With journald Logging (aya)
 
@@ -181,48 +104,45 @@ This repo enforces [Conventional Commits](https://www.conventionalcommits.org/).
 - **Tests**: `scripts/test_commit_hooks.sh` table-driven tests for normalization, validation, and exemptions
 - **Exemptions**: merge commits, `fixup!`/`squash!` prefixes, `bd sync` messages (all three enforcement points use identical `case` syntax)
 
-## PR Formatting
+## Protocol Compliance
 
-- Use real newlines in PR descriptions/comments; never include literal "\n"
-- Use Markdown headings ("## Summary", "## Testing") with dash bullet lists
-
-## Formal Verification Compliance
-
-When modifying Rust code in `plinko/`, ALWAYS verify changes don't break alignment with:
-
-1. **Paper specification** (`docs/plinko_paper_*.json`)
-   - HintInit must match Fig. 7 pseudocode
-   - iPRF domain/range must be correct (domain=num_hints, range=w)
-   - Key generation: one iPRF key per block
-
-2. **Coq specification** (`docs/Plinko.v`)
-   - `RegularHint`: block subset of c/2+1, single parity
-   - `BackupHint`: block subset of c/2, dual parities (in/out)
-   - `hint_init`, `process_db_entry` logic must match
-
-3. **Rocq proofs** (`plinko/formal/`)
-   - `specs/*.v`: iPRF, SwapOrNot, binomial specs
-   - `proofs/*.v`: Verified properties
-   - Do NOT change Rust semantics that would invalidate proofs
+The paper is the specification. When modifying Rust code in `plinko/`, make sure that the change
+agrees with Fig. 4 (PMNS) and Fig. 7 (HintInit, Query, Answer, Recon, UpdateHint, GetHint).
 
 ### Verification Checklist
 
 Before committing Rust changes to hint generation or iPRF:
 
 - [ ] iPRF instantiation: `Iprf::new(key, domain, range)` where domain=total_hints, range=w
+- [ ] w is a power of two, and the generator and the client derive the same (w, c)
 - [ ] Per-block keys: c keys derived from master seed
 - [ ] Regular hints: subset size c/2+1, single parity XOR'd when block in P
 - [ ] Backup hints: subset size c/2, parity_in when block in P, parity_out otherwise
 - [ ] Streaming: (block, offset) = (i/w, i mod w), use block's key for iPRF.inverse(offset)
+- [ ] `Iprf` and `IprfTee` give the same output for the same key
+
+### Formal Models
+
+`docs/Plinko.v` and `plinko/formal/` are hand-written models of the algorithms. No tool checks
+them against the Rust source, and they do not model the Rust PMNS sampler, key derivation, or
+40-byte records. A Rust test is the evidence for Rust behaviour; a proof is not.
+
+- Build: `cd plinko/formal && make` (Rocq is installed locally).
+- Do not add `Axiom` or `Admitted`. Do not describe Rust code as formally verified.
+- When a Rust change makes a statement in `docs/verification.md` or
+  `plinko/formal/docs/TRUST_BASE.md` false, correct the statement in the same change.
+- The Codex Cloud and remote checker workflow is in `docs/codex-cloud-verification.md`. It is
+  not necessary for local work.
 
 ### Reference Files
 
 | Spec | Location |
 |------|----------|
+| Paper (PDF) | `docs/2024-318.pdf` |
 | Paper HintInit | `docs/plinko_paper_part6_algorithms.json` (algorithm_id: plinko_hintinit) |
 | Coq HintInit | `docs/Plinko.v` (hint_init, process_db_entry) |
 | iPRF Spec | `plinko/formal/specs/IprfSpec.v` |
-| PRP Spec | `plinko/formal/specs/SwapOrNotSpec.v` |
+| PRP Spec | `plinko/formal/specs/SwapOrNotSrSpec.v` |
 
 ## Documentation Sync Rules
 
@@ -233,11 +153,3 @@ When running GPU benchmarks:
 When modifying `plinko/src/bin/hint_gen/`:
 - Update `docs/hint_generation.md` if module structure or API changes
 - Update `docs/constant_time_mode.md` if CT security model changes
-- Keep the module table in `docs/hint_generation.md` current with file sizes
-
-## Devin DeepWiki
-
-Update `.devin/wiki.json` when making changes worth documenting:
-- Add repo_notes for new features, data locations, or architectural changes
-- Update pages array if new components need dedicated documentation
-- DeepWiki regenerates on next Devin indexing
