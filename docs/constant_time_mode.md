@@ -4,6 +4,8 @@
 
 Experimental. This mode is not part of the [trust model](trust_model.md#tee-mode): the client runs HintInit, and the paper has no TEE. The repository has no attestation, no seed channel into an enclave, and no hint export. The attacker that this mode must resist is not defined yet (TASK-20).
 
+The default build does not contain this mode. Build with the `tee` feature: `cargo build --release -p plinko --bin plinko_hints --features tee`. The code is in `plinko/src/iprf/tee.rs`, `plinko/src/constant_time.rs` and `plinko/src/bin/hint_gen/ct_path.rs`.
+
 ## Security Goal
 
 Eliminate timing side-channels that could leak the iPRF mapping (i.e., which hints contain which database entries).

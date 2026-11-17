@@ -6,7 +6,9 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use plinko::hints::{seed_check, HintGeometry, HintSet};
-use plinko::iprf::{Iprf, IprfTee};
+use plinko::iprf::Iprf;
+#[cfg(feature = "tee")]
+use plinko::iprf::IprfTee;
 use plinko::subsets::SubsetPrf;
 use std::fs::File;
 use std::time::Instant;
@@ -47,7 +49,8 @@ fn main() -> eyre::Result<()> {
     );
 
     let params = HintParams::from_args(&args, geom.w);
-    if args.constant_time {
+    #[cfg(feature = "tee")]
+    if args.constant_time() {
         validate_hint_params(&params, geom.w)?;
     }
     debug!(
@@ -78,7 +81,7 @@ fn main() -> eyre::Result<()> {
     info!(
         step = "4/4",
         n_effective = geom.n_effective,
-        constant_time = args.constant_time,
+        constant_time = args.constant_time(),
         "Streaming database"
     );
 
@@ -92,27 +95,30 @@ fn main() -> eyre::Result<()> {
             .progress_chars("#>-"),
     );
 
-    if args.constant_time {
-        let block_iprfs_ct: Vec<IprfTee> = block_keys
-            .iter()
-            .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
-            .collect();
+    if args.constant_time() {
+        #[cfg(feature = "tee")]
+        {
+            let block_iprfs_ct: Vec<IprfTee> = block_keys
+                .iter()
+                .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
+                .collect();
 
-        hint_gen::ct_path::process_entries_ct(
-            hint_gen::ct_path::CtProcessInput {
-                db_bytes,
-                n_entries: geom.n_entries,
-                n_effective: geom.n_effective,
-                w: geom.w,
-                num_regular: params.num_regular,
-                num_backup: params.num_backup,
-                block_iprfs_ct: &block_iprfs_ct,
-                subset_prf: &subset_prf,
-            },
-            &mut regular_hints,
-            &mut backup_hints,
-            |i| pb.set_position(i as u64),
-        );
+            hint_gen::ct_path::process_entries_ct(
+                hint_gen::ct_path::CtProcessInput {
+                    db_bytes,
+                    n_entries: geom.n_entries,
+                    n_effective: geom.n_effective,
+                    w: geom.w,
+                    num_regular: params.num_regular,
+                    num_backup: params.num_backup,
+                    block_iprfs_ct: &block_iprfs_ct,
+                    subset_prf: &subset_prf,
+                },
+                &mut regular_hints,
+                &mut backup_hints,
+                |i| pb.set_position(i as u64),
+            );
+        }
     } else {
         let block_iprfs: Vec<Iprf> = block_keys
             .iter()

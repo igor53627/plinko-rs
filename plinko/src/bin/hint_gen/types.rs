@@ -56,14 +56,30 @@ pub struct Args {
     #[arg(long)]
     pub print_seed: bool,
 
-    /// Enable constant-time processing path (data-independent memory access).
+    /// Enable the constant-time processing path (experimental, `tee` feature).
+    #[cfg(feature = "tee")]
     #[arg(long)]
     pub constant_time: bool,
 
     /// Worker threads of the standard path; defaults to the number of available cores.
-    /// The hints do not depend on this value. The constant-time path uses one thread.
+    /// The hints do not depend on this value.
     #[arg(long)]
     pub threads: Option<usize>,
+}
+
+impl Args {
+    /// `true` if the run uses the constant-time path. A build without the
+    /// `tee` feature has no such path.
+    pub fn constant_time(&self) -> bool {
+        #[cfg(feature = "tee")]
+        {
+            self.constant_time
+        }
+        #[cfg(not(feature = "tee"))]
+        {
+            false
+        }
+    }
 }
 
 /// Load the 32-byte parity word for logical entry `index` in a v3 `database.bin` mmap.

@@ -5,16 +5,21 @@
 //! the database to produce regular and backup hints that a client stores for
 //! online queries.
 
+#[cfg(feature = "tee")]
 pub mod ct_path;
 pub mod driver;
 pub mod fast_path;
 pub mod keys;
+#[cfg(test)]
+mod path_tests;
 pub mod subsets;
 pub mod types;
 
+#[cfg(feature = "tee")]
+pub use driver::validate_hint_params;
 pub use driver::{
     compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args,
-    validate_hint_params, worker_threads, write_hint_file, HintParams,
+    worker_threads, write_hint_file, HintParams,
 };
 pub use keys::derive_block_keys;
 pub use types::{Args, BackupHint, RegularHint, DB_ENTRY_SIZE};

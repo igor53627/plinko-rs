@@ -10,9 +10,20 @@ categories = ["cryptography", "algorithms"]
 
 [features]
 default = ["logging"]
-parallel = ["rayon"]
-cuda = ["dep:cudarc", "dep:bytemuck"]
+# Experimental, not part of the trust model (docs/trust_model.md):
+# constant-time PRP and iPRF variants and `plinko_hints --constant-time`.
+tee = []
+# Experimental, not part of the trust model: the `gpu` module and the
+# `bench_gpu_hints` throughput benchmark. `cuda` adds the CUDA kernel.
+gpu = []
+parallel = ["gpu", "dep:rayon"]
+cuda = ["gpu", "dep:cudarc", "dep:bytemuck"]
 logging = ["dep:tracing", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "bench_gpu_hints"
+path = "src/bin/bench_gpu_hints.rs"
+required-features = ["gpu"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

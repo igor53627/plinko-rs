@@ -24,6 +24,7 @@
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt};
 use aes::Aes128;
 
+#[cfg(feature = "tee")]
 use crate::constant_time::{ct_eq_u64, ct_min_u64, ct_saturating_sub_u64};
 
 /// Number of coins in one keystream block.
@@ -70,8 +71,8 @@ fn keystream_batch(cipher: &Aes128, node: PmnsNode, first_block: u64) -> [u128; 
 /// Samples Binomial(count, 1/2) for `node`.
 ///
 /// Returns the number of set bits among the first `count` keystream coins of
-/// the node. The running time depends on `count`; use [`coin_binomial_ct`]
-/// when `count` must stay hidden.
+/// the node. The running time depends on `count`. The `tee` feature has
+/// `coin_binomial_ct`, whose running time depends on a public bound only.
 ///
 /// # Examples
 ///
@@ -132,6 +133,7 @@ pub fn coin_binomial(cipher: &Aes128, node: PmnsNode, count: u64) -> u64 {
 ///     coin_binomial(&cipher, node, 300)
 /// );
 /// ```
+#[cfg(feature = "tee")]
 pub fn coin_binomial_ct(cipher: &Aes128, node: PmnsNode, count: u64, max_count: u64) -> u64 {
     debug_assert!(
         count <= max_count,
@@ -162,6 +164,7 @@ pub fn coin_binomial_ct(cipher: &Aes128, node: PmnsNode, count: u64, max_count: 
 }
 
 /// Mask with the `kept` most significant bits set, for `kept` in `0..=64`.
+#[cfg(feature = "tee")]
 pub(crate) fn top_bits_mask(kept: u64) -> u64 {
     let nonzero: u64 = 1 ^ ct_eq_u64(kept, 0);
     (u64::MAX << ((64 - kept) & 63)) & nonzero.wrapping_neg()
@@ -213,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tee")]
     fn test_ct_variant_matches_for_every_bound() {
         let cipher: Aes128 = test_cipher();
         let node: PmnsNode = PmnsNode { low: 0, high: 255 };
@@ -230,6 +234,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tee")]
     fn test_top_bits_mask_selects_leading_bits() {
         assert_eq!(top_bits_mask(0), 0);
         assert_eq!(top_bits_mask(1), 1 << 63);

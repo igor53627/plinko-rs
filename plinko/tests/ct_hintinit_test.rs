@@ -3,6 +3,10 @@
 //! Verifies that the constant-time (TEE) path produces identical results
 //! to the non-constant-time path, ensuring correctness while providing
 //! timing side-channel protection.
+//!
+//! Needs the `tee` feature.
+
+#![cfg(feature = "tee")]
 
 use plinko::constant_time::{ct_eq_u64, ct_lt_u64, ct_select_usize, ct_xor_32_masked};
 use plinko::iprf::{Iprf, IprfTee};

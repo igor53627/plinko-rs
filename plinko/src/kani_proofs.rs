@@ -3,9 +3,9 @@
 //! - Kani: the coin mask of the PMNS sampler (pure integer arithmetic).
 //! - proptest: sampler, SwapOrNot and Iprf properties (AES makes Kani infeasible).
 //!
-//! Run with: `cargo kani --tests`
+//! Run with: `cargo kani --tests --features tee`
 
-#[cfg(kani)]
+#[cfg(all(kani, feature = "tee"))]
 mod kani_harnesses {
     /// Proof: the mask keeps exactly the `kept` most significant bits.
     #[kani::proof]
@@ -31,7 +31,7 @@ mod proptest_harnesses {
 
     proptest! {
         #[test]
-        fn test_coin_binomial_bounded_and_ct_equal(
+        fn test_coin_binomial_bounded(
             key in proptest::array::uniform16(0u8..),
             low in 0u32..1_000,
             width in 0u32..1_000,
@@ -39,13 +39,19 @@ mod proptest_harnesses {
             slack in 0u64..1_000,
         ) {
             use aes::cipher::KeyInit;
-            use crate::binomial::{coin_binomial, coin_binomial_ct, PmnsNode};
+            use crate::binomial::{coin_binomial, PmnsNode};
 
             let cipher = aes::Aes128::new(&key.into());
             let node = PmnsNode { low, high: low + width };
             let result = coin_binomial(&cipher, node, count);
             prop_assert!(result <= count, "result {} > count {}", result, count);
-            prop_assert_eq!(result, coin_binomial_ct(&cipher, node, count, count + slack));
+            #[cfg(feature = "tee")]
+            prop_assert_eq!(
+                result,
+                crate::binomial::coin_binomial_ct(&cipher, node, count, count + slack)
+            );
+            #[cfg(not(feature = "tee"))]
+            let _ = slack;
         }
 
         #[test]

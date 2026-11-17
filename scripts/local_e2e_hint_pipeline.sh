@@ -74,8 +74,10 @@ compare_metric() {
 }
 
 log "work dir: $WORK_DIR"
-log "building required binaries"
+# The constant-time path is behind the experimental `tee` feature.
+log "building required binaries (features: tee)"
 cargo build --manifest-path plinko/Cargo.toml \
+  --features tee \
   --bin gen_synthetic \
   --bin plinko_hints \
   --bin cost_estimate >/dev/null

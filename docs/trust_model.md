@@ -126,7 +126,8 @@ is meant to remove.
 ### TEE Mode
 
 `plinko_hints --constant-time` is experimental and is not part of this trust
-model. A design in which a TEE runs HintInit needs all of these, and the
+model. The default build does not contain it; it needs the `tee` build feature
+([FEATURE_FLAGS.md](FEATURE_FLAGS.md)). A design in which a TEE runs HintInit needs all of these, and the
 repository has none of them:
 
 1. Remote attestation of the binary that runs in the enclave.
@@ -146,7 +147,8 @@ the standard path.
 ### GPU Path
 
 `bench_gpu_hints` and `plinko/cuda/` are a throughput benchmark and are not
-part of this trust model. The output is not a Plinko hint set: the block keys
+part of this trust model. The default build does not contain them; they need
+the `gpu` or the `cuda` build feature. The output is not a Plinko hint set: the block keys
 are public, there are two fixed block subsets, and there are no backup hints
 (TASK-21). A GPU path that writes the same hint file as `plinko_hints` fits
 this model only on hardware that the client controls.

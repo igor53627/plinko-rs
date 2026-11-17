@@ -72,7 +72,8 @@ cargo build --release -p plinko --bin plinko_hints --bin cost_estimate
   --db-path ./data/database.bin \
   --lambda 128
 
-# Constant-time path (experimental, see docs/trust_model.md)
+# Constant-time path (experimental, see docs/trust_model.md).
+# Needs: cargo build --release -p plinko --bin plinko_hints --features tee
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
   --lambda 128 --constant-time
@@ -103,8 +104,8 @@ Layout and last published mainnet v3 counts: [`docs/data_format.md`](docs/data_f
 
 - **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs))
 - **Binomial / PMNS**: integer-only `Binomial(count, 1/2)` sampler, the bit count of an AES-128 counter keystream per tree node (exact for a uniform keystream) ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)); the iPRF range `w` must be a power of two
-- **TEE**: `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md)); experimental, not part of the [trust model](docs/trust_model.md#tee-mode)
-- **GPU** (optional): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md); a throughput benchmark, not Plinko hints ([trust model](docs/trust_model.md#gpu-path))
+- **TEE** (opt-in feature `tee`): `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md)); experimental, not part of the [trust model](docs/trust_model.md#tee-mode)
+- **GPU** (opt-in features `gpu`, `cuda`): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md); a throughput benchmark, not Plinko hints ([trust model](docs/trust_model.md#gpu-path))
 
 Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec](https://github.com/keewoolee/rms24-plinko-spec).
 

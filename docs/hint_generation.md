@@ -25,16 +25,18 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 | subsets.rs   | Parity XOR helper (block subsets are in the library module `plinko::subsets`)  |
 | driver.rs    | Geometry, validation, seed handling, hint initialization, hint file output     |
 | fast_path.rs | Standard streaming path (non-constant-time, worker threads), `FastProcessInput` |
-| ct_path.rs   | Constant-time streaming path for TEE mode, accepts `CtProcessInput`            |
+| ct_path.rs   | Constant-time streaming path, `CtProcessInput`; only with the `tee` feature    |
+| path_tests.rs | Tests of the streaming paths against the hint definition of Fig. 7            |
 
 ## API Notes
 
 - The streaming processors now take typed input structs instead of long argument lists:
-  - `ct_path::process_entries_ct(CtProcessInput, ...)`
+  - `ct_path::process_entries_ct(CtProcessInput, ...)` (`tee` feature)
   - `fast_path::process_entries_fast(FastProcessInput, ...)`
 - `driver::print_results` now takes only the parameters it uses:
   - `print_results(duration, file_len, regular_hints, backup_hints, params)`
-- Related CPU benchmark/generator path in `plinko/src/gpu.rs` now uses `CpuHintInput` for `generate_hints`.
+- Related CPU benchmark/generator path in `plinko/src/gpu.rs` (`gpu` feature) now uses `CpuHintInput` for `generate_hints`.
+- The constant-time variants of the PRP and the iPRF are in `plinko/src/iprf/tee.rs` (`tee` feature). See [FEATURE_FLAGS.md](FEATURE_FLAGS.md).
 
 ## Usage
 
@@ -52,7 +54,7 @@ cargo build --release -p plinko --bin plinko_hints
   --seed-file ./data/master_seed.hex \
   --output ./data/hints.bin
 
-# Generate hints (constant-time mode for TEE)
+# Generate hints (constant-time mode; experimental, build with --features tee)
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
   --lambda 128 --constant-time \
@@ -148,7 +150,7 @@ block into shared parity accumulators. The accumulators are atomic 64-bit words
 that the workers update with XOR. XOR is commutative, so the hint file does not
 depend on the thread count or on the schedule
 (`generator_file_is_the_same_for_every_thread_count`, and the unit tests in
-`ct_path.rs` with 1, 2, 3 and 16 threads).
+`path_tests.rs` with 1, 2, 3 and 16 threads).
 
 The accumulators take 32 bytes per regular hint and 64 bytes per backup hint in
 addition to the hints, until the streaming phase ends. The constant-time path
@@ -221,7 +223,8 @@ library module `plinko::hints`.
 - The file and the seed are client-secret. Whoever holds both can link each
   query of the client to its hint.
 - The fast path and the constant-time path give byte-identical files for the
-  same seed and database (`scripts/local_e2e_hint_pipeline.sh` checks this).
+  same seed and database (`scripts/local_e2e_hint_pipeline.sh` checks this;
+  the script builds with the `tee` feature).
 
 The protocol client loads the file:
 

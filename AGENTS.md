@@ -58,7 +58,7 @@ cargo build --release -p plinko --bin plinko_hints
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128
 
-# Generate hints (constant-time mode for TEE)
+# Generate hints (constant-time mode; experimental, build with --features tee)
 ./target/release/plinko_hints \
   --db-path /mnt/mainnet/plinko/database.bin \
   --lambda 128 --constant-time
@@ -119,7 +119,8 @@ Before committing Rust changes to hint generation or iPRF:
 - [ ] Regular hints: subset size c/2+1, single parity XOR'd when block in P
 - [ ] Backup hints: subset size c/2, parity_in when block in P, parity_out otherwise
 - [ ] Streaming: (block, offset) = (i/w, i mod w), use block's key for iPRF.inverse(offset)
-- [ ] `Iprf` and `IprfTee` give the same output for the same key
+- [ ] `Iprf` and `IprfTee` give the same output for the same key (`cargo test --release -p plinko --features tee,gpu`)
+- [ ] The default build has no TEE or GPU code: both are opt-in features outside the trust model (`docs/trust_model.md`, `docs/FEATURE_FLAGS.md`)
 
 ### Formal Models
 

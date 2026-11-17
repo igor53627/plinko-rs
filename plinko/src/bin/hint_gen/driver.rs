@@ -2,6 +2,7 @@
 
 use crate::hint_gen::{BackupHint, RegularHint, DB_ENTRY_SIZE};
 use plinko::hints::HintSet;
+#[cfg(feature = "tee")]
 use plinko::iprf::MAX_PREIMAGES;
 use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::RngCore;
@@ -71,7 +72,7 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     }
     match args.threads {
         Some(0) => eyre::bail!("threads must be >= 1"),
-        Some(threads) if threads > 1 && args.constant_time => {
+        Some(threads) if threads > 1 && args.constant_time() => {
             eyre::bail!("--constant-time uses one thread; remove --threads {threads}")
         }
         _ => {}
@@ -110,6 +111,7 @@ pub fn worker_threads(args: &Args) -> usize {
 ///
 /// We require expected * 2 <= MAX_PREIMAGES to ensure truncation probability
 /// is negligible (< 2^{-100}) via Chernoff bounds.
+#[cfg(feature = "tee")]
 pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
     let expected_preimages = params.total_hints.div_ceil(w);
     if expected_preimages * 2 > MAX_PREIMAGES {
@@ -397,17 +399,30 @@ mod tests {
     }
 
     #[test]
-    fn threads_must_be_positive_and_one_in_constant_time_mode() {
-        let args: Args = Args::parse_from(["plinko_hints", "--threads", "0"]);
-        let error: String = validate_args(&args).expect_err("zero threads").to_string();
-        assert!(error.contains("threads must be >= 1"), "{error}");
-
+    #[cfg(feature = "tee")]
+    fn constant_time_mode_uses_one_thread() {
         let args: Args = Args::parse_from(["plinko_hints", "--threads", "4", "--constant-time"]);
         let error: String = validate_args(&args).expect_err("CT threads").to_string();
         assert!(error.contains("uses one thread"), "{error}");
 
         let args: Args = Args::parse_from(["plinko_hints", "--threads", "1", "--constant-time"]);
         assert!(validate_args(&args).is_ok());
+        assert!(args.constant_time());
+    }
+
+    #[test]
+    #[cfg(not(feature = "tee"))]
+    fn constant_time_option_needs_the_tee_feature() {
+        assert!(Args::try_parse_from(["plinko_hints", "--constant-time"]).is_err());
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        assert!(!args.constant_time());
+    }
+
+    #[test]
+    fn threads_must_be_positive() {
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "0"]);
+        let error: String = validate_args(&args).expect_err("zero threads").to_string();
+        assert!(error.contains("threads must be >= 1"), "{error}");
 
         let args: Args = Args::parse_from(["plinko_hints", "--threads", "4"]);
         assert!(validate_args(&args).is_ok());

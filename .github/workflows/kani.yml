@@ -32,7 +32,8 @@ jobs:
         run: |
           source "$HOME/.cargo/env"
           # Pure integer arithmetic only; AES makes the other functions infeasible.
-          cargo kani --harness proof_top_bits_mask_keeps_leading_bits --output-format terse
+          # The harness covers the coin mask of the constant-time sampler (`tee` feature).
+          cargo kani --features tee --harness proof_top_bits_mask_keeps_leading_bits --output-format terse
 
   proptest:
     runs-on: ubuntu-latest
@@ -45,4 +46,4 @@ jobs:
       - name: Run proptest harnesses
         working-directory: plinko
         run: |
-          cargo test --lib kani_proofs -- --nocapture
+          cargo test --lib --features tee kani_proofs -- --nocapture

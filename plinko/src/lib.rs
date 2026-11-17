@@ -3,14 +3,20 @@
 //! This crate provides core Plinko PIR primitives:
 //! - `iprf`: Invertible PRF implementation (paper §4.2)
 //! - `db`: Database loading and Plinko parameter derivation
-//! - `constant_time`: Data-oblivious operations for TEE execution
 //! - `binomial`: True derandomized binomial sampling for PMNS
 //! - `subsets`: Block subsets of hints, from a PRF and one cutoff per hint
 //! - `hints`: Hint set of a client and its on-disk format
+//!
+//! Two opt-in features add experimental code that is not part of the trust
+//! model (`docs/trust_model.md`):
+//! - `tee`: `constant_time` and the constant-time PRP and iPRF variants
+//! - `gpu`: `gpu`, a hint throughput benchmark (CUDA with the `cuda` feature)
 
 pub mod binomial;
+#[cfg(feature = "tee")]
 pub mod constant_time;
 pub mod db;
+#[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod hints;
 pub mod iprf;
