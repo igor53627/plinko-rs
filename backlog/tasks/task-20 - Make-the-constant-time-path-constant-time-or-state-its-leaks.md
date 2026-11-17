@@ -4,6 +4,7 @@ title: Make the constant-time path constant-time or state its leaks
 status: To Do
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
+updated_date: '2026-11-17T12:12:00Z'
 labels:
   - constant-time
   - hint-gen
@@ -30,3 +31,9 @@ SwapOrNotSrTee::inverse runs zero rounds on levels that the input does not reach
 - [ ] #4 Secret-dependent divisions in the constant-time code are removed or listed
 - [ ] #5 The mode is kept only if the trust model task needs it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-18: the round key of a stage is a 64-bit AES output mod n (SwapOrNotSr and SwapOrNotSrTee derive_round_key). Replace it here with a reduction that has no division and a bias below n / 2^128 (for example a 128-bit multiply-shift), and give the stage of size 2 the fixed round key 1. This changes the hints for a seed. Analysis: docs/hint_generation.md, PRP Deviations From An Ideal Permutation.
+<!-- SECTION:NOTES:END -->
