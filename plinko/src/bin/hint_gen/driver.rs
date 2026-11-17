@@ -69,6 +69,13 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     if args.backup_hints == Some(0) {
         eyre::bail!("num_backup must be > 0 (backup hints are required for correctness)");
     }
+    match args.threads {
+        Some(0) => eyre::bail!("threads must be >= 1"),
+        Some(threads) if threads > 1 && args.constant_time => {
+            eyre::bail!("--constant-time uses one thread; remove --threads {threads}")
+        }
+        _ => {}
+    }
     if let Some(output) = &args.output {
         if args.seed.is_none() && args.seed_file.is_none() {
             eyre::bail!(
@@ -85,6 +92,15 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Worker threads of the standard path: `--threads`, or the number of available cores.
+pub fn worker_threads(args: &Args) -> usize {
+    args.threads.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+    })
 }
 
 /// Validate that hint parameters are within bounds for CT mode.
@@ -378,6 +394,27 @@ mod tests {
 
         let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "65536"]);
         assert!(validate_args(&args).is_ok());
+    }
+
+    #[test]
+    fn threads_must_be_positive_and_one_in_constant_time_mode() {
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "0"]);
+        let error: String = validate_args(&args).expect_err("zero threads").to_string();
+        assert!(error.contains("threads must be >= 1"), "{error}");
+
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "4", "--constant-time"]);
+        let error: String = validate_args(&args).expect_err("CT threads").to_string();
+        assert!(error.contains("uses one thread"), "{error}");
+
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "1", "--constant-time"]);
+        assert!(validate_args(&args).is_ok());
+
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "4"]);
+        assert!(validate_args(&args).is_ok());
+        assert_eq!(worker_threads(&args), 4);
+
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        assert!(worker_threads(&args) >= 1);
     }
 
     #[test]

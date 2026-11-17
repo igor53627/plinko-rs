@@ -179,7 +179,7 @@ mod tests {
             )
         }
 
-        fn run_fast(&self) -> Parities {
+        fn run_fast(&self, threads: usize) -> Parities {
             let params: HintParams = self.params();
             let db: Vec<u8> = self.db_bytes();
             let subset_prf: SubsetPrf = SubsetPrf::new(&self.master_seed);
@@ -199,6 +199,7 @@ mod tests {
                     num_backup: params.num_backup,
                     block_iprfs: &block_iprfs,
                     subset_prf: &subset_prf,
+                    threads,
                 },
                 &mut regular,
                 &mut backup,
@@ -306,8 +307,15 @@ mod tests {
 
     fn assert_all_paths_agree(scenario: &Scenario) -> Parities {
         let expected: Parities = scenario.run_definition();
-        let fast: Parities = scenario.run_fast();
+        let fast: Parities = scenario.run_fast(1);
         let ct: Parities = scenario.run_ct();
+        // Fewer threads than blocks, and more threads than blocks.
+        for threads in [2, 3, 16] {
+            assert!(
+                scenario.run_fast(threads) == fast,
+                "fast path with {threads} threads"
+            );
+        }
 
         assert!(
             expected.0.iter().filter(|p| **p != [0u8; 32]).count() > expected.0.len() / 2,

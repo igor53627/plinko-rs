@@ -54,6 +54,7 @@ The constant-time path requires:
 2. `num_backup > 0` (use `--backup-hints` to set q > 0)
 3. Expected preimages * 2 <= MAX_PREIMAGES
 4. `w` is a power of two (required in both modes)
+5. One thread: `--threads` above 1 is rejected. The worker threads of the standard path share parity accumulators that they read and write at the hint index.
 
 ## PMNS Sampler In This Mode
 

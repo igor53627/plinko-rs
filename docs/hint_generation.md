@@ -24,7 +24,7 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 | keys.rs      | iPRF block key derivation                                                      |
 | subsets.rs   | Parity XOR helper (block subsets are in the library module `plinko::subsets`)  |
 | driver.rs    | Geometry, validation, seed handling, hint initialization, hint file output     |
-| fast_path.rs | Standard streaming path (non-constant-time), accepts `FastProcessInput`        |
+| fast_path.rs | Standard streaming path (non-constant-time, worker threads), `FastProcessInput` |
 | ct_path.rs   | Constant-time streaming path for TEE mode, accepts `CtProcessInput`            |
 
 ## API Notes
@@ -138,6 +138,75 @@ hardware AES through `--cfg aes_armv8`), per offset:
 | `inverse_ct` (no table)                 | 72.5 ms  | 21.1 ms  |
 
 `forward` is a single-value function and is not changed.
+
+## Worker Threads
+
+The standard path processes database blocks on `--threads` worker threads
+(default: the number of available cores). A worker takes the next block from a
+shared counter, builds the PMNS table of the block, and XORs the entries of the
+block into shared parity accumulators. The accumulators are atomic 64-bit words
+that the workers update with XOR. XOR is commutative, so the hint file does not
+depend on the thread count or on the schedule
+(`generator_file_is_the_same_for_every_thread_count`, and the unit tests in
+`ct_path.rs` with 1, 2, 3 and 16 threads).
+
+The accumulators take 32 bytes per regular hint and 64 bytes per backup hint in
+addition to the hints, until the streaming phase ends. The constant-time path
+uses one thread and rejects `--threads` above 1.
+
+Measured with w = 65536 and 16,777,216 hints (Apple M3 Ultra, 24 performance
+cores, hardware AES), full `plinko_hints` runs with `--output`:
+
+| Database             | Threads | Wall time | CPU time | CPU per entry | Peak memory |
+|----------------------|---------|-----------|----------|---------------|-------------|
+| 2 blocks (5.2 MB)    | 1       | 70.6 s    | 69.6 s   | 0.53 ms       | 1.69 GB     |
+| 2 blocks (5.2 MB)    | 2       | 37.1 s    | 71.9 s   | 0.55 ms       | 1.69 GB     |
+| 24 blocks (62.9 MB)  | 8       | 117.0 s   | 904.5 s  | 0.58 ms       | 1.76 GB     |
+| 24 blocks (62.9 MB)  | 24      | 41.9 s    | 924.1 s  | 0.59 ms       | 1.78 GB     |
+
+The hint files of the two 2-block runs are byte-identical, and so are those of
+the 24-block runs.
+
+### Mainnet Cost
+
+Mainnet v3 has 27,988 blocks of 65,536 entries (1,834,221,568 entries with
+padding). No mainnet run was done; these numbers are extrapolations from the
+24-block runs above:
+
+- About 300 core-hours (0.59 ms per entry), where the code before the batched
+  PRP needed about 3,600 core-hours (7.04 ms per entry).
+- About 13 hours of wall time on 24 cores of this machine.
+- The cutoffs of the hints are computed on one thread before the streaming
+  phase: about 12 minutes at c = 27,988 (44 us per hint, measured in the
+  cutoff benchmark).
+
+A build without hardware AES is about 20 times slower. On arm64 the `aes` crate
+uses hardware AES only with `RUSTFLAGS="--cfg aes_armv8"`.
+
+## PRP Deviations From An Ideal Permutation
+
+Two properties of `SwapOrNotSr` and `SwapOrNotSrTee` are not changed, because a
+change gives other hints for the same seed:
+
+- **Round key reduction.** The round key of a stage of size `n` is a 64-bit AES
+  output modulo `n`. For a power of two `n` the result is exactly uniform. The
+  default hint count (`2 * lambda * w` with lambda = 128) is a power of two, so
+  all stage sizes are powers of two and there is no bias. For other hint
+  counts the statistical distance of a round key from uniform is at most
+  `n / 2^64`; the sum over all round keys of one block key is about
+  `1600 * total_hints / 2^64` (2^-29 for 16.8 million hints). The "128 bits"
+  of the round count formula do not include this term.
+- **Stage of size 2.** This stage has one round, which swaps its two values
+  with probability 1/4, not 1/2 (measured over 48,000 keys on a domain of 2:
+  0.2495). As the last stage of a larger domain this has no measurable effect,
+  because the stage of size 4 before it already gives a uniform order: over
+  48,000 keys, the permutations of a domain of 4 are uniform (chi-square 21.1,
+  23 degrees of freedom), and so is the pair `(inverse(0), inverse(1))` for the
+  domains 4 and 8. A PRP with a domain of exactly 2 is biased; the generator
+  makes one only with two hints in total (w = 1, lambda = 1, one backup hint).
+
+The replacement of the reduction is part of TASK-20, which also removes the
+division from the constant-time path.
 
 ## Hint File
 

@@ -59,6 +59,11 @@ pub struct Args {
     /// Enable constant-time processing path (data-independent memory access).
     #[arg(long)]
     pub constant_time: bool,
+
+    /// Worker threads of the standard path; defaults to the number of available cores.
+    /// The hints do not depend on this value. The constant-time path uses one thread.
+    #[arg(long)]
+    pub threads: Option<usize>,
 }
 
 /// Load the 32-byte parity word for logical entry `index` in a v3 `database.bin` mmap.

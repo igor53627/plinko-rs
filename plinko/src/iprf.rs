@@ -215,6 +215,11 @@ fn sr_swap_prefix(level: usize, round: usize) -> [u8; 8] {
 ///
 /// Round counts are computed per Morris-Rogaway Section 5 "Strategy 1" (equal error split)
 /// with 128-bit security by default.
+///
+/// Two deviations from that analysis: a round key is a 64-bit AES output modulo the
+/// stage size, which is exactly uniform only for a power of two, and the stage of
+/// size 2 has one round. See "PRP Deviations From An Ideal Permutation" in
+/// `docs/hint_generation.md`.
 pub struct SwapOrNotSr {
     cipher: Aes128,
     domain: u64,

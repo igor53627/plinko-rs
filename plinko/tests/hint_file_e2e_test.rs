@@ -46,6 +46,8 @@ struct Scenario {
     num_entries: usize,
     block_size: usize,
     lambda: usize,
+    /// Value of `--threads`; `None` leaves the default of the binary.
+    threads: Option<usize>,
 }
 
 struct Generated {
@@ -90,6 +92,11 @@ fn generate(scenario: &Scenario) -> Generated {
         .arg(&seed_path)
         .arg("--output")
         .arg(&hint_path)
+        .args(
+            scenario
+                .threads
+                .map(|threads| format!("--threads={threads}")),
+        )
         .output()
         .expect("run plinko_hints");
     assert!(
@@ -222,6 +229,7 @@ fn generator_file_equals_the_client_hint_set_and_answers_queries() {
         num_entries: 97,
         block_size: 16,
         lambda: 8,
+        threads: None,
     };
     let generated: Generated = generate(&scenario);
     let hints: HintSet = load(&generated.hint_path);
@@ -258,6 +266,36 @@ fn generator_file_equals_the_client_hint_set_and_answers_queries() {
     run_online_phase(&scenario, &generated, hints);
 }
 
+/// The hint file must not depend on the number of worker threads.
+#[test]
+fn generator_file_is_the_same_for_every_thread_count() {
+    // 8 blocks: fewer threads than blocks, and more threads than blocks.
+    let files: Vec<Vec<u8>> = [("threads_1", 1), ("threads_3", 3), ("threads_11", 11)]
+        .into_iter()
+        .map(|(name, threads)| {
+            let generated: Generated = generate(&Scenario {
+                name,
+                num_entries: 120,
+                block_size: 16,
+                lambda: 8,
+                threads: Some(threads),
+            });
+            fs::read(&generated.hint_path).expect("read hint file")
+        })
+        .collect();
+
+    let one_thread: HintSet = HintSet::read_from(files[0].as_slice()).expect("hint file");
+    assert!(
+        one_thread
+            .backup
+            .iter()
+            .any(|hint| hint.parity_out != [0u8; 32]),
+        "the scenario must give non-zero parities"
+    );
+    assert!(files[1] == files[0], "3 threads differ from 1 thread");
+    assert!(files[2] == files[0], "11 threads differ from 1 thread");
+}
+
 /// 66,560 hints: the iPRF domain is above 65,536.
 ///
 /// Takes minutes without hardware AES. Run with:
@@ -270,6 +308,7 @@ fn generator_file_answers_queries_above_65536_hints() {
         num_entries: 1000,
         block_size: 512,
         lambda: 65,
+        threads: None,
     };
     let generated: Generated = generate(&scenario);
     let hints: HintSet = load(&generated.hint_path);

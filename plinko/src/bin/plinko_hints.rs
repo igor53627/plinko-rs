@@ -118,6 +118,8 @@ fn main() -> eyre::Result<()> {
             .iter()
             .map(|key| Iprf::new(*key, params.total_hints as u64, geom.w as u64))
             .collect();
+        let threads: usize = worker_threads(&args);
+        info!(threads, "Worker threads");
 
         hint_gen::fast_path::process_entries_fast(
             hint_gen::fast_path::FastProcessInput {
@@ -129,6 +131,7 @@ fn main() -> eyre::Result<()> {
                 num_backup: params.num_backup,
                 block_iprfs: &block_iprfs,
                 subset_prf: &subset_prf,
+                threads,
             },
             &mut regular_hints,
             &mut backup_hints,

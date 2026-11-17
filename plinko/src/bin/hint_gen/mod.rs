@@ -14,7 +14,7 @@ pub mod types;
 
 pub use driver::{
     compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args,
-    validate_hint_params, write_hint_file, HintParams,
+    validate_hint_params, worker_threads, write_hint_file, HintParams,
 };
 pub use keys::derive_block_keys;
 pub use types::{Args, BackupHint, RegularHint, DB_ENTRY_SIZE};
