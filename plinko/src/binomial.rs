@@ -1,1006 +1,324 @@
-//! True derandomized binomial sampling for PMNS.
+//! Exact derandomized Binomial(count, 1/2) sampling for PMNS.
 //!
-//! This module implements a proper Binomial(n, p) sampler using inverse-CDF
-//! transform. When `prf_output` is uniform, the output is distributed according
-//! to the binomial distribution, as required by the Plinko paper specification.
+//! The PMNS tree (paper Fig. 4) splits the balls of a node between its two
+//! children with `Binomial(count, p; F(k, node))`. When the number of bins is a
+//! power of two, every split has `p = 1/2`, and the sample is the number of
+//! set bits among `count` fair coins. This module draws the coins from an
+//! AES-128 counter-mode keystream that is unique to the node.
 //!
-//! Algorithm:
-//! - Small count (<=1024): Exact inverse-CDF with PMF recurrence, O(n)
-//! - Large count (>1024): Binary search over CDF using regularized incomplete beta (O(log n)),
-//!   via a continued-fraction implementation stable at mainnet-scale parameters (unlike
-//!   `puruspe::betai` which uses an approximate path that underflows for large a,b).
+//! The sampler uses integer arithmetic only. It gives the same result on every
+//! platform, and its output is exactly Binomial(count, 1/2) when the keystream
+//! is uniform. This is the case that the proof of Theorem 4.7 covers.
 //!
-//! For TEE environments, use `binomial_sample_tee` which is constant-time and
-//! matches the simplified arithmetic formula in BinomialSpec.v exactly.
+//! # Keystream format
+//!
+//! Block `i` of a node is `AES-128(key, low_be32 || high_be32 || i_be64)`, with
+//! `i` starting at 0. A block is read as a big-endian 128-bit integer. Coins
+//! are taken block by block, most significant bit first. The sample is the
+//! number of set bits among the first `count` coins.
+//!
+//! The caller must use a key that is not used for another purpose, and must
+//! not use one key for two trees with different shapes. `Iprf` derives the key
+//! from the block key, the domain and the range.
 
-/// Threshold for switching between exact and approximate algorithms.
-/// Below this, we use exact PMF summation. Above, we use binary search with beta function.
-const EXACT_THRESHOLD: u64 = 1024;
+use aes::cipher::{generic_array::GenericArray, BlockEncrypt};
+use aes::Aes128;
 
-/// When both beta shape parameters exceed this, `puruspe::betai` uses `betaiapprox`,
-/// which underflows to 0 at Plinko mainnet CDF arguments. We use continued fraction instead.
-const BETA_LARGE_THRESHOLD: f64 = 3000.0;
+use crate::constant_time::{ct_eq_u64, ct_min_u64, ct_saturating_sub_u64};
 
-/// Lentz continued-fraction iteration cap. PMNS mainnet-scale points need more
-/// than the Cephes/statrs default 140 iterations to satisfy an `f64::EPSILON`
-/// successive-factor convergence check.
-const BETA_CF_MAX_ITER: u32 = 10_000;
+/// Number of coins in one keystream block.
+const BLOCK_BITS: u64 = 128;
 
-struct BetaCfResult {
-    value: f64,
-    converged: bool,
-    iterations: u32,
+/// Blocks encrypted per call, so that the AES rounds of different blocks overlap.
+const BATCH_BLOCKS: usize = 8;
+
+/// A PMNS tree node, identified by the inclusive range of bins that it covers.
+///
+/// # Examples
+///
+/// ```
+/// use plinko::binomial::PmnsNode;
+///
+/// let root: PmnsNode = PmnsNode { low: 0, high: 65_535 };
+/// assert_eq!(root.high - root.low + 1, 65_536);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PmnsNode {
+    /// First bin of the node.
+    pub low: u32,
+    /// Last bin of the node.
+    pub high: u32,
 }
 
-/// Maximum value of u64 as f64 for normalization
-const U64_MAX_F64: f64 = u64::MAX as f64;
+/// Returns keystream blocks `first_block..first_block + BATCH_BLOCKS` of `node`.
+fn keystream_batch(cipher: &Aes128, node: PmnsNode, first_block: u64) -> [u128; BATCH_BLOCKS] {
+    let mut blocks = [GenericArray::from([0u8; 16]); BATCH_BLOCKS];
+    for (i, block) in blocks.iter_mut().enumerate() {
+        block[0..4].copy_from_slice(&node.low.to_be_bytes());
+        block[4..8].copy_from_slice(&node.high.to_be_bytes());
+        block[8..16].copy_from_slice(&(first_block + i as u64).to_be_bytes());
+    }
+    cipher.encrypt_blocks(&mut blocks);
 
-/// True derandomized binomial sampler.
-///
-/// Given `count` trials with success probability `p = num/denom`, returns a value
-/// distributed as Binomial(count, p) when `prf_output` is uniform over u64.
-///
-/// This implements the paper's specification:
-/// "Binomial(n, p; r) will always return the same value, but over the random
-/// choice of r with sufficient entropy, the output will be distributed according
-/// to a binomial."
-///
-/// # Arguments
-/// * `count` - Number of trials (n)
-/// * `num` - Numerator of probability (must be <= denom)
-/// * `denom` - Denominator of probability (must be > 0)
-/// * `prf_output` - PRF output used as randomness source
-///
-/// # Returns
-/// A value in [0, count] distributed as Binomial(count, num/denom)
-pub fn binomial_sample(count: u64, num: u64, denom: u64, prf_output: u64) -> u64 {
-    if denom == 0 {
-        return 0;
+    let mut words: [u128; BATCH_BLOCKS] = [0u128; BATCH_BLOCKS];
+    for (word, block) in words.iter_mut().zip(blocks.iter()) {
+        *word = u128::from_be_bytes((*block).into());
     }
-    if count == 0 {
-        return 0;
-    }
-    if num == 0 {
-        return 0;
-    }
-    if num >= denom {
-        return count;
-    }
-
-    let mut p = num as f64 / denom as f64;
-    let u = (prf_output as f64 + 0.5) / (U64_MAX_F64 + 1.0);
-
-    // Use symmetry to keep p <= 0.5, avoiding underflow in q^n for exact branch
-    // Binomial(n, p) = n - Binomial(n, 1-p)
-    let use_complement = p > 0.5;
-    if use_complement {
-        p = 1.0 - p;
-    }
-
-    let k = if count <= EXACT_THRESHOLD {
-        binomial_inverse_exact(count, p, u)
-    } else {
-        binomial_inverse_binary_search(count, p, u)
-    };
-
-    if use_complement {
-        count - k
-    } else {
-        k
-    }
+    words
 }
 
-/// Exact inverse-CDF for small count using PMF recurrence.
+/// Samples Binomial(count, 1/2) for `node`.
 ///
-/// Complexity: O(count)
-fn binomial_inverse_exact(n: u64, p: f64, u: f64) -> u64 {
-    let q = 1.0 - p;
+/// Returns the number of set bits among the first `count` keystream coins of
+/// the node. The running time depends on `count`; use [`coin_binomial_ct`]
+/// when `count` must stay hidden.
+///
+/// # Examples
+///
+/// ```
+/// use aes::cipher::KeyInit;
+/// use aes::Aes128;
+/// use plinko::binomial::{coin_binomial, PmnsNode};
+///
+/// let cipher: Aes128 = Aes128::new(&[7u8; 16].into());
+/// let node: PmnsNode = PmnsNode { low: 0, high: 15 };
+///
+/// let left: u64 = coin_binomial(&cipher, node, 1000);
+/// assert!(left <= 1000);
+/// assert_eq!(left, coin_binomial(&cipher, node, 1000));
+/// assert_eq!(coin_binomial(&cipher, node, 0), 0);
+/// ```
+pub fn coin_binomial(cipher: &Aes128, node: PmnsNode, count: u64) -> u64 {
+    let mut ones: u64 = 0;
+    let mut remaining: u64 = count;
+    let mut next_block: u64 = 0;
 
-    let mut pmf = q.powi(n as i32);
-    let mut cdf = pmf;
-
-    if u <= cdf {
-        return 0;
-    }
-
-    let p_over_q = p / q;
-
-    for k in 1..=n {
-        pmf *= ((n - k + 1) as f64 / k as f64) * p_over_q;
-        cdf += pmf;
-        if u <= cdf {
-            return k;
+    while remaining > 0 {
+        for word in keystream_batch(cipher, node, next_block) {
+            let kept: u64 = remaining.min(BLOCK_BITS);
+            if kept == 0 {
+                break;
+            }
+            ones += u64::from((word >> (BLOCK_BITS - kept)).count_ones());
+            remaining -= kept;
         }
+        next_block += BATCH_BLOCKS as u64;
     }
 
-    n
+    ones
 }
 
-/// Inverse-CDF using binary search with regularized incomplete beta function.
+/// Samples Binomial(count, 1/2) for `node` without a `count`-dependent running time.
 ///
-/// Uses the identity: P(X <= k) = I_{1-p}(n-k, k+1)
-/// where I_x(a,b) is the regularized incomplete beta function.
+/// Returns the same value as [`coin_binomial`]. The function always encrypts
+/// the blocks that `max_count` coins need, and selects the coins of the first
+/// `count` with masks. The work depends only on `max_count`, which must be a
+/// public bound such as the iPRF domain.
 ///
-/// Complexity: O(log count)
-fn binomial_inverse_binary_search(n: u64, p: f64, u: f64) -> u64 {
-    let mut lo: u64 = 0;
-    let mut hi: u64 = n;
-
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let cdf = binomial_cdf(n, p, mid);
-
-        if u <= cdf {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-
-    lo
-}
-
-/// Compute binomial CDF: P(X <= k) for X ~ Binomial(n, p)
+/// `count` must not exceed `max_count`.
 ///
-/// Uses the identity: P(X <= k) = I_{1-p}(n-k, k+1)
-/// where I_x(a,b) is the regularized incomplete beta function.
+/// # Examples
 ///
-/// Routing: if either shape parameter is <= [`BETA_LARGE_THRESHOLD`], delegates to
-/// `puruspe::betai` (accurate for moderate a,b). Mainnet PMNS first splits use both
-/// parameters >> threshold, so they take the stable continued-fraction path.
-fn binomial_cdf(n: u64, p: f64, k: u64) -> f64 {
-    if k >= n {
-        return 1.0;
-    }
-
-    let a = (n - k) as f64;
-    let b = (k + 1) as f64;
-    let x = 1.0 - p;
-
-    regularized_incomplete_beta(a, b, x)
-}
-
-/// Regularized incomplete beta I_x(a,b) via Lentz continued fraction.
+/// ```
+/// use aes::cipher::KeyInit;
+/// use aes::Aes128;
+/// use plinko::binomial::{coin_binomial, coin_binomial_ct, PmnsNode};
 ///
-/// # Numerical contract (PMNS / issue #94)
+/// let cipher: Aes128 = Aes128::new(&[7u8; 16].into());
+/// let node: PmnsNode = PmnsNode { low: 0, high: 15 };
 ///
-/// - **Monotonicity**: Used only inside binary search on k; must be monotone in k
-///   (equivalently monotone in CDF argument).
-/// - **Target envelope**: `a,b` up to ~1.3e7 (mainnet `n`), `x = 1-p` with PMNS
-///   split probabilities away from 0/1.
-/// - **Accuracy**: Large-parameter path checked against a SciPy `betainc` oracle at
-///   the mainnet PMNS median CDF point; see `test_beta_continued_fraction_mainnet_oracle`.
-/// - **Convergence**: Stops when successive CF factor `del` is within `f64::EPSILON`
-///   of 1, or after [`BETA_CF_MAX_ITER`] (Cephes/statrs behavior: return the best
-///   partial estimate if not converged; sufficient for PMNS regression tests).
-///
-/// Algorithm adapted from statrs `checked_beta_reg` (Apache-2.0) / Numerical Recipes.
-/// Reference O(n) sampler without `betai` degeneracy: Keewoo `rms24-plinko-spec`
-/// (`PRG.binomial` coin-flip loop) — correct on small n, not used here.
-fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
-    debug_assert!(a > 0.0 && b > 0.0);
-    debug_assert!((0.0..=1.0).contains(&x));
-
-    if x == 0.0 {
-        return 0.0;
-    }
-    if x == 1.0 {
-        return 1.0;
-    }
-
-    // One moderate parameter: puruspe's standard CF path is fine; both large uses approx (broken).
-    if a <= BETA_LARGE_THRESHOLD || b <= BETA_LARGE_THRESHOLD {
-        return puruspe::betai(a, b, x);
-    }
-
-    beta_continued_fraction(a, b, x)
-}
-
-/// Lentz continued fraction for I_x(a,b) when both `a` and `b` exceed [`BETA_LARGE_THRESHOLD`].
-///
-/// Caller must ensure both parameters are above the threshold (routing is handled by
-/// [`regularized_incomplete_beta`]). Debug/test builds assert convergence within
-/// [`BETA_CF_MAX_ITER`]; release builds return the best partial product if the cap
-/// is ever reached.
-fn beta_continued_fraction(a: f64, b: f64, x: f64) -> f64 {
-    let result = beta_continued_fraction_with_status(a, b, x);
+/// assert_eq!(
+///     coin_binomial_ct(&cipher, node, 300, 4096),
+///     coin_binomial(&cipher, node, 300)
+/// );
+/// ```
+pub fn coin_binomial_ct(cipher: &Aes128, node: PmnsNode, count: u64, max_count: u64) -> u64 {
     debug_assert!(
-        result.converged,
-        "beta continued fraction did not converge within {} iterations",
-        result.iterations
-    );
-    result.value
-}
-
-fn beta_continued_fraction_with_status(mut a: f64, mut b: f64, mut x: f64) -> BetaCfResult {
-    debug_assert!(a > BETA_LARGE_THRESHOLD && b > BETA_LARGE_THRESHOLD);
-
-    let bt = (puruspe::ln_gamma(a + b) - puruspe::ln_gamma(a) - puruspe::ln_gamma(b)
-        + a * x.ln()
-        + b * (1.0 - x).ln())
-    .exp();
-
-    let symm_transform = x >= (a + 1.0) / (a + b + 2.0);
-    let eps = f64::EPSILON;
-    let fpmin = f64::MIN_POSITIVE / eps;
-
-    if symm_transform {
-        let swap = a;
-        x = 1.0 - x;
-        a = b;
-        b = swap;
-    }
-
-    let qab = a + b;
-    let qap = a + 1.0;
-    let qam = a - 1.0;
-    let mut c = 1.0;
-    let mut d = 1.0 - qab * x / qap;
-    if d.abs() < fpmin {
-        d = fpmin;
-    }
-    d = 1.0 / d;
-    let mut h = d;
-    let mut converged = false;
-    let mut iterations = BETA_CF_MAX_ITER;
-
-    for m in 1..=BETA_CF_MAX_ITER {
-        let mf = m as f64;
-        let m2 = mf * 2.0;
-        let mut aa = mf * (b - mf) * x / ((qam + m2) * (a + m2));
-        d = 1.0 + aa * d;
-        if d.abs() < fpmin {
-            d = fpmin;
-        }
-        c = 1.0 + aa / c;
-        if c.abs() < fpmin {
-            c = fpmin;
-        }
-        d = 1.0 / d;
-        h *= d * c;
-        aa = -(a + mf) * (qab + mf) * x / ((a + m2) * (qap + m2));
-        d = 1.0 + aa * d;
-        if d.abs() < fpmin {
-            d = fpmin;
-        }
-        c = 1.0 + aa / c;
-        if c.abs() < fpmin {
-            c = fpmin;
-        }
-        d = 1.0 / d;
-        let del = d * c;
-        h *= del;
-        if (del - 1.0).abs() <= eps {
-            converged = true;
-            iterations = m;
-            break;
-        }
-    }
-
-    let mut value = bt * h / a;
-    if symm_transform {
-        value = 1.0 - value;
-    }
-    value = value.clamp(0.0, 1.0);
-    BetaCfResult {
-        value,
-        converged,
-        iterations,
-    }
-}
-
-/// Maximum count for constant-time exact binomial sampling.
-/// For counts above this, the O(n) iteration is too expensive.
-/// In PMNS/Plinko contexts, `count` is always <= CT_BINOMIAL_MAX_COUNT,
-/// which is chosen to exceed the maximum possible ball_count at any recursion
-/// level (e.g., ~40k for Ethereum addresses at first recursion level).
-pub const CT_BINOMIAL_MAX_COUNT: u64 = 65536;
-
-/// TEE-safe constant-time exact binomial sampler.
-///
-/// Samples from Binomial(count, num/denom) distribution using inverse-CDF
-/// with fixed iteration count to prevent timing side-channels.
-///
-/// Security properties:
-/// - Always iterates exactly `CT_BINOMIAL_MAX_COUNT + 1` times (no early exit)
-/// - Uses constant-time float comparison and selection
-/// - No branches depend on `count` or `prf_output` (both are secret)
-/// - Loop bounds depend only on public constants
-///
-/// Complexity: O(CT_BINOMIAL_MAX_COUNT) - fixed cost regardless of count
-///
-/// # TEE Usage
-/// In TEE/constant-time contexts, callers MUST ensure `count <= CT_BINOMIAL_MAX_COUNT`.
-/// This is a protocol-level invariant; exceeding it is a programmer error.
-///
-/// # Panics
-/// Panics in debug mode if count > CT_BINOMIAL_MAX_COUNT.
-#[inline]
-pub fn binomial_sample_tee(count: u64, num: u64, denom: u64, prf_output: u64) -> u64 {
-    use crate::constant_time::{ct_eq_u64, ct_select_u64};
-
-    // Edge cases with public parameters only - these branches are on public values
-    // (num, denom are fixed protocol parameters like 1/2)
-    if denom == 0 {
-        return 0;
-    }
-    if num == 0 {
-        return 0;
-    }
-    if num >= denom {
-        return count;
-    }
-
-    debug_assert!(
-        count <= CT_BINOMIAL_MAX_COUNT,
-        "binomial_sample_tee: count {} exceeds CT_BINOMIAL_MAX_COUNT {}",
-        count,
-        CT_BINOMIAL_MAX_COUNT
+        count <= max_count,
+        "coin_binomial_ct: count {count} exceeds max_count {max_count}"
     );
 
-    let mut p = num as f64 / denom as f64;
-    let u = (prf_output as f64 + 0.5) / (U64_MAX_F64 + 1.0);
+    let total_blocks: u64 = max_count.div_ceil(BLOCK_BITS);
+    let mut ones: u64 = 0;
+    let mut next_block: u64 = 0;
 
-    // Use symmetry to keep p <= 0.5, avoiding underflow in q^n
-    // This branch is on public parameter p
-    let use_complement = p > 0.5;
-    if use_complement {
-        p = 1.0 - p;
+    while next_block < total_blocks {
+        let words: [u128; BATCH_BLOCKS] = keystream_batch(cipher, node, next_block);
+        for (i, word) in words.iter().enumerate() {
+            let consumed: u64 = (next_block + i as u64) * BLOCK_BITS;
+            let kept: u64 = ct_min_u64(ct_saturating_sub_u64(count, consumed), BLOCK_BITS);
+            let kept_high: u64 = ct_min_u64(kept, 64);
+            let kept_low: u64 = kept - kept_high;
+
+            let high_half: u64 = (word >> 64) as u64;
+            let low_half: u64 = *word as u64;
+            ones += u64::from((high_half & top_bits_mask(kept_high)).count_ones());
+            ones += u64::from((low_half & top_bits_mask(kept_low)).count_ones());
+        }
+        next_block += BATCH_BLOCKS as u64;
     }
 
-    // Handle count == 0 via CT masking instead of branching (count may be secret)
-    let count_is_zero = ct_eq_u64(count, 0);
-    let k = binomial_inverse_ct(count, p, u);
-
-    // Apply complement if needed, but return 0 if count was 0
-    let result = if use_complement { count - k } else { k };
-    ct_select_u64(count_is_zero, 0, result)
+    ones
 }
 
-/// Constant-time inverse-CDF binomial sampler with fixed iterations.
-///
-/// Always iterates exactly CT_BINOMIAL_MAX_COUNT+1 times regardless of n or
-/// when the answer is found. Uses constant-time selection to track the result.
-/// Loop bounds depend only on CT_BINOMIAL_MAX_COUNT (public constant), not on n.
-///
-/// Uses log-space PMF recurrence to avoid underflow. For n=40k and p=0.5,
-/// the initial PMF(0) = q^n underflows to 0.0, but this is harmless since
-/// those probabilities are below f64 precision anyway. The recurrence
-/// log_pmf_{k+1} = log_pmf_k + ln((n-k)/(k+1)) + ln(p/q) stays in log-space
-/// and produces valid PMF values near the mode where they matter.
-///
-/// Single-loop design: O(CT_BINOMIAL_MAX_COUNT) iterations instead of 3x that.
-fn binomial_inverse_ct(n: u64, p: f64, u: f64) -> u64 {
-    use crate::constant_time::{
-        ct_f64_le, ct_le_u64, ct_max_u64, ct_min_u64, ct_saturating_sub_u64, ct_select_f64,
-        ct_select_u64,
-    };
-
-    debug_assert!(
-        n <= CT_BINOMIAL_MAX_COUNT,
-        "binomial_inverse_ct: n={} exceeds CT_BINOMIAL_MAX_COUNT={}",
-        n,
-        CT_BINOMIAL_MAX_COUNT
-    );
-
-    // CT-safe clamping: if n > CT_BINOMIAL_MAX_COUNT, clamp to max (best effort).
-    // This maintains constant-time behavior even for out-of-range inputs.
-    // In release builds, this provides graceful degradation instead of UB.
-    let n = ct_min_u64(n, CT_BINOMIAL_MAX_COUNT);
-
-    let q = 1.0 - p;
-    let log_q = q.ln();
-    let log_p = p.ln();
-    let log_p_over_q = log_p - log_q;
-
-    // Start from k = 0: log(P(X=0)) = n * log(q)
-    // For large n this may be very negative (e.g., -27726 for n=40k, p=0.5),
-    // causing exp() to underflow to 0.0, which is fine.
-    let mut log_pmf = (n as f64) * log_q;
-    let mut cdf = 0.0f64;
-    let mut result = 0u64;
-    let mut found = 0u64;
-
-    for k in 0..=CT_BINOMIAL_MAX_COUNT {
-        let in_support = ct_le_u64(k, n);
-
-        // PMF in linear space; underflow to 0.0 is fine for tiny probabilities.
-        // exp() input range: log_pmf varies from n*log(q) (very negative for large n)
-        // to ~-5 near the mode. We never hit NaN/INF cases:
-        // - exp(-inf) = 0.0 (graceful underflow)
-        // - exp(small negative) = valid PMF
-        // CT note: libm exp() may have data-dependent latency, but this is
-        // acceptable per our threat model (we already use f64 arithmetic throughout).
-        let pmf = ct_select_f64(in_support, log_pmf.exp(), 0.0);
-        cdf += pmf;
-
-        // Check if u <= cdf and this is the first time we cross it
-        let cond = ct_f64_le(u, cdf) & in_support;
-        let is_first = (1 ^ found) & cond;
-        result = ct_select_u64(is_first, k, result);
-        found |= cond;
-
-        // Update log PMF to k+1:
-        // log P(X=k+1) = log P(X=k) + ln((n-k)/(k+1)) + ln(p/q)
-        let n_minus_k = ct_saturating_sub_u64(n, k); // 0 when k >= n
-        let k_plus_1 = ct_max_u64(k + 1, 1); // avoid div by 0
-
-        // For k >= n, ratio = 0 => ln(0) = -inf, so log_pmf -> -inf; exp(-inf) = 0 as desired
-        let ratio = (n_minus_k as f64) / (k_plus_1 as f64);
-        let log_ratio = ratio.ln() + log_p_over_q;
-        log_pmf += log_ratio;
-    }
-
-    ct_select_u64(found, result, n)
+/// Mask with the `kept` most significant bits set, for `kept` in `0..=64`.
+pub(crate) fn top_bits_mask(kept: u64) -> u64 {
+    let nonzero: u64 = 1 ^ ct_eq_u64(kept, 0);
+    (u64::MAX << ((64 - kept) & 63)) & nonzero.wrapping_neg()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes::cipher::KeyInit;
+
+    fn test_cipher() -> Aes128 {
+        Aes128::new(&GenericArray::from([0x42u8; 16]))
+    }
+
+    /// The keystream format from the module documentation, one bit at a time.
+    fn coin_binomial_bitwise(cipher: &Aes128, node: PmnsNode, count: u64) -> u64 {
+        let mut ones: u64 = 0;
+        for coin in 0..count {
+            let mut block = GenericArray::from([0u8; 16]);
+            block[0..4].copy_from_slice(&node.low.to_be_bytes());
+            block[4..8].copy_from_slice(&node.high.to_be_bytes());
+            block[8..16].copy_from_slice(&(coin / 128).to_be_bytes());
+            cipher.encrypt_block(&mut block);
+
+            let position: usize = (coin % 128) as usize;
+            let byte: u8 = block[position / 8];
+            ones += u64::from((byte >> (7 - position % 8)) & 1);
+        }
+        ones
+    }
+
+    /// Counts on both sides of the block, half-block and batch boundaries.
+    const BOUNDARY_COUNTS: [u64; 16] = [
+        0, 1, 2, 63, 64, 65, 127, 128, 129, 191, 192, 193, 1023, 1024, 1025, 3000,
+    ];
 
     #[test]
-    fn test_edge_cases() {
-        assert_eq!(binomial_sample(0, 1, 2, 12345), 0);
-        assert_eq!(binomial_sample(10, 0, 2, 12345), 0);
-        assert_eq!(binomial_sample(10, 2, 2, 12345), 10);
-        assert_eq!(binomial_sample(10, 3, 2, 12345), 10);
-        assert_eq!(binomial_sample(10, 1, 0, 12345), 0);
+    fn test_matches_bitwise_keystream_definition() {
+        let cipher: Aes128 = test_cipher();
+        let node: PmnsNode = PmnsNode { low: 3, high: 12 };
+
+        for count in BOUNDARY_COUNTS {
+            assert_eq!(
+                coin_binomial(&cipher, node, count),
+                coin_binomial_bitwise(&cipher, node, count),
+                "count={count}"
+            );
+        }
     }
 
     #[test]
-    fn test_range_bounds() {
-        for count in [1, 10, 100, 1000, 2000] {
-            for prf in [0u64, u64::MAX / 2, u64::MAX] {
-                let result = binomial_sample(count, 1, 2, prf);
-                assert!(result <= count, "result {} > count {}", result, count);
+    fn test_ct_variant_matches_for_every_bound() {
+        let cipher: Aes128 = test_cipher();
+        let node: PmnsNode = PmnsNode { low: 0, high: 255 };
+
+        for count in BOUNDARY_COUNTS {
+            let expected: u64 = coin_binomial(&cipher, node, count);
+            for max_count in [count, count + 1, count + 127, 4096, 65_536] {
+                assert_eq!(
+                    coin_binomial_ct(&cipher, node, count, max_count),
+                    expected,
+                    "count={count} max_count={max_count}"
+                );
             }
         }
     }
 
     #[test]
-    fn test_deterministic() {
-        let r1 = binomial_sample(100, 1, 2, 42);
-        let r2 = binomial_sample(100, 1, 2, 42);
-        assert_eq!(r1, r2);
-    }
-
-    #[test]
-    fn test_distribution_mean() {
-        let n = 100u64;
-        let num = 1u64;
-        let denom = 2u64;
-        let expected_mean = n as f64 * (num as f64 / denom as f64);
-
-        let samples: u64 = 10000;
-        let mut sum: u64 = 0;
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            sum += binomial_sample(n, num, denom, prf);
-        }
-
-        let actual_mean = sum as f64 / samples as f64;
-        let tolerance = 2.0;
-        assert!(
-            (actual_mean - expected_mean).abs() < tolerance,
-            "mean {} too far from expected {}",
-            actual_mean,
-            expected_mean
-        );
-    }
-
-    #[test]
-    fn test_full_support() {
-        let n = 20u64;
-        let mut seen = vec![false; (n + 1) as usize];
-
-        for i in 0..100000u64 {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            let k = binomial_sample(n, 1, 2, prf);
-            seen[k as usize] = true;
-        }
-
-        let count_seen = seen.iter().filter(|&&x| x).count();
-        assert!(
-            count_seen >= 15,
-            "should see most values in [0,20], only saw {}",
-            count_seen
-        );
-    }
-
-    #[test]
-    fn test_exact_vs_binary_search_consistency() {
-        let n = 1024u64;
-        let p = 0.3;
-
-        for i in 0..1000u64 {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            let u = (prf as f64 + 0.5) / (U64_MAX_F64 + 1.0);
-
-            let exact = binomial_inverse_exact(n, p, u);
-            let binary = binomial_inverse_binary_search(n, p, u);
-
-            assert!(
-                exact == binary || exact.abs_diff(binary) <= 1,
-                "mismatch at prf={}: exact={}, binary={}",
-                prf,
-                exact,
-                binary
-            );
+    fn test_top_bits_mask_selects_leading_bits() {
+        assert_eq!(top_bits_mask(0), 0);
+        assert_eq!(top_bits_mask(1), 1 << 63);
+        assert_eq!(top_bits_mask(64), u64::MAX);
+        for kept in 0..=64u64 {
+            let mask: u64 = top_bits_mask(kept);
+            assert_eq!(u64::from(mask.count_ones()), kept);
+            assert_eq!(u64::from(mask.leading_ones()), kept);
         }
     }
 
+    /// Every (node, block index) pair must give a different AES input.
     #[test]
-    fn test_large_count() {
-        let n = 1_000_000u64;
-        let result = binomial_sample(n, 1, 2, 0x123456789ABCDEF0);
-        assert!(result <= n, "result should be <= n");
-    }
+    fn test_keystream_blocks_differ_between_nodes_and_counters() {
+        let cipher: Aes128 = test_cipher();
+        let nodes: [PmnsNode; 4] = [
+            PmnsNode { low: 0, high: 1 },
+            PmnsNode { low: 1, high: 0 },
+            PmnsNode { low: 0, high: 256 },
+            PmnsNode { low: 1, high: 1 },
+        ];
 
-    #[test]
-    fn test_mainnet_scale_first_split_not_degenerate() {
-        let n = 12_589_312u64;
-        let left_bins = 24_589u64;
-        let total_bins = 49_177u64;
-        let expected_mean = n as f64 * (left_bins as f64 / total_bins as f64);
-
-        let mut min_k = u64::MAX;
-        let mut max_k = 0u64;
-        let mut sum_k = 0u64;
-        let samples = 64u64;
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            let k = binomial_sample(n, left_bins, total_bins, prf);
-            min_k = min_k.min(k);
-            max_k = max_k.max(k);
-            sum_k += k;
+        let mut words: Vec<u128> = Vec::new();
+        for node in nodes {
+            words.extend(keystream_batch(&cipher, node, 0));
+            words.extend(keystream_batch(&cipher, node, BATCH_BLOCKS as u64));
         }
 
-        let avg = sum_k as f64 / samples as f64;
-        let tolerance = expected_mean * 0.25;
-        assert!(
-            max_k < n,
-            "degenerate split: max_k={max_k} == n (all balls one side)"
-        );
-        assert!(
-            (avg - expected_mean).abs() < tolerance,
-            "first-split mean {avg} too far from expected {expected_mean}"
-        );
-        assert!(
-            min_k < max_k,
-            "no spread in splits: min={min_k} max={max_k}"
-        );
+        let total: usize = words.len();
+        words.sort_unstable();
+        words.dedup();
+        assert_eq!(words.len(), total);
     }
 
-    #[test]
-    fn test_binomial_cdf_mainnet_median() {
-        let n = 12_589_312u64;
-        let p = 24_589.0 / 49_177.0;
-        let k = n / 2;
-        let cdf = super::binomial_cdf(n, p, k);
-        assert!(
-            (0.45..=0.55).contains(&cdf),
-            "CDF at median k should be ~0.5, got {cdf}"
-        );
-    }
+    /// Binomial(n, 1/2) CDF from the PMF ratio recurrence, started at the mode.
+    fn reference_half_binomial_cdf(n: u64) -> Vec<f64> {
+        let size: usize = n as usize + 1;
+        let mode: usize = size / 2;
 
-    #[test]
-    fn test_skewed_split_sample_scale() {
-        let n = 125_952u64;
-        let left_bins = 1u64;
-        let total_bins = 492u64;
-        let expected_mean = n as f64 * (left_bins as f64 / total_bins as f64);
-
-        let mut sum_k = 0u64;
-        let samples = 64u64;
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            sum_k += binomial_sample(n, left_bins, total_bins, prf);
+        let mut weights: Vec<f64> = vec![0.0; size];
+        weights[mode] = 1.0;
+        for k in mode..n as usize {
+            weights[k + 1] = weights[k] * ((n as usize - k) as f64 / (k + 1) as f64);
         }
-        let avg = sum_k as f64 / samples as f64;
-        assert!(
-            avg < expected_mean * 3.0 && avg > 0.0,
-            "skewed split mean {avg} unexpected (expected ~{expected_mean})"
-        );
-    }
-
-    #[test]
-    fn test_beta_delegates_to_puruspe_below_threshold() {
-        let a = 2000.0;
-        let b = 2000.0;
-        let x = 0.37;
-        let ours = super::regularized_incomplete_beta(a, b, x);
-        let puruspe = puruspe::betai(a, b, x);
-        assert_eq!(
-            ours, puruspe,
-            "expected delegation to puruspe when a or b <= threshold"
-        );
-    }
-
-    /// Oracle for mainnet PMNS median CDF point (n/2 split).
-    ///
-    /// Generated with SciPy 1.17.1: `scipy.special.betainc(6294656.0, 6294657.0, 0.49998983264534236)`.
-    /// Here `x = 1-p` for `I_x(n-k, k+1)`; this point is slightly below the beta mean.
-    const MAINNET_MEDIAN_A: f64 = 6_294_656.0;
-    const MAINNET_MEDIAN_B: f64 = 6_294_657.0;
-    const MAINNET_MEDIAN_X: f64 = 0.499_989_832_645_342_36;
-    const MAINNET_MEDIAN_ORACLE: f64 = 0.471_353_239_052_697_16;
-
-    #[test]
-    fn test_beta_continued_fraction_mainnet_oracle() {
-        let cf =
-            super::beta_continued_fraction(MAINNET_MEDIAN_A, MAINNET_MEDIAN_B, MAINNET_MEDIAN_X);
-        assert!(
-            (cf - MAINNET_MEDIAN_ORACLE).abs() < 1e-8,
-            "CF {cf} vs SciPy oracle {MAINNET_MEDIAN_ORACLE}"
-        );
-        let puruspe = puruspe::betai(MAINNET_MEDIAN_A, MAINNET_MEDIAN_B, MAINNET_MEDIAN_X);
-        assert!(
-            puruspe < 1e-6,
-            "puruspe betaiapprox should underflow at mainnet oracle (got {puruspe})"
-        );
-    }
-
-    #[test]
-    fn test_beta_continued_fraction_mainnet_converges() {
-        let result = super::beta_continued_fraction_with_status(
-            MAINNET_MEDIAN_A,
-            MAINNET_MEDIAN_B,
-            MAINNET_MEDIAN_X,
-        );
-        assert!(
-            result.converged,
-            "mainnet oracle point did not converge within {} iterations",
-            result.iterations
-        );
-        assert!(
-            result.iterations < super::BETA_CF_MAX_ITER,
-            "mainnet oracle point converged only at max iteration"
-        );
-    }
-
-    #[test]
-    fn test_beta_continued_fraction_symmetric_at_half() {
-        let a = 3500.0;
-        let b = 3500.0;
-        let x = 0.5;
-        let cf = super::beta_continued_fraction(a, b, x);
-        assert!(
-            (cf - 0.5).abs() < 0.01,
-            "symmetric large beta at x=0.5 expected ~0.5, got {cf}"
-        );
-    }
-
-    #[test]
-    fn test_beta_routing_when_one_parameter_small() {
-        let a = 4000.0;
-        let b = 100.0;
-        let x = 0.58;
-        let routed = super::regularized_incomplete_beta(a, b, x);
-        let puruspe = puruspe::betai(a, b, x);
-        assert_eq!(routed, puruspe, "b <= threshold must delegate to puruspe");
-    }
-
-    /// Binary search probes adjacent midpoints; verify local monotonicity on consecutive k.
-    #[test]
-    fn test_binomial_cdf_monotone_consecutive_k() {
-        let n = 10_000u64;
-        let p = 0.5;
-        let start = 4_800u64;
-        let end = 5_200u64;
-        let mut prev = super::binomial_cdf(n, p, start);
-        for k in (start + 1)..=end {
-            let cdf = super::binomial_cdf(n, p, k);
-            assert!(
-                cdf >= prev,
-                "CDF decreased between k={} and k={k}: {} -> {}",
-                k - 1,
-                prev,
-                cdf
-            );
-            prev = cdf;
-        }
-    }
-
-    /// Binary-search correctness requires P(X <= k) to be non-decreasing in k.
-    #[test]
-    fn test_binomial_cdf_monotone_dense_large_n() {
-        let n = 100_000u64;
-        let p = 0.5;
-        let step = 1_000u64;
-        let mut prev = -1.0f64;
-        let mut k = 0u64;
-        while k <= n {
-            let cdf = super::binomial_cdf(n, p, k);
-            assert!(
-                (0.0..=1.0).contains(&cdf),
-                "CDF out of range at k={k}: {cdf}"
-            );
-            assert!(
-                cdf >= prev,
-                "CDF not monotone at k={k}: prev={prev} cdf={cdf}"
-            );
-            prev = cdf;
-            k += step;
-        }
-    }
-
-    #[test]
-    fn test_binomial_cdf_monotone_at_mainnet_scale() {
-        let n = 12_589_312u64;
-        let p = 24_589.0 / 49_177.0;
-        let step = n / 64;
-        let mut prev = -1.0f64;
-        for i in 0..=64u64 {
-            let k = (i * step).min(n);
-            let cdf = super::binomial_cdf(n, p, k);
-            assert!(
-                (0.0..=1.0).contains(&cdf),
-                "CDF out of range at k={k}: {cdf}"
-            );
-            assert!(
-                cdf >= prev,
-                "CDF not monotone at k={k}: prev={prev} cdf={cdf}"
-            );
-            prev = cdf;
-        }
-    }
-
-    fn assert_monotone_adjacent_window(n: u64, p: f64, start: u64, end: u64) {
-        let mut prev = super::binomial_cdf(n, p, start);
-        for k in (start + 1)..=end {
-            let cdf = super::binomial_cdf(n, p, k);
-            assert!(
-                cdf >= prev,
-                "CDF decreased between k={} and k={k}: {} -> {}",
-                k - 1,
-                prev,
-                cdf
-            );
-            prev = cdf;
-        }
-    }
-
-    #[test]
-    fn test_binomial_cdf_monotone_adjacent_mainnet_windows() {
-        let n = 12_589_312u64;
-        let p = 24_589.0 / 49_177.0;
-        let mean = (n as f64 * p).round() as u64;
-
-        assert_monotone_adjacent_window(n, p, mean - 256, mean + 256);
-        assert_monotone_adjacent_window(n, p, 2_990, 3_010);
-        assert_monotone_adjacent_window(n, p, n - 3_010, n - 2_990);
-    }
-
-    #[test]
-    fn test_high_probability() {
-        let n = 1024u64;
-        let mut sum: u64 = 0;
-        let samples = 1000;
-
-        for i in 0..samples {
-            let prf = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
-            let k = binomial_sample(n, 9, 10, prf);
-            assert!(k <= n, "result {} > count {}", k, n);
-            sum += k;
+        for k in (1..=mode).rev() {
+            weights[k - 1] = weights[k] * (k as f64 / (n as usize - k + 1) as f64);
         }
 
-        let actual_mean = sum as f64 / samples as f64;
-        let expected_mean = n as f64 * 0.9;
-        let tolerance = 20.0;
-        assert!(
-            (actual_mean - expected_mean).abs() < tolerance,
-            "mean {} too far from expected {} for p=0.9",
-            actual_mean,
-            expected_mean
-        );
+        let total: f64 = weights.iter().sum();
+        let mut cumulative: f64 = 0.0;
+        weights
+            .iter()
+            .map(|weight| {
+                cumulative += weight / total;
+                cumulative
+            })
+            .collect()
     }
 
-    #[test]
-    fn test_symmetry_correctness() {
-        let n = 100u64;
-        let samples = 1000u64;
-        let mut sum_low: u64 = 0;
-        let mut sum_high: u64 = 0;
+    /// Largest gap between the Binomial(count, 1/2) CDF and the empirical CDF
+    /// of one sample from each of `samples` different nodes.
+    fn empirical_cdf_gap(count: u64, samples: u32) -> f64 {
+        let cipher: Aes128 = test_cipher();
+        let reference: Vec<f64> = reference_half_binomial_cdf(count);
 
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-
-            let k_low = binomial_sample(n, 1, 4, prf);
-            let k_high = binomial_sample(n, 3, 4, prf);
-
-            assert!(k_low <= n);
-            assert!(k_high <= n);
-
-            sum_low += k_low;
-            sum_high += k_high;
+        let mut histogram: Vec<u32> = vec![0; count as usize + 1];
+        for low in 0..samples {
+            let node: PmnsNode = PmnsNode { low, high: low + 1 };
+            histogram[coin_binomial(&cipher, node, count) as usize] += 1;
         }
 
-        let mean_low = sum_low as f64 / samples as f64;
-        let mean_high = sum_high as f64 / samples as f64;
-
-        assert!(
-            mean_high > mean_low,
-            "mean for p=0.75 ({}) should exceed mean for p=0.25 ({})",
-            mean_high,
-            mean_low
-        );
-    }
-
-    // ============================================================================
-    // TEE Binomial Sampler Tests (binomial_sample_tee) - True Binomial CT Version
-    // ============================================================================
-
-    #[test]
-    fn test_tee_matches_standard_binomial() {
-        // Verify binomial_sample_tee produces same results as binomial_sample
-        // (both use true binomial distribution, but TEE version is constant-time)
-        for count in [1, 10, 50, 100, 500] {
-            for (num, denom) in [(1, 2), (1, 4), (3, 4), (1, 10), (9, 10)] {
-                for i in 0..50u64 {
-                    let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-                    let standard = binomial_sample(count, num, denom, prf);
-                    let tee = binomial_sample_tee(count, num, denom, prf);
-                    assert_eq!(
-                        standard, tee,
-                        "Mismatch: count={}, num={}, denom={}, prf={}: standard={}, tee={}",
-                        count, num, denom, prf, standard, tee
-                    );
-                }
-            }
+        let mut seen: u32 = 0;
+        let mut gap: f64 = 0.0;
+        for (k, hits) in histogram.iter().enumerate() {
+            seen += hits;
+            gap = gap.max((f64::from(seen) / f64::from(samples) - reference[k]).abs());
         }
+        gap
     }
 
+    /// Kolmogorov-Smirnov check. With 4000 samples the statistic exceeds 0.04
+    /// with probability below 1e-5 when the sampler is correct. A sampler with
+    /// a mean that is wrong by 5 percent gives a gap above 0.8 at count 4000.
     #[test]
-    fn test_tee_edge_cases() {
-        // denom = 0 always returns 0
-        assert_eq!(binomial_sample_tee(100, 50, 0, 12345), 0);
-        assert_eq!(binomial_sample_tee(0, 0, 0, 0), 0);
-
-        // count = 0 always returns 0
-        assert_eq!(binomial_sample_tee(0, 1, 2, 0), 0);
-        assert_eq!(binomial_sample_tee(0, 1, 2, u64::MAX), 0);
-
-        // num = 0 always returns 0
-        assert_eq!(binomial_sample_tee(100, 0, 10, 5), 0);
-
-        // num >= denom returns count
-        assert_eq!(binomial_sample_tee(10, 20, 10, 0), 10);
-        assert_eq!(binomial_sample_tee(10, 10, 10, 12345), 10);
-    }
-
-    #[test]
-    fn test_tee_range_bounds() {
-        // Result should always be in [0, count]
-        for count in [1, 10, 100, 500, 1000] {
-            for (num, denom) in [(1, 2), (1, 4), (3, 4), (1, 10)] {
-                for i in 0..100u64 {
-                    let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-                    let result = binomial_sample_tee(count, num, denom, prf);
-                    assert!(
-                        result <= count,
-                        "Range violation: count={}, num={}, denom={}, result={}",
-                        count,
-                        num,
-                        denom,
-                        result
-                    );
-                }
-            }
+    fn test_samples_follow_binomial_half_distribution() {
+        let samples: u32 = 4000;
+        for count in [1u64, 2, 7, 100, 127, 128, 1000, 1025, 4000, 12_000] {
+            let gap: f64 = empirical_cdf_gap(count, samples);
+            assert!(gap < 0.04, "count={count}: CDF gap {gap}");
         }
-    }
-
-    #[test]
-    fn test_tee_deterministic() {
-        let r1 = binomial_sample_tee(100, 1, 2, 42);
-        let r2 = binomial_sample_tee(100, 1, 2, 42);
-        assert_eq!(r1, r2);
-    }
-
-    #[test]
-    fn test_tee_distribution_mean() {
-        // The CT version should have the same distribution as true binomial
-        let n = 100u64;
-        let num = 1u64;
-        let denom = 2u64;
-        let expected_mean = n as f64 * (num as f64 / denom as f64);
-
-        let samples: u64 = 10000;
-        let mut sum: u64 = 0;
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            sum += binomial_sample_tee(n, num, denom, prf);
-        }
-
-        let actual_mean = sum as f64 / samples as f64;
-        let tolerance = 2.0;
-        assert!(
-            (actual_mean - expected_mean).abs() < tolerance,
-            "TEE mean {} too far from expected {}",
-            actual_mean,
-            expected_mean
-        );
-    }
-
-    #[test]
-    fn test_tee_full_support() {
-        // Should see values across the full support [0, n]
-        let n = 20u64;
-        let mut seen = vec![false; (n + 1) as usize];
-
-        for i in 0..100000u64 {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            let k = binomial_sample_tee(n, 1, 2, prf);
-            seen[k as usize] = true;
-        }
-
-        let count_seen = seen.iter().filter(|&&x| x).count();
-        assert!(
-            count_seen >= 15,
-            "TEE should see most values in [0,20], only saw {}",
-            count_seen
-        );
-    }
-
-    #[test]
-    fn test_tee_symmetry() {
-        // Binomial(n, p) should be symmetric with Binomial(n, 1-p)
-        let n = 100u64;
-        let samples = 1000u64;
-        let mut sum_low: u64 = 0;
-        let mut sum_high: u64 = 0;
-
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            sum_low += binomial_sample_tee(n, 1, 4, prf);
-            sum_high += binomial_sample_tee(n, 3, 4, prf);
-        }
-
-        let mean_low = sum_low as f64 / samples as f64;
-        let mean_high = sum_high as f64 / samples as f64;
-
-        assert!(
-            mean_high > mean_low,
-            "TEE mean for p=0.75 ({}) should exceed mean for p=0.25 ({})",
-            mean_high,
-            mean_low
-        );
-    }
-
-    #[test]
-    fn test_tee_at_threshold() {
-        // Test at exactly the threshold (should work without fallback)
-        let count = super::CT_BINOMIAL_MAX_COUNT;
-        let result = binomial_sample_tee(count, 1, 2, 12345);
-        assert!(result <= count);
-    }
-
-    #[test]
-    fn test_tee_large_count_ethereum() {
-        // Test with ~40k count (Ethereum address use case)
-        // This verifies numerical stability - old implementation would underflow
-        let n = 40000u64;
-        let num = 1u64;
-        let denom = 2u64;
-        let expected_mean = n as f64 * (num as f64 / denom as f64);
-
-        let samples = 100u64;
-        let mut sum: u64 = 0;
-        for i in 0..samples {
-            let prf = i.wrapping_mul(0x9E3779B97F4A7C15);
-            let result = binomial_sample_tee(n, num, denom, prf);
-            assert!(result <= n, "result {} > n {}", result, n);
-            sum += result;
-        }
-
-        let actual_mean = sum as f64 / samples as f64;
-        // Allow larger tolerance for fewer samples
-        let tolerance = 500.0;
-        assert!(
-            (actual_mean - expected_mean).abs() < tolerance,
-            "TEE large-n mean {} too far from expected {} (tolerance {})",
-            actual_mean,
-            expected_mean,
-            tolerance
-        );
     }
 }

@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(short, long)]
     pub backup_hints: Option<usize>,
 
-    /// Entries per block (`w`); defaults to `sqrt(N)` if omitted.
+    /// Entries per block (`w`), a power of two; defaults to the smallest power of two >= `sqrt(N)`.
     #[arg(short, long)]
     pub entries_per_block: Option<usize>,
 

@@ -13,7 +13,7 @@
       "author": "maintainer"
     },
     {
-      "content": "The plinko/ crate contains the core Plinko implementation: iPRF (invertible PRF), IprfTee, Sometimes-Recurse PRP (SwapOrNotSr), true Binomial(n,p) sampling (binomial_sample / binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), and hint generation. The canonical Rocq specs/proofs and linking layer live in plinko/formal/ (see .github/workflows/formal.yml).",
+      "content": "The plinko/ crate contains the core Plinko implementation: iPRF (invertible PRF), IprfTee, Sometimes-Recurse PRP (SwapOrNotSr), integer-only Binomial(count, 1/2) PMNS sampling (coin_binomial / coin_binomial_ct: bit count of an AES-128 counter keystream per tree node; the iPRF range w must be a power of two), and hint generation. The canonical Rocq specs/proofs and linking layer live in plinko/formal/ (see .github/workflows/formal.yml).",
       "author": "maintainer"
     },
     {
@@ -49,7 +49,7 @@
     },
     {
       "title": "iPRF Implementation",
-      "purpose": "Document plinko/src/iprf.rs and related modules: Sometimes-Recurse PRP (SwapOrNotSr), PMNS (Pseudorandom Multinomial Sampler), Binomial(n,p) sampling (binomial_sample and TEE-safe binomial_sample_tee with CT_BINOMIAL_MAX_COUNT=65536), Iprf vs IprfTee, and constant-time primitives in plinko/src/constant_time.rs for TEE execution.",
+      "purpose": "Document plinko/src/iprf.rs and related modules: Sometimes-Recurse PRP (SwapOrNotSr), PMNS (Pseudorandom Multinomial Sampler), integer-only Binomial(count, 1/2) sampling (coin_binomial and constant-time coin_binomial_ct), Iprf vs IprfTee, and constant-time primitives in plinko/src/constant_time.rs for TEE execution.",
       "parent": "Plinko Protocol"
     },
     {

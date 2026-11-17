@@ -28,7 +28,7 @@
 //! - `ct_lt_u64`: Compare loop index against preimage count
 //! - `ct_select_usize`: Clamp array indices without branching
 //! - `ct_xor_32_masked`: Conditionally XOR parity values
-//! - `ct_f64_le`, `ct_select_f64`: Constant-time binomial sampling in IprfTee
+//! - `ct_min_u64`, `ct_saturating_sub_u64`: Coin masks in `binomial::coin_binomial_ct`
 
 /// Branchless select: returns a if choice is 1, b if choice is 0
 /// choice must be 0 or 1

@@ -62,8 +62,13 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     if args.lambda == 0 {
         eyre::bail!("lambda must be >= 1");
     }
-    if args.entries_per_block == Some(0) {
-        eyre::bail!("entries_per_block (w) must be > 0");
+    if let Some(w) = args.entries_per_block {
+        if !w.is_power_of_two() {
+            eyre::bail!(
+                "entries_per_block (w) must be a power of two, got {w}. \
+                 The iPRF range is w, and the PMNS sampler requires a power of two."
+            );
+        }
     }
     if args.backup_hints == Some(0) {
         eyre::bail!("num_backup must be > 0 (backup hints are required for correctness)");
@@ -107,8 +112,9 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
         eyre::bail!("Database must contain at least one entry");
     }
 
-    let default_w = (n_entries as f64).sqrt().round() as usize;
-    let w = args.entries_per_block.unwrap_or(default_w);
+    let w = args
+        .entries_per_block
+        .unwrap_or_else(|| plinko::protocol::default_block_size(n_entries));
 
     let remainder = n_entries % w;
     let (logical_n_entries, pad_entries) = if remainder == 0 {
@@ -276,6 +282,43 @@ pub fn print_results(
             total_backup = params.num_backup,
             zero_backup_seeds,
             "Backup hint results"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn rejects_entries_per_block_that_is_not_a_power_of_two() {
+        for w in ["0", "3", "42826"] {
+            let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", w]);
+            let error: String = validate_args(&args)
+                .expect_err("w must be rejected")
+                .to_string();
+            assert!(error.contains("must be a power of two"), "w={w}: {error}");
+        }
+
+        let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "65536"]);
+        assert!(validate_args(&args).is_ok());
+    }
+
+    #[test]
+    fn default_geometry_matches_the_protocol_client() {
+        let n_entries: usize = 1_834_095_877;
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        let geometry: Geometry =
+            compute_geometry(n_entries * DB_ENTRY_SIZE, &args).expect("geometry");
+        let client = plinko::protocol::ProtocolParams::new(n_entries, None, 128, None)
+            .expect("client params");
+
+        assert_eq!(geometry.w, 65_536);
+        assert_eq!(geometry.c, 27_988);
+        assert_eq!(
+            (geometry.w, geometry.c),
+            (client.block_size, client.num_blocks)
         );
     }
 }

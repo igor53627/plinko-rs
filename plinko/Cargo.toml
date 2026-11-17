@@ -27,7 +27,6 @@ rand = { version = "0.8", features = ["small_rng"] }
 rand_chacha = "0.3"
 memmap2 = "0.9"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
-puruspe = "0.4"
 once_cell = "1.19"
 cudarc = { version = "0.12", optional = true, features = ["cuda-version-from-build-system"] }
 bytemuck = { version = "1.14", optional = true, features = ["derive"] }

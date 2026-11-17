@@ -11,6 +11,8 @@ use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
 use aes::Aes128;
 use sha2::{Digest, Sha256};
 
+use crate::binomial::PmnsNode;
+
 pub type PrfKey128 = [u8; 16];
 
 /// Swap-or-Not small-domain PRP (Morris-Rogaway 2013)
@@ -563,19 +565,12 @@ impl IprfTee {
     /// Creates a new TEE-safe iPRF instance.
     ///
     /// # Panics
-    /// Panics if `n > CT_BINOMIAL_MAX_COUNT` (65536). TEE constant-time binomial
-    /// sampling requires O(n) iterations; larger domains would either leak timing
-    /// or fall back to a non-Binomial approximation.
+    /// Panics if `m` is not a power of two of at most 2^32.
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
-        assert!(
-            n <= crate::binomial::CT_BINOMIAL_MAX_COUNT,
-            "IprfTee requires n <= {} for constant-time binomial sampling, got n={}",
-            crate::binomial::CT_BINOMIAL_MAX_COUNT,
-            n
-        );
+        assert_pmns_range(m);
 
-        let tree_depth = (m as f64).log2().ceil() as usize;
-        let cipher = Aes128::new(&GenericArray::from(key));
+        let tree_depth = m.trailing_zeros() as usize;
+        let cipher = pmns_cipher(&key, n, m);
 
         let mut prp_key = [0u8; 16];
         let mut hasher = Sha256::new();
@@ -661,14 +656,13 @@ impl IprfTee {
             let should_continue = ct_lt_u64(low, high);
 
             let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
 
-            let node_id = encode_node(low, high, self.domain);
-            let prf_output = self.prf_eval(node_id);
-            // Use TEE-safe constant-time binomial sampler (matches BinomialSpec.v)
-            let left_count =
-                crate::binomial::binomial_sample_tee(ball_count, left_bins, total_bins, prf_output);
+            let left_count = crate::binomial::coin_binomial_ct(
+                &self.cipher,
+                pmns_node(low, high),
+                ball_count,
+                self.domain,
+            );
 
             let go_left = ct_le_u64(y, mid);
 
@@ -707,13 +701,8 @@ impl IprfTee {
 
         while low < high {
             let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-            let node_id = encode_node(low, high, n);
-            let prf_output = self.prf_eval(node_id);
-            // Use TEE-safe constant-time binomial sampler (matches BinomialSpec.v)
             let left_count =
-                crate::binomial::binomial_sample_tee(ball_count, left_bins, total_bins, prf_output);
+                crate::binomial::coin_binomial(&self.cipher, pmns_node(low, high), ball_count);
 
             if ball_index < left_count {
                 high = mid;
@@ -725,14 +714,6 @@ impl IprfTee {
             }
         }
         low
-    }
-
-    fn prf_eval(&self, x: u64) -> u64 {
-        let mut input = [0u8; 16];
-        input[8..16].copy_from_slice(&x.to_be_bytes());
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-        u64::from_be_bytes(block[0..8].try_into().unwrap())
     }
 
     /// Helper to get Vec<u64> like standard inverse (for testing)
@@ -756,12 +737,19 @@ pub struct Iprf {
 impl Iprf {
     /// Creates a new iPRF instance for input domain `n` and output range `m`.
     ///
-    /// The constructor derives an internal AES-128 cipher from `key`, computes the PMNS
-    /// tree depth as ceil(log2(m)), and derives a separate 128-bit key (SHA-256(key || "prp"))
-    /// to initialize the internal Sometimes-Recurse PRP over the input domain `n`.
+    /// The constructor derives the PMNS keystream key (SHA-256(key || "pmns" || n || m)),
+    /// computes the PMNS tree depth as log2(m), and derives a separate 128-bit key
+    /// (SHA-256(key || "prp")) to initialize the internal Sometimes-Recurse PRP over the
+    /// input domain `n`.
+    ///
+    /// # Panics
+    /// Panics if `m` is not a power of two of at most 2^32. Every PMNS split then has
+    /// probability 1/2, which the exact sampler in [`crate::binomial`] requires.
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
-        let tree_depth = (m as f64).log2().ceil() as usize;
-        let cipher = Aes128::new(&GenericArray::from(key));
+        assert_pmns_range(m);
+
+        let tree_depth = m.trailing_zeros() as usize;
+        let cipher = pmns_cipher(&key, n, m);
 
         // Derive a separate key for PRP from main key
         let mut prp_key = [0u8; 16];
@@ -827,14 +815,9 @@ impl Iprf {
 
         while low < high {
             let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-
-            let node_id = encode_node(low, high, n);
-            let prf_output = self.prf_eval(node_id);
 
             let left_count =
-                crate::binomial::binomial_sample(ball_count, left_bins, total_bins, prf_output);
+                crate::binomial::coin_binomial(&self.cipher, pmns_node(low, high), ball_count);
 
             if ball_index < left_count {
                 high = mid;
@@ -851,7 +834,7 @@ impl Iprf {
     /// Returns the contiguous range of ball indices that fall into PMNS bin `y`.
     ///
     /// For `m == 1` this is all balls `[0..n)`. Otherwise the method walks the PMNS
-    /// binary partitioning tree deterministically (using `binomial_sample`) to
+    /// binary partitioning tree deterministically (using `coin_binomial`) to
     /// compute the starting index and count of balls assigned to bin `y`, and
     /// returns the range `[start, start + count)` as a `Vec<u64>`.
     ///
@@ -877,14 +860,9 @@ impl Iprf {
 
         while low < high {
             let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-
-            let node_id = encode_node(low, high, n);
-            let prf_output = self.prf_eval(node_id);
 
             let left_count =
-                crate::binomial::binomial_sample(ball_count, left_bins, total_bins, prf_output);
+                crate::binomial::coin_binomial(&self.cipher, pmns_node(low, high), ball_count);
 
             if y <= mid {
                 high = mid;
@@ -898,36 +876,43 @@ impl Iprf {
 
         (ball_start..ball_start + ball_count).collect()
     }
-
-    /// Produces a 64-bit pseudorandom value by AES-encrypting a 16-byte block containing `x`.
-    ///
-    /// The input block places `x` in the last 8 bytes (big-endian), encrypts the block with the
-    /// instance's AES-128 cipher, and returns the first 8 bytes of the ciphertext interpreted as a
-    /// big-endian `u64`.
-    fn prf_eval(&self, x: u64) -> u64 {
-        let mut input = [0u8; 16];
-        input[8..16].copy_from_slice(&x.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        u64::from_be_bytes(block[0..8].try_into().unwrap())
-    }
 }
 
-/// Encodes a PMNS tree node as a unique 64-bit identifier for PRF evaluation.
+/// Checks that a PMNS tree with `m` bins has only splits with probability 1/2
+/// and that its bin indices fit the node encoding.
+fn assert_pmns_range(m: u64) {
+    assert!(
+        m.is_power_of_two() && m <= 1 << 32,
+        "iPRF range must be a power of two of at most 2^32, got {m}"
+    );
+}
+
+/// Derives the PMNS keystream cipher for a tree with `n` balls and `m` bins.
 ///
-/// Note: The third argument is the global domain `n`, not the dynamic `ball_count`.
-/// This differs from the Rocq spec (IprfSpec.v) which uses `ball_count`, but both are
-/// valid as long as forward and inverse use the same encoding. The Rocq spec's
-/// `encode_node` is a parameter that can be instantiated to match this behavior.
-fn encode_node(low: u64, high: u64, n: u64) -> u64 {
+/// The key depends on `n` and `m`, so two trees with different shapes never
+/// share a keystream, even when they use the same iPRF key.
+fn pmns_cipher(key: &PrfKey128, n: u64, m: u64) -> Aes128 {
     let mut hasher = Sha256::new();
-    hasher.update(low.to_be_bytes());
-    hasher.update(high.to_be_bytes());
+    hasher.update(key);
+    hasher.update(b"pmns");
     hasher.update(n.to_be_bytes());
-    let result = hasher.finalize();
-    u64::from_be_bytes(result[0..8].try_into().unwrap())
+    hasher.update(m.to_be_bytes());
+    let hash = hasher.finalize();
+
+    let mut pmns_key: PrfKey128 = [0u8; 16];
+    pmns_key.copy_from_slice(&hash[0..16]);
+    Aes128::new(&GenericArray::from(pmns_key))
+}
+
+/// Names the PMNS node that covers bins `low..=high`.
+///
+/// Both bounds are below the range, which [`assert_pmns_range`] limits to 2^32.
+fn pmns_node(low: u64, high: u64) -> PmnsNode {
+    debug_assert!(low <= high && high <= u64::from(u32::MAX));
+    PmnsNode {
+        low: low as u32,
+        high: high as u32,
+    }
 }
 
 #[cfg(test)]
@@ -964,7 +949,7 @@ mod tests {
     fn test_iprf_inverse_contains_preimage() {
         let key = [2u8; 16];
         let domain = 1000u64;
-        let range = 100u64;
+        let range = 128u64;
         let iprf = Iprf::new(key, domain, range);
 
         for x in 0..50 {
@@ -1033,14 +1018,10 @@ mod tests {
         fn iprf_inverse_contains_preimage_and_is_consistent(
             key in any::<[u8; 16]>(),
             n in 1u64..1_000,
-            m_raw in 1u64..1_000,
+            m_log in 0u32..11,
             x_raw in any::<u64>(),
         ) {
-            let mut m = m_raw;
-            if m > n {
-                m = n;
-            }
-
+            let m = 1u64 << m_log;
             let x = x_raw % n;
 
             let iprf = Iprf::new(key, n, m);
@@ -1067,14 +1048,10 @@ mod tests {
         #[test]
         fn iprf_inverse_partitions_domain(
             key in any::<[u8; 16]>(),
-            n_raw in 1u64..64,
-            m_raw in 1u64..64,
+            n in 1u64..64,
+            m_log in 0u32..8,
         ) {
-            let n = n_raw;
-            let mut m = m_raw;
-            if m > n {
-                m = n;
-            }
+            let m = 1u64 << m_log;
 
             let iprf = Iprf::new(key, n, m);
             let mut seen = vec![false; n as usize];
@@ -1117,12 +1094,100 @@ mod tests {
         }
     }
 
+    fn pmns_test_key(index: u8) -> PrfKey128 {
+        let mut key: PrfKey128 = [0x5Au8; 16];
+        key[0] = index;
+        key
+    }
+
+    /// PMNS bin loads must look like 16384 balls thrown into 64 bins.
+    ///
+    /// Pearson's statistic has 63 degrees of freedom: mean 63, standard
+    /// deviation about 11.2.
+    #[test]
+    fn test_pmns_bin_loads_are_multinomial() {
+        let domain: u64 = 16_384;
+        let range: u64 = 64;
+        let expected_load: f64 = domain as f64 / range as f64;
+
+        for index in 0..8u8 {
+            let iprf: Iprf = Iprf::new(pmns_test_key(index), domain, range);
+            let loads: Vec<u64> = (0..range)
+                .map(|y| iprf.trace_ball_inverse(y, domain, range).len() as u64)
+                .collect();
+
+            assert_eq!(loads.iter().sum::<u64>(), domain, "key {index}");
+
+            let chi_square: f64 = loads
+                .iter()
+                .map(|&load| (load as f64 - expected_load).powi(2) / expected_load)
+                .sum();
+            assert!(
+                chi_square < 155.0,
+                "key {index}: chi-square {chi_square} for loads {loads:?}"
+            );
+        }
+    }
+
+    /// The fast and TEE PMNS trees must give the same ball range for every bin.
+    ///
+    /// The domain is not a multiple of the keystream block size, so node
+    /// counts end inside a block.
+    #[test]
+    fn test_pmns_tee_matches_standard() {
+        let domain: u64 = 100_003;
+        let range: u64 = 64;
+
+        for index in 0..2u8 {
+            let key: PrfKey128 = pmns_test_key(index);
+            let iprf: Iprf = Iprf::new(key, domain, range);
+            let iprf_tee: IprfTee = IprfTee::new(key, domain, range);
+
+            for y in 0..range {
+                let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range);
+                let (start, count) = iprf_tee.trace_ball_inverse_ct(y);
+                assert_eq!(
+                    (balls.first().copied(), balls.len() as u64),
+                    ((count > 0).then_some(start), count),
+                    "key {index}, bin {y}"
+                );
+            }
+        }
+    }
+
+    /// Two trees with the same key and different shapes must not share coins.
+    #[test]
+    fn test_pmns_keystream_depends_on_tree_shape() {
+        let key: PrfKey128 = pmns_test_key(0);
+        let range: u64 = 64;
+        let loads = |domain: u64| -> Vec<u64> {
+            let iprf: Iprf = Iprf::new(key, domain, range);
+            (0..range)
+                .map(|y| iprf.trace_ball_inverse(y, domain, range).len() as u64)
+                .collect()
+        };
+
+        let small: Vec<u64> = loads(16_384);
+        let large: Vec<u64> = loads(16_385);
+        let equal_bins: usize = small.iter().zip(&large).filter(|(a, b)| a == b).count();
+        assert!(
+            equal_bins < 16,
+            "{equal_bins} of 64 bins have equal loads for domains 16384 and 16385"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "iPRF range must be a power of two")]
+    fn test_iprf_rejects_range_that_is_not_a_power_of_two() {
+        let _ = Iprf::new([0u8; 16], 1000, 100);
+    }
+
     #[test]
     #[ignore = "slow with 128-bit security; run with --ignored"]
     fn test_iprf_tee_matches_standard() {
         let key = [4u8; 16];
         let domain = 500u64;
-        let range = 50u64;
+        let range = 64u64;
         let iprf = Iprf::new(key, domain, range);
         let iprf_tee = IprfTee::new(key, domain, range);
 

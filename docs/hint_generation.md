@@ -12,17 +12,18 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 - Regular hints: block subset of size c/2+1, single parity
 - Backup hints: block subset of size c/2, dual parities (in/out)
 - iPRF domain = total hints (λw + q), range = w (block size)
+- `w` must be a power of two. The default is the smallest power of two >= sqrt(N), the same rule as the protocol client (`plinko::protocol::default_block_size`). Mainnet v3: w = 65536, c = 27988
 
 ## Module Structure
 
 | File | Size (bytes) | Purpose |
 |------|--------------|---------|
 | mod.rs | 772 | Module wiring and re-exports |
-| types.rs | 3184 | Core data types (`Args`, hints, constants) |
+| types.rs | 3218 | Core data types (`Args`, hints, constants) |
 | bitset.rs | 4516 | `BlockBitset` for constant-time membership checks |
 | keys.rs | 3885 | iPRF block key and subset-seed derivation |
 | subsets.rs | 3014 | Regular/backup subset block computation |
-| driver.rs | 9262 | Geometry, validation, seed handling, hint initialization, and result summaries |
+| driver.rs | 10720 | Geometry, validation, seed handling, hint initialization, and result summaries |
 | fast_path.rs | 2727 | Standard streaming path (non-constant-time), accepts `FastProcessInput` |
 | ct_path.rs | 8790 | Constant-time streaming path for TEE mode, accepts `CtProcessInput` |
 

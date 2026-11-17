@@ -32,7 +32,7 @@ Contributing: feature branches and PRs — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - **Speed**: Extractor reads Reth state through `reth-db` (no RPC); hint generation uses flat `database.bin` only (no MDBX).
 - **Efficiency**: Streams extraction with bounded memory.
 - **Scale**: Flat 40-byte entries (v3 schema) for PIR-friendly layout.
-- **Correctness**: HintInit aligned with paper Fig. 7 and [`docs/Plinko.v`](docs/Plinko.v); binomial inverse CDF stable at mainnet PMNS parameters ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)).
+- **Correctness**: HintInit aligned with paper Fig. 7 and [`docs/Plinko.v`](docs/Plinko.v); integer-only PMNS sampler ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)).
 
 ## Quick start
 
@@ -98,7 +98,7 @@ Layout and last published mainnet v3 counts: [`docs/data_format.md`](docs/data_f
 ## Core primitives (`plinko` crate)
 
 - **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs))
-- **Binomial / PMNS**: Derandomized `Binomial(n,p; r)` via inverse CDF; large `n` uses a continued-fraction regularized incomplete beta (mainnet-safe; `puruspe::betai` approx path is not used when both shape parameters exceed 3000)
+- **Binomial / PMNS**: integer-only `Binomial(count, 1/2)` sampler, the bit count of an AES-128 counter keystream per tree node (exact for a uniform keystream) ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)); the iPRF range `w` must be a power of two
 - **TEE**: `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md))
 - **GPU** (optional): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md)
 
@@ -118,7 +118,7 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 
 - **Rocq**: `plinko/formal/` — specs for iPRF, Swap-or-Not, binomial ([`docs/verification.md`](docs/verification.md))
 - **Kani / proptest**: `cd plinko && cargo test --lib`
-- **Regression**: mainnet-scale binomial / PMNS tests in `plinko/src/binomial.rs`
+- **Regression**: sampler distribution and PMNS bin-load tests in `plinko/src/binomial.rs` and `plinko/src/iprf.rs`
 
 ## Documentation
 

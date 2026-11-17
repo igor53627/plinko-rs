@@ -79,9 +79,28 @@ pub struct ProtocolParams {
     pub num_total_hints: usize,
 }
 
+/// Default entries per block: the smallest power of two that is at least `sqrt(num_entries)`.
+///
+/// The block size is the iPRF range, and the PMNS sampler requires a power of two.
+///
+/// # Examples
+///
+/// ```
+/// use plinko::protocol::default_block_size;
+///
+/// assert_eq!(default_block_size(1_834_095_877), 65_536);
+/// assert_eq!(default_block_size(64), 8);
+/// assert_eq!(default_block_size(65), 16);
+/// ```
+pub fn default_block_size(num_entries: usize) -> usize {
+    let raw = (num_entries as f64).sqrt().ceil() as usize;
+    raw.max(1).next_power_of_two()
+}
+
 impl ProtocolParams {
     /// Create parameters with defaults similar to the Python runnable spec:
-    /// - `block_size`: `next_power_of_two(ceil(sqrt(num_entries)))` if omitted
+    /// - `block_size`: [`default_block_size`] if omitted; must be a power of two,
+    ///   because the iPRF range is the block size
     /// - `num_backup_hints`: `lambda * block_size` if omitted
     pub fn new(
         num_entries: usize,
@@ -96,15 +115,11 @@ impl ProtocolParams {
             return Err(ProtocolError::InvalidParams("lambda must be > 0"));
         }
 
-        let block_size = match block_size {
-            Some(v) => v,
-            None => {
-                let raw = (num_entries as f64).sqrt().ceil() as usize;
-                raw.max(1).next_power_of_two()
-            }
-        };
-        if block_size == 0 {
-            return Err(ProtocolError::InvalidParams("block_size must be > 0"));
+        let block_size = block_size.unwrap_or_else(|| default_block_size(num_entries));
+        if !block_size.is_power_of_two() {
+            return Err(ProtocolError::InvalidParams(
+                "block_size must be a power of two",
+            ));
         }
 
         let mut num_blocks = num_entries.div_ceil(block_size);

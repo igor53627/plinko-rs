@@ -152,7 +152,7 @@ Use `systemd-run` so stdout/stderr land in the system journal with a named unit:
 systemd-run --unit plinko_hints_0p01_prodW --working-directory=/mnt/mainnet/plinko \
   bash -lc 'RUST_BACKTRACE=1 ./target/release/plinko_hints \
     --db-path /mnt/mainnet/plinko/tmp/sample_0p01pct.db \
-    --entries-per-block 49177 \
+    --entries-per-block 65536 \
     --lambda 127 \
     --seed 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
 

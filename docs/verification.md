@@ -6,7 +6,7 @@ Doc map: [`README.md`](README.md). The `plinko/formal/` directory contains Rocq 
 
 - `SwapOrNotSpec.v`, `SwapOrNotSrSpec.v`: Swap-or-Not PRP and Sometimes-Recurse wrapper
 - `IprfSpec.v`: Invertible PRF combining PRP + PMNS
-- `BinomialSpec.v`, `TrueBinomialSpec.v`: Binomial sampling specifications
+- `BinomialSpec.v`, `TrueBinomialSpec.v`: Binomial sampling specifications. They do not model the Rust sampler (`plinko/src/binomial.rs`, AES keystream bit count); the iPRF theorems hold for any split value in `[0, count]`
 
 ## Rocq Proofs
 

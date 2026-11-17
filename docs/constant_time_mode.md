@@ -45,6 +45,19 @@ The constant-time path requires:
 1. `num_regular > 0` (lambda >= 1)
 2. `num_backup > 0` (use `--backup-hints` to set q > 0)
 3. Expected preimages * 2 <= MAX_PREIMAGES
+4. `w` is a power of two (required in both modes)
+
+## PMNS Sampler In This Mode
+
+Both modes use the same exact sampler (`plinko/src/binomial.rs`): a PMNS split is the
+number of set bits among the first `count` bits of an AES-128 counter keystream of the node.
+This mode calls `coin_binomial_ct`, which always processes as many keystream blocks as the
+full iPRF domain needs and masks the unused bits, so its work does not depend on the secret
+ball counts. The result is equal to the standard path bit for bit
+(`test_pmns_tee_matches_standard`, `test_ct_variant_matches_for_every_bound`).
+
+There is no limit on `total_hints` from the sampler. The cost is `total_hints / 128` AES
+blocks per tree level for each database entry.
 
 ## Performance
 
