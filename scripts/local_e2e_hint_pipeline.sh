@@ -111,11 +111,11 @@ log "comparing key result metrics between fast and CT runs"
 for key in \
   total_regular \
   non_zero_regular \
-  zero_regular_seeds \
+  invalid_regular \
   total_backup \
   non_zero_parity_in \
   non_zero_parity_out \
-  zero_backup_seeds; do
+  invalid_backup; do
   compare_metric "$key"
 done
 

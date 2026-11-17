@@ -13,16 +13,13 @@
 //! see `hint_gen` and [`docs/data_format.md`](../../docs/data_format.md).
 
 use crate::iprf::{Iprf, PrfKey128};
-use rand::seq::index::sample;
+use crate::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-
-pub const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
-pub const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";
 
 /// Fixed entry size used by the protocol model.
 pub const ENTRY_SIZE: usize = 32;
@@ -286,8 +283,8 @@ impl Server {
 
 #[derive(Clone)]
 struct HintSlot {
-    /// Original (pre-complement) block indices, sorted ascending.
-    cached_blocks: Vec<usize>,
+    /// Cutoff of the original (pre-complement) subset; see [`crate::subsets`].
+    cutoff: u32,
     complemented: bool,
     parity: Entry,
     extra_index: Option<usize>,
@@ -295,11 +292,11 @@ struct HintSlot {
 
 #[derive(Clone)]
 struct BackupHint {
-    /// Block indices derived from seed, sorted ascending.
-    /// Empty after promotion (moved into the promoted `HintSlot`).
-    cached_blocks: Vec<usize>,
+    /// Cutoff of the `c/2`-block subset; see [`crate::subsets`].
+    cutoff: u32,
     parity_in: Entry,
     parity_out: Entry,
+    /// `false` after promotion, and for a hint with no valid cutoff.
     available: bool,
 }
 
@@ -329,6 +326,7 @@ impl PreparedQuery {
 pub struct Client {
     params: ProtocolParams,
     iprfs: Vec<Iprf>,
+    subset_prf: SubsetPrf,
     slots: Vec<Option<HintSlot>>,
     backups: Vec<BackupHint>,
     cache: HashMap<usize, CacheEntry>,
@@ -362,27 +360,40 @@ impl Client {
             })
             .collect();
 
+        let subset_prf = SubsetPrf::new(&master_seed);
+        let mut scratch: Vec<u32> = Vec::with_capacity(params.num_blocks);
+
         let mut slots: Vec<Option<HintSlot>> = vec![None; params.num_total_hints];
         for (j, slot) in slots.iter_mut().enumerate().take(params.num_regular_hints) {
-            let seed = derive_subset_seed(&master_seed, SEED_LABEL_REGULAR, j as u64);
-            let blocks = compute_regular_blocks(&seed, params.num_blocks);
-            *slot = Some(HintSlot {
-                cached_blocks: blocks,
-                complemented: false,
-                parity: [0u8; ENTRY_SIZE],
-                extra_index: None,
-            });
+            let cutoff: u32 = subset_prf.cutoff(
+                j as u64,
+                params.num_blocks,
+                regular_subset_size(params.num_blocks),
+                &mut scratch,
+            );
+            if cutoff != INVALID_CUTOFF {
+                *slot = Some(HintSlot {
+                    cutoff,
+                    complemented: false,
+                    parity: [0u8; ENTRY_SIZE],
+                    extra_index: None,
+                });
+            }
         }
 
         let mut backups = Vec::with_capacity(params.num_backup_hints);
         for j in 0..params.num_backup_hints {
-            let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j as u64);
-            let blocks = compute_backup_blocks(&seed, params.num_blocks);
+            let cutoff: u32 = subset_prf.cutoff(
+                (params.num_regular_hints + j) as u64,
+                params.num_blocks,
+                backup_subset_size(params.num_blocks),
+                &mut scratch,
+            );
             backups.push(BackupHint {
-                cached_blocks: blocks,
+                cutoff,
                 parity_in: [0u8; ENTRY_SIZE],
                 parity_out: [0u8; ENTRY_SIZE],
-                available: true,
+                available: cutoff != INVALID_CUTOFF,
             });
         }
 
@@ -398,16 +409,19 @@ impl Client {
                 let j = hint_idx as usize;
                 if j < params.num_regular_hints {
                     if let Some(slot) = slots[j].as_mut() {
-                        if block_in_subset(&slot.cached_blocks, block) {
+                        if subset_prf.contains(hint_idx, block, slot.cutoff) {
                             xor_entry(&mut slot.parity, &entry);
                         }
                     }
                 } else if j < params.num_total_hints {
-                    let backup_idx = j - params.num_regular_hints;
-                    if block_in_subset(&backups[backup_idx].cached_blocks, block) {
-                        xor_entry(&mut backups[backup_idx].parity_in, &entry);
+                    let backup = &mut backups[j - params.num_regular_hints];
+                    if !backup.available {
+                        continue;
+                    }
+                    if subset_prf.contains(hint_idx, block, backup.cutoff) {
+                        xor_entry(&mut backup.parity_in, &entry);
                     } else {
-                        xor_entry(&mut backups[backup_idx].parity_out, &entry);
+                        xor_entry(&mut backup.parity_out, &entry);
                     }
                 }
             }
@@ -416,6 +430,7 @@ impl Client {
         Ok(Self {
             params,
             iprfs,
+            subset_prf,
             slots,
             backups,
             cache: HashMap::new(),
@@ -455,7 +470,9 @@ impl Client {
                 continue;
             };
 
-            if !slot_block_in_subset(slot, block) && slot.extra_index != Some(queried_index) {
+            if !self.slot_block_in_subset(hint_idx, slot, block)
+                && slot.extra_index != Some(queried_index)
+            {
                 continue;
             }
 
@@ -539,7 +556,7 @@ impl Client {
                 if j < self.params.num_regular_hints {
                     let should_update = self.slots[j]
                         .as_ref()
-                        .is_some_and(|slot| slot_block_in_subset(slot, block));
+                        .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
                     if should_update {
                         xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
                     }
@@ -548,11 +565,12 @@ impl Client {
 
                     let should_update = self.slots[j]
                         .as_ref()
-                        .is_some_and(|slot| slot_block_in_subset(slot, block));
+                        .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
                     if should_update {
                         xor_entry(&mut self.slots[j].as_mut().unwrap().parity, &update.delta);
                     } else if self.backups[backup_idx].available {
-                        if block_in_subset(&self.backups[backup_idx].cached_blocks, block) {
+                        let cutoff: u32 = self.backups[backup_idx].cutoff;
+                        if self.subset_prf.contains(hint_idx, block, cutoff) {
                             xor_entry(&mut self.backups[backup_idx].parity_in, &update.delta);
                         } else {
                             xor_entry(&mut self.backups[backup_idx].parity_out, &update.delta);
@@ -608,9 +626,13 @@ impl Client {
         let extra_block = slot.extra_index.map(|idx| self.params.block_of(idx));
         let extra_offset = slot.extra_index.map(|idx| self.params.offset_in_block(idx));
 
-        for block in 0..self.params.num_blocks {
-            let is_real = block != queried_block
-                && (slot_block_in_subset(slot, block) || extra_block == Some(block));
+        let mut select_values: Vec<u32> = Vec::with_capacity(self.params.num_blocks);
+        self.subset_prf
+            .select_values(hint_idx as u64, self.params.num_blocks, &mut select_values);
+
+        for (block, &select_value) in select_values.iter().enumerate() {
+            let in_subset = (select_value < slot.cutoff) ^ slot.complemented;
+            let is_real = block != queried_block && (in_subset || extra_block == Some(block));
 
             if is_real {
                 real_count += 1;
@@ -655,8 +677,11 @@ impl Client {
         };
 
         let queried_block = self.params.block_of(queried_index);
+        let promoted_idx = self.params.num_regular_hints + backup_idx;
         let backup = &mut self.backups[backup_idx];
-        let queried_in_subset = block_in_subset(&backup.cached_blocks, queried_block);
+        let queried_in_subset =
+            self.subset_prf
+                .contains(promoted_idx as u64, queried_block, backup.cutoff);
 
         let mut parity = if queried_in_subset {
             backup.parity_out
@@ -665,12 +690,11 @@ impl Client {
         };
         xor_entry(&mut parity, &queried_entry);
 
-        let cached_blocks = std::mem::take(&mut backup.cached_blocks);
+        let cutoff: u32 = backup.cutoff;
         backup.available = false;
 
-        let promoted_idx = self.params.num_regular_hints + backup_idx;
         self.slots[promoted_idx] = Some(HintSlot {
-            cached_blocks,
+            cutoff,
             complemented: queried_in_subset,
             parity,
             extra_index: Some(queried_index),
@@ -678,22 +702,13 @@ impl Client {
 
         Ok(promoted_idx)
     }
-}
 
-fn slot_block_in_subset(slot: &HintSlot, block: usize) -> bool {
-    let in_original = block_in_subset(&slot.cached_blocks, block);
-    in_original ^ slot.complemented
-}
-
-pub fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(master_seed);
-    hasher.update(label);
-    hasher.update(idx.to_le_bytes());
-    let hash = hasher.finalize();
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&hash[0..32]);
-    seed
+    fn slot_block_in_subset(&self, hint_idx: usize, slot: &HintSlot, block: usize) -> bool {
+        let in_original = self
+            .subset_prf
+            .contains(hint_idx as u64, block, slot.cutoff);
+        in_original ^ slot.complemented
+    }
 }
 
 pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
@@ -709,28 +724,6 @@ pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
         keys.push(key);
     }
     keys
-}
-
-pub fn compute_regular_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
-    let mut rng = ChaCha20Rng::from_seed(*seed);
-    let mut blocks = sample(&mut rng, c, c / 2 + 1).into_vec();
-    blocks.sort_unstable();
-    blocks
-}
-
-pub fn compute_backup_blocks(seed: &[u8; 32], c: usize) -> Vec<usize> {
-    let mut rng = ChaCha20Rng::from_seed(*seed);
-    let mut blocks = sample(&mut rng, c, c / 2).into_vec();
-    blocks.sort_unstable();
-    blocks
-}
-
-/// Returns `true` if `block` is present in `blocks`.
-///
-/// `blocks` **must** be sorted in ascending order (uses binary search).
-#[inline]
-pub fn block_in_subset(blocks: &[usize], block: usize) -> bool {
-    blocks.binary_search(&block).is_ok()
 }
 
 #[inline]

@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 
-use plinko::protocol::{
-    block_in_subset, compute_backup_blocks, compute_regular_blocks, derive_subset_seed, Client,
-    Entry, ProtocolParams, Server, ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
-};
+use plinko::protocol::{Client, Entry, ProtocolParams, Server, ENTRY_SIZE};
+use plinko::subsets::{backup_subset_size, SubsetPrf};
 
 fn make_entry(tag: u64) -> Entry {
     let mut entry = [0u8; ENTRY_SIZE];
@@ -120,128 +118,6 @@ fn protocol_cache_update_and_requery() {
     );
 }
 
-// --- Helper: minimal BlockBitset for bitmap cross-check tests ---
-
-struct BlockBitset {
-    bits: Vec<u64>,
-    num_blocks: usize,
-}
-
-impl BlockBitset {
-    fn from_sorted_blocks(blocks: &[usize], num_blocks: usize) -> Self {
-        let num_words = num_blocks.div_ceil(64);
-        let mut bits = vec![0u64; num_words];
-        for &block in blocks {
-            if block < num_blocks {
-                bits[block / 64] |= 1u64 << (block % 64);
-            }
-        }
-        Self { bits, num_blocks }
-    }
-
-    fn contains(&self, block: usize) -> bool {
-        if block >= self.num_blocks {
-            return false;
-        }
-        (self.bits[block / 64] >> (block % 64)) & 1 == 1
-    }
-}
-
-// --- Regression tests ---
-
-#[test]
-fn test_bitmap_matches_sorted_vec() {
-    let master_seed = [0x77u8; 32];
-    for c in [10, 64, 100, 128, 200] {
-        for j in 0..10 {
-            let seed = derive_subset_seed(&master_seed, b"test_regular", j);
-            let blocks = compute_regular_blocks(&seed, c);
-            let bitset = BlockBitset::from_sorted_blocks(&blocks, c);
-
-            for b in 0..c {
-                let vec_result = block_in_subset(&blocks, b);
-                let bitset_result = bitset.contains(b);
-                assert_eq!(
-                    vec_result, bitset_result,
-                    "Mismatch at c={c}, j={j}, block={b}"
-                );
-            }
-        }
-
-        for j in 0..10 {
-            let seed = derive_subset_seed(&master_seed, b"test_backup", j);
-            let blocks = compute_backup_blocks(&seed, c);
-            let bitset = BlockBitset::from_sorted_blocks(&blocks, c);
-
-            for b in 0..c {
-                let vec_result = block_in_subset(&blocks, b);
-                let bitset_result = bitset.contains(b);
-                assert_eq!(
-                    vec_result, bitset_result,
-                    "Backup mismatch at c={c}, j={j}, block={b}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn test_complement_flag_matches_complement_subset() {
-    let master_seed = [0x88u8; 32];
-    for c in [10, 64, 100, 128] {
-        for j in 0..20 {
-            let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j);
-            let blocks = compute_backup_blocks(&seed, c);
-
-            // Build complement manually
-            let mut complement = Vec::new();
-            for b in 0..c {
-                if !block_in_subset(&blocks, b) {
-                    complement.push(b);
-                }
-            }
-
-            // Verify complement flag: !block_in_subset(blocks, b) == block_in_subset(complement, b)
-            for b in 0..c {
-                let in_original = block_in_subset(&blocks, b);
-                let in_complement = block_in_subset(&complement, b);
-                assert_eq!(
-                    !in_original, in_complement,
-                    "Complement mismatch at c={c}, j={j}, block={b}"
-                );
-
-                // Also verify: complemented flag XOR original membership
-                let complemented_result = in_original ^ true; // complemented=true
-                assert_eq!(
-                    complemented_result, in_complement,
-                    "XOR complement mismatch at c={c}, j={j}, block={b}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn test_seed_recomputation_deterministic() {
-    let master_seed = [0x99u8; 32];
-    for c in [10, 50, 100, 200] {
-        for j in 0..10u64 {
-            let seed = derive_subset_seed(&master_seed, SEED_LABEL_REGULAR, j);
-            let blocks1 = compute_regular_blocks(&seed, c);
-            let blocks2 = compute_regular_blocks(&seed, c);
-            assert_eq!(
-                blocks1, blocks2,
-                "Regular non-deterministic at c={c}, j={j}"
-            );
-
-            let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j);
-            let blocks1 = compute_backup_blocks(&seed, c);
-            let blocks2 = compute_backup_blocks(&seed, c);
-            assert_eq!(blocks1, blocks2, "Backup non-deterministic at c={c}, j={j}");
-        }
-    }
-}
-
 #[test]
 fn test_protocol_e2e_after_compaction() {
     let params = ProtocolParams::new(
@@ -303,7 +179,9 @@ fn test_update_through_complemented_promoted_slots() {
     .expect("params");
 
     let mut entries = make_db(params.num_entries);
-    let master_seed = [0xCCu8; 32];
+    // The scenario checks below hold for about one master seed in twelve;
+    // this seed is one of them. The value checks do not depend on the seed.
+    let master_seed = [0x2Au8; 32];
     let query_seed = [0xDDu8; 32];
 
     let mut server = Server::new(params.clone(), &entries).expect("server init");
@@ -338,12 +216,19 @@ fn test_update_through_complemented_promoted_slots() {
 
     // Verify that at least one promoted slot actually had complemented=true.
     // Backups are promoted in order, so backup j was used for queried_indices[j].
+    let subset_prf: SubsetPrf = SubsetPrf::new(&master_seed);
+    let mut scratch: Vec<u32> = Vec::new();
     let mut complemented_promoted_slots = HashSet::new();
     for (j, &idx) in queried_indices.iter().enumerate() {
-        let seed = derive_subset_seed(&master_seed, SEED_LABEL_BACKUP, j as u64);
-        let backup_blocks = compute_backup_blocks(&seed, params.num_blocks);
+        let hint_id: u64 = (params.num_regular_hints + j) as u64;
+        let cutoff: u32 = subset_prf.cutoff(
+            hint_id,
+            params.num_blocks,
+            backup_subset_size(params.num_blocks),
+            &mut scratch,
+        );
         let queried_block = idx / params.block_size;
-        if block_in_subset(&backup_blocks, queried_block) {
+        if subset_prf.contains(hint_id, queried_block, cutoff) {
             complemented_promoted_slots.insert(params.num_regular_hints + j);
         }
     }

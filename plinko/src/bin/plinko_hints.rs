@@ -6,6 +6,7 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use plinko::iprf::{Iprf, IprfTee};
+use plinko::subsets::SubsetPrf;
 use std::fs::File;
 use std::time::Instant;
 use tracing::{debug, info};
@@ -70,8 +71,8 @@ fn main() -> eyre::Result<()> {
         count = params.num_backup,
         "Initializing backup hints"
     );
-    let (mut regular_hints, regular_bitsets, mut backup_hints, backup_bitsets) =
-        init_hints(&master_seed, geom.c, &params);
+    let subset_prf: SubsetPrf = SubsetPrf::new(&master_seed);
+    let (mut regular_hints, mut backup_hints) = init_hints(&subset_prf, geom.c, &params);
 
     info!(
         step = "4/4",
@@ -105,8 +106,7 @@ fn main() -> eyre::Result<()> {
                 num_regular: params.num_regular,
                 num_backup: params.num_backup,
                 block_iprfs_ct: &block_iprfs_ct,
-                regular_bitsets: &regular_bitsets,
-                backup_bitsets: &backup_bitsets,
+                subset_prf: &subset_prf,
             },
             &mut regular_hints,
             &mut backup_hints,
@@ -127,8 +127,7 @@ fn main() -> eyre::Result<()> {
                 num_regular: params.num_regular,
                 num_backup: params.num_backup,
                 block_iprfs: &block_iprfs,
-                regular_hint_blocks: &regular_bitsets,
-                backup_hint_blocks: &backup_bitsets,
+                subset_prf: &subset_prf,
             },
             &mut regular_hints,
             &mut backup_hints,

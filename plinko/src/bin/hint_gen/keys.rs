@@ -1,7 +1,6 @@
-//! Key derivation and pseudorandom subset sampling for hint generation.
+//! Key derivation for hint generation.
 
 use plinko::iprf::PrfKey128;
-use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
 /// Derives one 128-bit IPRF key per block from the master seed.
@@ -22,31 +21,9 @@ pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     keys
 }
 
-/// Derives a 32-byte subset seed for the given label and index.
-///
-/// Computed as `SHA-256(master_seed || label || idx_le)`.
-pub fn derive_subset_seed(master_seed: &[u8; 32], label: &[u8], idx: u64) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(master_seed);
-    hasher.update(label);
-    hasher.update(idx.to_le_bytes());
-    let hash = hasher.finalize();
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&hash[0..32]);
-    seed
-}
-
-/// Samples `size` distinct indices from `[0, total)` using Fisher-Yates via `rand`.
-pub fn random_subset(rng: &mut ChaCha20Rng, size: usize, total: usize) -> Vec<usize> {
-    use rand::seq::index::sample;
-    sample(rng, total, size).into_vec()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hint_gen::types::{SEED_LABEL_BACKUP, SEED_LABEL_REGULAR};
-    use rand::SeedableRng;
 
     #[test]
     fn test_derive_block_keys_deterministic() {
@@ -65,59 +42,5 @@ mod tests {
                 assert_ne!(keys[i], keys[j], "Keys {} and {} should differ", i, j);
             }
         }
-    }
-
-    #[test]
-    fn test_random_subset_size() {
-        let mut rng = ChaCha20Rng::from_seed([2u8; 32]);
-        let subset = random_subset(&mut rng, 5, 10);
-        assert_eq!(subset.len(), 5);
-    }
-
-    #[test]
-    fn test_random_subset_bounds() {
-        let mut rng = ChaCha20Rng::from_seed([3u8; 32]);
-        let subset = random_subset(&mut rng, 10, 100);
-        for &x in &subset {
-            assert!(x < 100);
-        }
-    }
-
-    #[test]
-    fn test_random_subset_unique() {
-        let mut rng = ChaCha20Rng::from_seed([4u8; 32]);
-        let subset = random_subset(&mut rng, 20, 100);
-        let mut sorted = subset.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(
-            sorted.len(),
-            subset.len(),
-            "subset should have no duplicates"
-        );
-    }
-
-    #[test]
-    fn test_derive_subset_seed_deterministic() {
-        let master = [5u8; 32];
-        let seed1 = derive_subset_seed(&master, SEED_LABEL_REGULAR, 42);
-        let seed2 = derive_subset_seed(&master, SEED_LABEL_REGULAR, 42);
-        assert_eq!(seed1, seed2);
-    }
-
-    #[test]
-    fn test_derive_subset_seed_unique_per_index() {
-        let master = [6u8; 32];
-        let seed1 = derive_subset_seed(&master, SEED_LABEL_REGULAR, 0);
-        let seed2 = derive_subset_seed(&master, SEED_LABEL_REGULAR, 1);
-        assert_ne!(seed1, seed2);
-    }
-
-    #[test]
-    fn test_derive_subset_seed_unique_per_label() {
-        let master = [7u8; 32];
-        let seed1 = derive_subset_seed(&master, SEED_LABEL_REGULAR, 0);
-        let seed2 = derive_subset_seed(&master, SEED_LABEL_BACKUP, 0);
-        assert_ne!(seed1, seed2);
     }
 }

@@ -17,7 +17,7 @@
       "author": "maintainer"
     },
     {
-      "content": "Constant-time HintInit (--constant-time flag) for TEE execution: Uses IprfTee::inverse_ct with fixed MAX_PREIMAGES=512 iterations, BlockBitset for O(1) membership testing, ct_select_usize for branchless index clamping, and ct_xor_32_masked for conditional XOR. Protects against timing side-channels; cache side-channels are out of scope (would require ORAM). Verified against Plinko.v Coq spec and paper Fig. 7.",
+      "content": "Constant-time HintInit (--constant-time flag) for TEE execution: Uses IprfTee::inverse_ct with fixed MAX_PREIMAGES=512 iterations, one AES-128 select value compared with the 32-bit cutoff of the hint for block membership (plinko::subsets, RMS24 median cutoff), ct_select_usize for branchless index clamping, and ct_xor_32_masked for conditional XOR. Protects against timing side-channels; cache side-channels are out of scope (would require ORAM). Verified against Plinko.v Coq spec and paper Fig. 7.",
       "author": "maintainer"
     },
     {
@@ -54,7 +54,7 @@
     },
     {
       "title": "Hint Generation",
-      "purpose": "Document plinko/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, seed-based storage, constant-time mode (--constant-time) for TEE execution with BlockBitset, ct_select_usize, ct_xor_32_masked",
+      "purpose": "Document plinko/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, block subsets stored as one 32-bit PRF cutoff per hint (plinko::subsets), constant-time mode (--constant-time) for TEE execution with ct_lt_u64, ct_select_usize, ct_xor_32_masked",
       "parent": "Plinko Protocol"
     },
     {

@@ -7,8 +7,8 @@
 //! side-channels are not a concern.
 
 use plinko::iprf::Iprf;
+use plinko::subsets::{SubsetPrf, INVALID_CUTOFF};
 
-use crate::hint_gen::bitset::BlockBitset;
 use crate::hint_gen::subsets::xor_32;
 use crate::hint_gen::types::{parity_word_at, BackupHint, RegularHint, PARITY_WORD_SIZE};
 
@@ -21,23 +21,23 @@ pub struct FastProcessInput<'a> {
     pub num_regular: usize,
     pub num_backup: usize,
     pub block_iprfs: &'a [Iprf],
-    pub regular_hint_blocks: &'a [BlockBitset],
-    pub backup_hint_blocks: &'a [BlockBitset],
+    pub subset_prf: &'a SubsetPrf,
 }
 
 /// Processes all database entries through the fast (non-CT) path.
 ///
 /// For each entry at logical index `i`, computes the IPRF inverse to find
 /// the set of hint indices, then XORs the entry into the matching regular
-/// or backup hint parity accumulator based on block membership.
+/// or backup hint parity accumulator based on block membership. The cutoff
+/// of each hint defines the membership; an invalid hint gets no entry.
 pub fn process_entries_fast(
     input: FastProcessInput<'_>,
     regular_hints: &mut [RegularHint],
     backup_hints: &mut [BackupHint],
     progress_callback: impl Fn(usize),
 ) {
-    debug_assert_eq!(input.num_regular, input.regular_hint_blocks.len());
-    debug_assert_eq!(input.num_backup, input.backup_hint_blocks.len());
+    debug_assert_eq!(input.num_regular, regular_hints.len());
+    debug_assert_eq!(input.num_backup, backup_hints.len());
     for i in 0..input.n_effective {
         let block = i / input.w;
         let offset = i % input.w;
@@ -50,19 +50,24 @@ pub fn process_entries_fast(
 
         let hint_indices = input.block_iprfs[block].inverse(offset as u64);
 
-        for j in hint_indices {
-            let j = j as usize;
+        for hint_id in hint_indices {
+            let j = hint_id as usize;
             if j < input.num_regular {
-                if input.regular_hint_blocks[j].contains(block) {
-                    xor_32(&mut regular_hints[j].parity, &entry);
+                let hint: &mut RegularHint = &mut regular_hints[j];
+                if input.subset_prf.contains(hint_id, block, hint.cutoff) {
+                    xor_32(&mut hint.parity, &entry);
                 }
             } else {
                 let backup_idx = j - input.num_regular;
                 if backup_idx < input.num_backup {
-                    if input.backup_hint_blocks[backup_idx].contains(block) {
-                        xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
+                    let hint: &mut BackupHint = &mut backup_hints[backup_idx];
+                    if hint.cutoff == INVALID_CUTOFF {
+                        continue;
+                    }
+                    if input.subset_prf.contains(hint_id, block, hint.cutoff) {
+                        xor_32(&mut hint.parity_in, &entry);
                     } else {
-                        xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
+                        xor_32(&mut hint.parity_out, &entry);
                     }
                 }
             }

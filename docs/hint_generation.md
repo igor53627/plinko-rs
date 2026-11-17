@@ -11,6 +11,7 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 - Generates c iPRF keys (one per block), not one global key
 - Regular hints: block subset of size c/2+1, single parity
 - Backup hints: block subset of size c/2, dual parities (in/out)
+- A block subset is one 32-bit cutoff per hint (see [Block Subsets](#block-subsets))
 - iPRF domain = total hints (λw + q), range = w (block size)
 - `w` must be a power of two. The default is the smallest power of two >= sqrt(N), the same rule as the protocol client (`plinko::protocol::default_block_size`). Mainnet v3: w = 65536, c = 27988
 
@@ -20,9 +21,8 @@ expands each record to 48 bytes in VRAM (see `plinko/src/gpu.rs`).
 |--------------|--------------------------------------------------------------------------------|
 | mod.rs       | Module wiring and re-exports                                                   |
 | types.rs     | Core data types (`Args`, hints, constants)                                     |
-| bitset.rs    | `BlockBitset` for constant-time membership checks                              |
-| keys.rs      | iPRF block key and subset-seed derivation                                      |
-| subsets.rs   | Regular/backup subset block computation                                        |
+| keys.rs      | iPRF block key derivation                                                      |
+| subsets.rs   | Parity XOR helper (block subsets are in the library module `plinko::subsets`)  |
 | driver.rs    | Geometry, validation, seed handling, hint initialization, and result summaries |
 | fast_path.rs | Standard streaming path (non-constant-time), accepts `FastProcessInput`        |
 | ct_path.rs   | Constant-time streaming path for TEE mode, accepts `CtProcessInput`            |
@@ -55,45 +55,58 @@ cargo build --release -p plinko --bin plinko_hints
 
 See [constant_time_mode.md](constant_time_mode.md) for TEE security details.
 
-## Block Set Memory Optimization (#116)
+## Block Subsets
 
-Block subsets (which blocks each hint covers) are stored as packed bitmaps
-(`BlockBitset`) instead of sorted `Vec<usize>` arrays. This reduces block
-set memory by up to 31x during hint generation:
+Each hint stores its block subset as one 32-bit cutoff. The scheme is the
+median-cutoff representation of RMS24 (Ren, Mughees, Sun, CCS 2024, section 3.2),
+with the subset sizes of Plinko Fig. 7. The code is in the library module
+`plinko::subsets`; `plinko_hints` and the protocol client both use it.
 
-| c (blocks) | `Vec<usize>` (old) | `BlockBitset` (new) | Reduction |
-|------------|-------------------:|--------------------:|----------:|
-| 100 | 54 KB | 6 KB | 8.8x |
-| 1,000 | 504 KB | 20 KB | 25.2x |
-| 10,000 | 5,004 KB | 161 KB | 31.1x |
+- `v[j][k] = PRF("select", j, k)` is a 32-bit value for hint `j` and block `k`.
+- The cutoff of hint `j` has exactly `c/2 + 1` values of `v[j]` below it for a
+  regular hint, and exactly `c/2` for a backup hint.
+- Block `k` is in the subset of hint `j` when `v[j][k] < cutoff`.
+- Hint IDs are global: regular hints are `0..num_regular`, and backup hint `b`
+  is `num_regular + b`. The iPRF uses the same IDs.
 
-*128 hints per measurement. Ratio converges to ~32x as c grows.*
+The rank order of independent PRF values is a uniform permutation. The subset
+is thus uniform among the subsets of that size, as Fig. 7 requires.
 
-At Ethereum Mainnet scale, use the active v3 parameter derivation in
-[`data_format.md`](data_format.md) and the command templates in
-[`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). For any block count
-`c`, each old hint used roughly `(c / 2) * size_of::<usize>()` bytes for block
-indices, while each `BlockBitset` uses `ceil(c / 64) * 8` heap bytes plus one
-`size_of::<BlockBitset>()` struct overhead. This is a pure memory win; the
-compute bottleneck remains the Swap-Or-Not rounds in the iPRF.
+PRF: the key is `SHA-256(master_seed || "plinko_select")[0..16]`. One AES-128
+block `AES(key, hint_be64 || (block / 4)_be64)` gives four big-endian `u32`
+values; block `k` uses word `k % 4`. The key is client-secret.
 
-### Impact by execution path
+### Invalid hints
 
-| Path | Membership check | Memory impact | Compute impact |
-|------|-----------------|---------------|----------------|
-| **CPU fast path** | `contains()` — O(1) bit test | 31x less block storage; fits in L2 cache | Slight speedup from cache locality; replaces O(log c) binary search |
-| **CPU CT path** | `contains_ct()` — constant-time bit test | Same reduction | No change (already used `BlockBitset`) |
-| **GPU path** | Raw byte bitsets in CUDA kernel | No intermediate `Vec<usize>` spike on host | No kernel change (GPU already operates on packed bits) |
+If the two values at the subset boundary are equal, no cutoff selects the exact
+number of blocks. The cutoff is then `0` (`INVALID_CUTOFF`), and the hint is
+invalid: its parities stay zero, and the client does not use it for a query, a
+promotion, or an update. S3PIR (the RMS24 reference code) uses the same rule.
+The probability is about `c / 2^33` per hint. For mainnet (c = 27988,
+16,777,216 hints) that is about 55 invalid hints (computed, not measured).
+`plinko_hints` logs the counts as `invalid_regular` and `invalid_backup`.
 
-### Protocol client (online queries)
+### Memory
 
-The protocol `Client` caches sorted block vectors on `HintSlot` and
-`BackupHint` (computed once from seed during `offline_init`). Promoted
-backup hints use a complement flag (`complemented: bool`) instead of
-materializing the complement set, making `promote_backup` zero-allocation.
+| Representation                       | Per hint          | Mainnet, 16,777,216 hints |
+|--------------------------------------|-------------------|---------------------------|
+| Sorted block list (client, removed)  | about `4c` bytes  | about 1.9 TB              |
+| Packed bitmap (generator, removed)   | `ceil(c/64) * 8`  | about 59 GB               |
+| Cutoff                               | 4 bytes           | 67 MB                     |
 
-Run the memory benchmark from the workspace root:
+The values are computed from c = 27988, not measured.
 
-```bash
-cargo bench -p plinko --bench memory_bench
-```
+### Cost
+
+A membership test is one AES-128 block. A cutoff needs `c/4` AES blocks and a
+selection (`select_nth_unstable`) over `c` values. The compute bottleneck
+remains the Swap-Or-Not rounds in the iPRF.
+
+Measured at c = 27988 on one thread (Apple M3 Ultra, hardware AES through
+`--cfg aes_armv8`):
+
+| Operation                         | Time                                   |
+|-----------------------------------|----------------------------------------|
+| Membership test (`contains`)      | 1.4 ns                                 |
+| Cutoff of one hint                | 44 us                                  |
+| Cutoffs of all 16,777,216 hints   | about 740 s (extrapolated from 20,000) |

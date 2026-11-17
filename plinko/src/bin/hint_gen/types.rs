@@ -11,11 +11,6 @@ pub const PARITY_WORD_SIZE: usize = 32;
 #[allow(dead_code)]
 pub const WORD_SIZE: usize = PARITY_WORD_SIZE;
 
-/// Domain-separation label used when deriving seeds for regular hint subsets.
-pub const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
-/// Domain-separation label used when deriving seeds for backup hint subsets.
-pub const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";
-
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Plinko PIR Hint Generator (Paper-compliant)", long_about = None)]
 /// Command-line arguments for the hint generator binary.
@@ -63,19 +58,22 @@ pub fn parity_word_at(db_bytes: &[u8], index: usize) -> [u8; PARITY_WORD_SIZE] {
 }
 
 /// A regular PIR hint: the XOR parity of database entries in a pseudorandom
-/// subset of blocks, keyed by `subset_seed`.
+/// subset of `c/2 + 1` blocks.
 pub struct RegularHint {
-    /// Seed that deterministically defines which blocks belong to this hint's subset.
-    pub subset_seed: [u8; 32],
+    /// Cutoff that defines the block subset (see `plinko::subsets`).
+    /// `INVALID_CUTOFF` marks a hint with no valid subset; its parity stays zero.
+    pub cutoff: u32,
     /// XOR accumulator over all entries in the subset.
     pub parity: [u8; 32],
 }
 
-/// A backup hint used for puncturing: splits blocks into an "in" subset and
-/// its complement "out", maintaining separate XOR parities for each half.
+/// A backup hint used for puncturing: splits blocks into an "in" subset of
+/// `c/2` blocks and its complement "out", maintaining separate XOR parities
+/// for each half.
 pub struct BackupHint {
-    /// Seed that deterministically defines the in/out partition.
-    pub subset_seed: [u8; 32],
+    /// Cutoff that defines the in/out partition (see `plinko::subsets`).
+    /// `INVALID_CUTOFF` marks a hint with no valid partition; its parities stay zero.
+    pub cutoff: u32,
     /// XOR parity over entries whose block is *in* the subset.
     pub parity_in: [u8; 32],
     /// XOR parity over entries whose block is *outside* the subset.

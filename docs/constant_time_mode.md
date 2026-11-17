@@ -12,7 +12,7 @@ Key techniques used:
 
 - **Fixed-bound loops**: Always iterates `MAX_PREIMAGES` (512) times per entry, using masks to skip invalid indices. This prevents leaking preimage counts.
 
-- **Branchless membership**: Uses `BlockBitset::contains_ct()` for O(1) bit lookup instead of binary search, preventing timing variation based on subset contents.
+- **Branchless membership**: Computes the select value of the block with one AES-128 call (`SubsetPrf::select`) and compares it with the cutoff of the hint through `ct_lt_u64`. An invalid backup hint (cutoff 0) is masked with `ct_eq_u64`. See [hint_generation.md](hint_generation.md#block-subsets).
 
 - **Masked XOR**: Uses `ct_xor_32_masked()` to conditionally XOR without branches, ensuring constant-time parity updates.
 
@@ -20,7 +20,7 @@ Key techniques used:
 
 ## Security Model and Limitations
 
-The CT mode protects against timing side-channels but does NOT provide full memory-access obliviousness. Array indexing patterns (e.g., `regular_bitsets[j]`) may leak information to cache side-channel attackers (Prime+Probe, etc.).
+The CT mode protects against timing side-channels but does NOT provide full memory-access obliviousness. Array indexing patterns (e.g., `regular_hints[j].cutoff` and `regular_hints[j].parity`) may leak information to cache side-channel attackers (Prime+Probe, etc.).
 
 This is acceptable for the paper's security model, which reasons in an idealized RAM model without microarchitectural side-channels. For stronger protection, an ORAM-based approach would be needed (O(n) overhead).
 

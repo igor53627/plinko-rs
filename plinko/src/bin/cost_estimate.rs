@@ -22,7 +22,8 @@ const ACCOUNT_SPLIT_DENOMINATOR: u128 = 1_000;
 const ENTRY_SIZE: u64 = 40;
 const ACCOUNT_MAP_ENTRY_SIZE: u64 = 24;
 const STORAGE_MAP_ENTRY_SIZE: u64 = 56;
-const HINT_SEED_SIZE: u64 = 32;
+/// Subset cutoff of a hint (see `plinko::subsets`).
+const HINT_CUTOFF_SIZE: u64 = 4;
 const HINT_PARITY_SIZE: u64 = 32;
 
 // --- Measured throughput constants ---
@@ -200,16 +201,16 @@ fn main() -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE,
         "storage_mapping_bytes",
     )?;
-    // Regular hints: each is subset_seed(32B) + parity(32B) = 64 bytes
+    // Regular hints: each is cutoff(4B) + parity(32B) = 36 bytes
     let regular_hint_bytes = checked_mul(
         num_regular,
-        HINT_SEED_SIZE + HINT_PARITY_SIZE,
+        HINT_CUTOFF_SIZE + HINT_PARITY_SIZE,
         "regular_hint_bytes",
     )?;
-    // Backup hints: each is subset_seed(32B) + parity_in(32B) + parity_out(32B) = 96 bytes
+    // Backup hints: each is cutoff(4B) + parity_in(32B) + parity_out(32B) = 68 bytes
     let backup_hint_bytes = checked_mul(
         num_backup,
-        HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE,
+        HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE,
         "backup_hint_bytes",
     )?;
     let hint_storage = checked_add(regular_hint_bytes, backup_hint_bytes, "hint_storage_bytes")?;
@@ -484,12 +485,12 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE
     );
     println!(
-        "  Regular hints:      {} ({} x 64B)",
+        "  Regular hints:      {} ({} x 36B)",
         fmt_bytes(estimate.storage.regular_hint_bytes),
         fmt_count(estimate.parameters.regular_hints)
     );
     println!(
-        "  Backup hints:       {} ({} x 96B)",
+        "  Backup hints:       {} ({} x 68B)",
         fmt_bytes(estimate.storage.backup_hint_bytes),
         fmt_count(estimate.parameters.backup_hints)
     );
@@ -645,13 +646,13 @@ mod tests {
         .expect("storage");
         let regular_hint_bytes = checked_mul(
             num_regular,
-            HINT_SEED_SIZE + HINT_PARITY_SIZE,
+            HINT_CUTOFF_SIZE + HINT_PARITY_SIZE,
             "regular_hint_bytes",
         )
         .expect("regular_hint_bytes");
         let backup_hint_bytes = checked_mul(
             num_regular,
-            HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE,
+            HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE,
             "backup_hint_bytes",
         )
         .expect("backup_hint_bytes");

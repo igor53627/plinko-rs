@@ -5,6 +5,7 @@
 //! - `db`: Database loading and Plinko parameter derivation
 //! - `constant_time`: Data-oblivious operations for TEE execution
 //! - `binomial`: True derandomized binomial sampling for PMNS
+//! - `subsets`: Block subsets of hints, from a PRF and one cutoff per hint
 
 pub mod binomial;
 pub mod constant_time;
@@ -13,6 +14,7 @@ pub mod gpu;
 pub mod iprf;
 pub mod protocol;
 pub mod schema40;
+pub mod subsets;
 
 #[cfg(any(kani, test))]
 #[path = "kani_proofs.rs"]

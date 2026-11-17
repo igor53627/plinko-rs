@@ -4,12 +4,10 @@
 //! to the non-constant-time path, ensuring correctness while providing
 //! timing side-channel protection.
 
-use plinko::constant_time::{ct_lt_u64, ct_select_usize, ct_xor_32_masked};
+use plinko::constant_time::{ct_eq_u64, ct_lt_u64, ct_select_usize, ct_xor_32_masked};
 use plinko::iprf::{Iprf, IprfTee};
-use plinko::protocol::{
-    block_in_subset, compute_backup_blocks, compute_regular_blocks, derive_block_keys,
-    derive_subset_seed, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
-};
+use plinko::protocol::derive_block_keys;
+use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -22,41 +20,29 @@ struct BackupHint {
     parity_out: [u8; 32],
 }
 
-// BlockBitset is defined in the binary (hint_gen::bitset), not the library,
-// so we keep a minimal local copy for CT membership tests.
-struct BlockBitset {
-    bits: Vec<u64>,
-    num_blocks: usize,
-}
-
-impl BlockBitset {
-    fn new(num_blocks: usize) -> Self {
-        let num_words = num_blocks.div_ceil(64);
-        Self {
-            bits: vec![0u64; num_words],
-            num_blocks,
-        }
-    }
-
-    fn from_sorted_blocks(blocks: &[usize], num_blocks: usize) -> Self {
-        let mut bitset = Self::new(num_blocks);
-        for &block in blocks {
-            if block < num_blocks {
-                bitset.bits[block / 64] |= 1u64 << (block % 64);
-            }
-        }
-        bitset
-    }
-
-    #[inline]
-    fn contains_ct(&self, block: usize) -> u64 {
-        if block >= self.num_blocks {
-            return 0;
-        }
-        let word_idx = block / 64;
-        let bit_idx = block % 64;
-        (self.bits[word_idx] >> bit_idx) & 1
-    }
+/// Cutoffs of the regular hints (IDs `0..num_regular`) and of the backup
+/// hints (IDs `num_regular..num_regular + num_backup`).
+fn hint_cutoffs(
+    subset_prf: &SubsetPrf,
+    c: usize,
+    num_regular: usize,
+    num_backup: usize,
+) -> (Vec<u32>, Vec<u32>) {
+    let mut scratch: Vec<u32> = Vec::new();
+    let regular: Vec<u32> = (0..num_regular)
+        .map(|j| subset_prf.cutoff(j as u64, c, regular_subset_size(c), &mut scratch))
+        .collect();
+    let backup: Vec<u32> = (0..num_backup)
+        .map(|b| {
+            subset_prf.cutoff(
+                (num_regular + b) as u64,
+                c,
+                backup_subset_size(c),
+                &mut scratch,
+            )
+        })
+        .collect();
+    (regular, backup)
 }
 
 fn xor_32(dst: &mut [u8; 32], src: &[u8; 32]) {
@@ -92,19 +78,8 @@ fn hintinit_fast(
         })
         .collect();
 
-    let regular_hint_blocks: Vec<Vec<usize>> = (0..num_regular)
-        .map(|j| {
-            let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_REGULAR, j as u64);
-            compute_regular_blocks(&subset_seed, c)
-        })
-        .collect();
-
-    let backup_hint_blocks: Vec<Vec<usize>> = (0..num_backup)
-        .map(|j| {
-            let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_BACKUP, j as u64);
-            compute_backup_blocks(&subset_seed, c)
-        })
-        .collect();
+    let subset_prf: SubsetPrf = SubsetPrf::new(master_seed);
+    let (regular_cutoffs, backup_cutoffs) = hint_cutoffs(&subset_prf, c, num_regular, num_backup);
 
     let block_iprfs: Vec<Iprf> = block_keys
         .iter()
@@ -117,16 +92,20 @@ fn hintinit_fast(
 
         let hint_indices = block_iprfs[block].inverse(offset as u64);
 
-        for j in hint_indices {
-            let j = j as usize;
+        for hint_id in hint_indices {
+            let j = hint_id as usize;
             if j < num_regular {
-                if block_in_subset(&regular_hint_blocks[j], block) {
+                if subset_prf.contains(hint_id, block, regular_cutoffs[j]) {
                     xor_32(&mut regular_hints[j].parity, &entry);
                 }
             } else {
                 let backup_idx = j - num_regular;
                 if backup_idx < num_backup {
-                    if block_in_subset(&backup_hint_blocks[backup_idx], block) {
+                    let cutoff: u32 = backup_cutoffs[backup_idx];
+                    if cutoff == INVALID_CUTOFF {
+                        continue;
+                    }
+                    if subset_prf.contains(hint_id, block, cutoff) {
                         xor_32(&mut backup_hints[backup_idx].parity_in, &entry);
                     } else {
                         xor_32(&mut backup_hints[backup_idx].parity_out, &entry);
@@ -173,21 +152,8 @@ fn hintinit_ct(
         })
         .collect();
 
-    let regular_bitsets: Vec<BlockBitset> = (0..num_regular)
-        .map(|j| {
-            let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_REGULAR, j as u64);
-            let blocks = compute_regular_blocks(&subset_seed, c);
-            BlockBitset::from_sorted_blocks(&blocks, c)
-        })
-        .collect();
-
-    let backup_bitsets: Vec<BlockBitset> = (0..num_backup)
-        .map(|j| {
-            let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_BACKUP, j as u64);
-            let blocks = compute_backup_blocks(&subset_seed, c);
-            BlockBitset::from_sorted_blocks(&blocks, c)
-        })
-        .collect();
+    let subset_prf: SubsetPrf = SubsetPrf::new(master_seed);
+    let (regular_cutoffs, backup_cutoffs) = hint_cutoffs(&subset_prf, c, num_regular, num_backup);
 
     let block_iprfs_ct: Vec<IprfTee> = block_keys
         .iter()
@@ -210,15 +176,20 @@ fn hintinit_ct(
             let is_valid_backup = ct_lt_u64(backup_idx as u64, num_backup as u64);
             let is_backup = (1 - is_regular) & is_valid_backup;
 
+            let select_value = subset_prf.select(idx, block) as u64;
+
             let regular_idx = ct_select_usize(is_regular, j, 0);
-            let in_regular_subset = regular_bitsets[regular_idx].contains_ct(block);
+            let in_regular_subset = ct_lt_u64(select_value, regular_cutoffs[regular_idx] as u64);
 
             let backup_idx_clamped = ct_select_usize(is_valid_backup, backup_idx, 0);
-            let in_backup_subset = backup_bitsets[backup_idx_clamped].contains_ct(block);
+            let backup_cutoff = backup_cutoffs[backup_idx_clamped] as u64;
+            let backup_has_subset = 1 - ct_eq_u64(backup_cutoff, INVALID_CUTOFF as u64);
+            let in_backup_subset = ct_lt_u64(select_value, backup_cutoff);
 
             let update_regular = in_range & is_regular & in_regular_subset;
             let update_backup_in = in_range & is_backup & in_backup_subset;
-            let update_backup_out = in_range & is_backup & (1 - in_backup_subset);
+            let update_backup_out =
+                in_range & is_backup & backup_has_subset & (1 - in_backup_subset);
 
             ct_xor_32_masked(
                 &mut regular_hints[regular_idx].parity,
@@ -396,7 +367,9 @@ fn test_ct_hintinit_zero_db() {
 
 #[test]
 fn test_ct_hintinit_single_nonzero_entry() {
-    let master_seed = [99u8; 32];
+    // With this seed, regular hints 1, 3 and 7 contain entry 7. About one seed
+    // in five gives no such hint, and then the non-zero check below cannot hold.
+    let master_seed = [5u8; 32];
     let lambda = 2;
     let w = 4;
     let n = 16;
@@ -429,22 +402,6 @@ fn test_ct_hintinit_single_nonzero_entry() {
         has_nonzero_regular,
         "Should have at least one non-zero regular parity"
     );
-}
-
-#[test]
-fn test_block_bitset_ct_membership() {
-    let blocks = vec![1, 5, 10, 15, 20];
-    let bitset = BlockBitset::from_sorted_blocks(&blocks, 32);
-
-    assert_eq!(bitset.contains_ct(0), 0);
-    assert_eq!(bitset.contains_ct(1), 1);
-    assert_eq!(bitset.contains_ct(5), 1);
-    assert_eq!(bitset.contains_ct(6), 0);
-    assert_eq!(bitset.contains_ct(10), 1);
-    assert_eq!(bitset.contains_ct(15), 1);
-    assert_eq!(bitset.contains_ct(20), 1);
-    assert_eq!(bitset.contains_ct(31), 0);
-    assert_eq!(bitset.contains_ct(100), 0);
 }
 
 #[test]

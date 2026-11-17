@@ -1,11 +1,8 @@
 //! Driver helpers for plinko_hints binary - geometry, validation, and initialization.
 
-use crate::hint_gen::bitset::BlockBitset;
-use crate::hint_gen::{
-    compute_backup_blocks, compute_regular_blocks, derive_subset_seed, BackupHint, RegularHint,
-    DB_ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
-};
+use crate::hint_gen::{BackupHint, RegularHint, DB_ENTRY_SIZE};
 use plinko::iprf::MAX_PREIMAGES;
+use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::RngCore;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -36,13 +33,8 @@ pub struct HintParams {
     pub total_hints: usize,
 }
 
-/// Return type for [`init_hints`]: `(regular_hints, regular_hint_bitsets, backup_hints, backup_hint_bitsets)`.
-pub type HintInitOutput = (
-    Vec<RegularHint>,
-    Vec<BlockBitset>,
-    Vec<BackupHint>,
-    Vec<BlockBitset>,
-);
+/// Return type for [`init_hints`]: `(regular_hints, backup_hints)`.
+pub type HintInitOutput = (Vec<RegularHint>, Vec<BackupHint>);
 
 impl HintParams {
     pub fn from_args(args: &Args, w: usize) -> Self {
@@ -203,36 +195,34 @@ pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
     }
 }
 
-/// Initialize hint structures and compute block memberships as bitsets.
-pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> HintInitOutput {
-    let mut regular_hints: Vec<RegularHint> = Vec::with_capacity(params.num_regular);
-    let mut regular_bitsets: Vec<BlockBitset> = Vec::with_capacity(params.num_regular);
+/// Initialize hint structures and compute the cutoff of each block subset.
+///
+/// Regular hint `j` has hint ID `j` and a subset of `c/2 + 1` blocks. Backup
+/// hint `b` has hint ID `num_regular + b` and a subset of `c/2` blocks.
+pub fn init_hints(subset_prf: &SubsetPrf, c: usize, params: &HintParams) -> HintInitOutput {
+    let mut scratch: Vec<u32> = Vec::with_capacity(c);
 
-    for j in 0..params.num_regular {
-        let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_REGULAR, j as u64);
-        let blocks = compute_regular_blocks(&subset_seed, c);
-        regular_hints.push(RegularHint {
-            subset_seed,
+    let regular_hints: Vec<RegularHint> = (0..params.num_regular)
+        .map(|j| RegularHint {
+            cutoff: subset_prf.cutoff(j as u64, c, regular_subset_size(c), &mut scratch),
             parity: [0u8; 32],
-        });
-        regular_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
-    }
+        })
+        .collect();
 
-    let mut backup_hints: Vec<BackupHint> = Vec::with_capacity(params.num_backup);
-    let mut backup_bitsets: Vec<BlockBitset> = Vec::with_capacity(params.num_backup);
-
-    for j in 0..params.num_backup {
-        let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_BACKUP, j as u64);
-        let blocks = compute_backup_blocks(&subset_seed, c);
-        backup_hints.push(BackupHint {
-            subset_seed,
+    let backup_hints: Vec<BackupHint> = (0..params.num_backup)
+        .map(|b| BackupHint {
+            cutoff: subset_prf.cutoff(
+                (params.num_regular + b) as u64,
+                c,
+                backup_subset_size(c),
+                &mut scratch,
+            ),
             parity_in: [0u8; 32],
             parity_out: [0u8; 32],
-        });
-        backup_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
-    }
+        })
+        .collect();
 
-    (regular_hints, regular_bitsets, backup_hints, backup_bitsets)
+    (regular_hints, backup_hints)
 }
 
 /// Print final results summary.
@@ -249,9 +239,9 @@ pub fn print_results(
         .iter()
         .filter(|h| h.parity.iter().any(|&b| b != 0))
         .count();
-    let zero_regular_seeds = regular_hints
+    let invalid_regular = regular_hints
         .iter()
-        .filter(|h| h.subset_seed.iter().all(|&b| b == 0))
+        .filter(|h| h.cutoff == INVALID_CUTOFF)
         .count();
 
     info!(
@@ -259,7 +249,7 @@ pub fn print_results(
         throughput_mb_s = format_args!("{:.2}", throughput_mb),
         non_zero_regular,
         total_regular = params.num_regular,
-        zero_regular_seeds,
+        invalid_regular,
         "Results"
     );
 
@@ -272,15 +262,15 @@ pub fn print_results(
             .iter()
             .filter(|h| h.parity_out.iter().any(|&b| b != 0))
             .count();
-        let zero_backup_seeds = backup_hints
+        let invalid_backup = backup_hints
             .iter()
-            .filter(|h| h.subset_seed.iter().all(|&b| b == 0))
+            .filter(|h| h.cutoff == INVALID_CUTOFF)
             .count();
         info!(
             non_zero_parity_in = non_zero_backup_in,
             non_zero_parity_out = non_zero_backup_out,
             total_backup = params.num_backup,
-            zero_backup_seeds,
+            invalid_backup,
             "Backup hint results"
         );
     }
