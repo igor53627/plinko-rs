@@ -1,12 +1,13 @@
 ---
 id: TASK-25
 title: Make the extractor snapshot consistent
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
-updated_date: '2026-11-17T17:33:00Z'
+updated_date: '2026-11-17T17:43:00Z'
 labels:
   - extractor
+  - wontfix
 dependencies: []
 references:
   - src/main.rs
@@ -34,3 +35,9 @@ The extractor opens a new read transaction for each 100,000 items and reads the 
 <!-- SECTION:NOTES:BEGIN -->
 Scope decision of 2026-11-17 (backlog/decisions/decision-1): the full Ethereum state is not a target. The extractor is now a source of test data only, so a consistent snapshot has low value. Candidate to close; waits for the owner.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed without implementation on 2026-11-17 (owner decision; backlog/decisions/decision-1). The full Ethereum state is not a target, and the extractor is a source of test data only. No acceptance criterion is met. The defects stay in src/main.rs and are listed in docs/data_format.md, section Limits of the extractor: one read transaction per batch, so the output of a live node mixes several blocks; the block number comes from the CanonicalHeaders table and is 0 with no error when the table is empty; CodeIDs are not stable between extractions; a failed run leaves partial files; a balance above 2^128 is truncated with no error. Open this task again if the extractor output is used as more than test data.
+<!-- SECTION:FINAL_SUMMARY:END -->

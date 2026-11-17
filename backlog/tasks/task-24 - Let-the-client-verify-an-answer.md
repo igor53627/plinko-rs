@@ -1,40 +1,43 @@
 ---
 id: TASK-24
-title: Let the client verify an answer
+title: Let the client check an answer against a commitment of the database
 status: To Do
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
-updated_date: '2026-11-17T17:33:00Z'
+updated_date: '2026-11-17T17:43:00Z'
 labels:
-  - data-layer
   - security
-dependencies: []
+  - design
+dependencies:
+  - TASK-23
 references:
-  - plinko/src/schema40.rs
-  - plinko/src/bin/hint_gen/types.rs
   - plinko/src/protocol.rs
-  - src/main.rs
-  - docs/data_format.md
+  - plinko/src/hints.rs
+  - docs/trust_model.md
+  - docs/online_protocol.md
+  - >-
+    backlog/decisions/decision-1 -
+    Target-a-PIR-library-for-fixed-size-records-not-the-full-Ethereum-state.md
 priority: high
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The parity covers the first 32 bytes of a record. A storage record has its TAG at bytes 32..40, so the client never gets the storage TAG through PIR. The client computes answer = server parity XOR hint parity, so a server can XOR a value into the balance and leave the TAG intact. metadata.json has no state root, block hash or hash of database.bin. The account record has no storage root, a 128-bit balance and a local CodeID, so a trie leaf cannot be rebuilt. The comment in schema40.rs gives 5e-20 as the TAG collision probability; that is for one pair, and at mainnet scale the chance of a collision is 8.7 percent over all records.
+The client computes answer = server parity XOR hint parity. A server can XOR any value into its parity, and the client gets a wrong record with no error. The privacy game of the paper computes the answer with the honest Answer algorithm, so the paper gives no integrity. The client reads the full database once in HintInit, so it can compute a commitment of the database at that time; today plinko_hints computes none, and the hint file has no field for one. Nothing tells the client that the database that it used for HintInit is the database that the server published to other clients, and deltas (TASK-23) are not authenticated.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The parity window covers the TAG of storage records in the generator, the hint file and the client
-- [ ] #2 metadata.json holds the block number, the block hash, the state root and a hash of database.bin
-- [ ] #3 A document states what the client can verify and what it must trust the server for
-- [ ] #4 The document selects a mechanism against a malleable answer, or states that integrity is out of scope
-- [ ] #5 The TAG collision comment in schema40.rs gives the mainnet-scale probability
+- [ ] #1 A document states what the client can check and what it must trust the server for: in HintInit, in an answer and in a delta
+- [ ] #2 The document selects a mechanism against a wrong answer (for example a per-record tag under a client key that the parity covers, or a Merkle path that the client fetches by PIR), with its cost in bytes and in queries, or it states that integrity is out of scope and gives the reason
+- [ ] #3 plinko_hints computes a hash of the database in its streaming pass and stores it in the hint file; a caller can compare it with a value that the publisher of the database gives
+- [ ] #4 If a mechanism is selected: a test shows that the client rejects an answer in which the server changed one bit of a parity
+- [ ] #5 The document states how a delta changes the commitment, or that the client must trust the deltas
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Scope decision of 2026-11-17 (backlog/decisions/decision-1): the full Ethereum state is not a target. The link to a state root is Ethereum-specific. A check of an answer against a commitment of the database is a general need; the owner decides whether to change the task.
+Rewritten on 2026-11-17 after the scope decision (backlog/decisions/decision-1). Removed: the state root, the block hash and the trie leaf of Ethereum (metadata.json of the extractor). Moved to TASK-31: the parity covers the whole record (before: the TAG of storage records at bytes 32..40 is outside the parity). Done outside this task: the TAG collision comment in plinko/src/schema40.rs gives the probability for the mainnet record counts. The mechanisms in criterion 2 are examples, not a selection; no analysis of them was done.
 <!-- SECTION:NOTES:END -->

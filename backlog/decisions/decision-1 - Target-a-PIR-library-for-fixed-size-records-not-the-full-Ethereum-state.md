@@ -25,5 +25,9 @@ Decided by the owner (igor53627) on 2026-11-17.
 
 - Documents do not describe the repository as a solution for Ethereum-scale state. Mainnet numbers stay as a scale reference.
 - The Reth extractor, the v3 record format and `gen_synthetic` stay as sources of test data.
-- The Ethereum data-layer tasks (TASK-22, TASK-23, TASK-25 and the state-root part of TASK-24) are not on the path. Their status is open until the owner closes or changes them.
-- The record size is fixed today (40-byte records, hints over the first 32 bytes). A library for other databases needs the record size as a parameter.
+- The Ethereum data-layer tasks changed on 2026-11-17, with the agreement of the owner:
+  - TASK-25 (consistent extractor snapshot) is closed without implementation. `docs/data_format.md` lists the limits of the extractor.
+  - TASK-22 is now lookup by key for a general key-value database.
+  - TASK-23 is now a database version and a delta feed.
+  - TASK-24 is now a check of an answer against a commitment of the database, with no state root.
+- The record size is fixed today (40-byte records, hints over the first 32 bytes). A library for other databases needs the record size as a parameter (TASK-31).
