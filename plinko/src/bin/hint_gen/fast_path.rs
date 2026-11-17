@@ -6,7 +6,7 @@
 //! through data-dependent branches and is suitable only when timing
 //! side-channels are not a concern.
 
-use plinko::iprf::Iprf;
+use plinko::iprf::{Iprf, IprfTable};
 use plinko::subsets::{SubsetPrf, INVALID_CUTOFF};
 
 use crate::hint_gen::subsets::xor_32;
@@ -26,6 +26,7 @@ pub struct FastProcessInput<'a> {
 
 /// Processes all database entries through the fast (non-CT) path.
 ///
+/// Computes the PMNS bin boundaries of each block once (`Iprf::table`).
 /// For each entry at logical index `i`, computes the IPRF inverse to find
 /// the set of hint indices, then XORs the entry into the matching regular
 /// or backup hint parity accumulator based on block membership. The cutoff
@@ -38,9 +39,14 @@ pub fn process_entries_fast(
 ) {
     debug_assert_eq!(input.num_regular, regular_hints.len());
     debug_assert_eq!(input.num_backup, backup_hints.len());
+    debug_assert_eq!(input.n_effective, input.block_iprfs.len() * input.w);
+    let mut table: Option<IprfTable<'_>> = None;
     for i in 0..input.n_effective {
         let block = i / input.w;
         let offset = i % input.w;
+        if offset == 0 {
+            table = Some(input.block_iprfs[block].table());
+        }
 
         let entry: [u8; PARITY_WORD_SIZE] = if i < input.n_entries {
             parity_word_at(input.db_bytes, i)
@@ -48,7 +54,10 @@ pub fn process_entries_fast(
             [0u8; PARITY_WORD_SIZE]
         };
 
-        let hint_indices = input.block_iprfs[block].inverse(offset as u64);
+        let hint_indices = table
+            .as_ref()
+            .expect("the table is built at offset 0 of each block")
+            .inverse(offset as u64);
 
         for hint_id in hint_indices {
             let j = hint_id as usize;

@@ -66,6 +66,39 @@ Without `--output` the run only logs counts. `--output` requires `--seed` or
 
 See [constant_time_mode.md](constant_time_mode.md) for TEE security details.
 
+## PMNS Tree Reuse
+
+The iPRF of a block is a PRP followed by a PMNS tree with `w` bins. The tree
+is the same for all offsets of the block, so the code computes it once:
+
+- `Iprf::table()` and `IprfTee::table_ct()` compute all bin boundaries of one
+  block. HintInit (both paths, and `protocol::compute_hints`) builds one table
+  per database block and reads it for each offset.
+- `Iprf::with_cached_levels(key, n, m, levels)` keeps the left counts of the
+  top tree levels after the first call. The protocol client uses 8 levels
+  (`CLIENT_CACHED_PMNS_LEVELS`): 1020 bytes per block, about 29 MB for the
+  27,988 blocks of mainnet (computed). The cache is derived from the block key
+  and is client-secret.
+
+All outputs are equal to those of the plain `Iprf`
+(`test_pmns_table_matches_tree_walk`, `test_pmns_cached_levels_match_uncached_tree`,
+`test_pmns_tee_table_matches_tree_walk`).
+
+Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra,
+hardware AES through `--cfg aes_armv8`):
+
+| Operation                               | Before   | After                          |
+|-----------------------------------------|----------|--------------------------------|
+| `forward` (client, 8 cached levels)     | 445 us   | 28.5 us                        |
+| `inverse` (client, 8 cached levels)     | 7.56 ms  | 7.02 ms                        |
+| `inverse` per entry in HintInit (table) | 7.56 ms  | 7.03 ms, plus 4.2 ms per block |
+| `inverse_ct` per entry in HintInit      | 72.5 ms  | 68.0 ms, plus 9.2 ms per block |
+| Cache build, first call per block       | -        | 1.7 ms                         |
+
+The tree is no longer a relevant cost. What remains in `inverse` is the inverse
+PRP of about 256 balls per offset (512 fixed iterations in the constant-time
+path). HintInit over mainnet is thus still about 7 ms per entry on one thread.
+
 ## Hint File
 
 `--output` writes one file with all regular and backup hints. The layout is in

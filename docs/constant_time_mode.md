@@ -28,7 +28,7 @@ This is acceptable for the paper's security model, which reasons in an idealized
 
 With default parameters (λ=128, q=λw), expected preimages per offset is approximately 2λ = 256.
 
-The bound MAX_PREIMAGES=512 (approximately 2μ) ensures truncation probability < 2^{-140} via Chernoff bounds.
+The bound MAX_PREIMAGES=512 (approximately 2μ) is exceeded with probability < 2^{-140} per offset via Chernoff bounds. If it is exceeded, the run stops (see [PMNS Sampler In This Mode](#pmns-sampler-in-this-mode)).
 
 A parameter guard enforces this at runtime:
 
@@ -51,14 +51,23 @@ The constant-time path requires:
 
 Both modes use the same exact sampler (`plinko/src/binomial.rs`): a PMNS split is the
 number of set bits among the first `count` bits of an AES-128 counter keystream of the node.
-This mode calls `coin_binomial_ct`, which always processes as many keystream blocks as the
-full iPRF domain needs and masks the unused bits, so its work does not depend on the secret
-ball counts. The result is equal to the standard path bit for bit
+This mode calls `coin_binomial_ct`, which always processes as many keystream blocks as a
+public bound on the ball count needs and masks the unused bits, so its work does not depend
+on the secret ball counts. The result is equal to the standard path bit for bit
 (`test_pmns_tee_matches_standard`, `test_ct_variant_matches_for_every_bound`).
 
-There is no limit on `total_hints` from the sampler. The cost is `total_hints / 128` AES
-blocks per tree level for each database entry.
+HintInit computes the tree of a database block once (`IprfTee::table_ct`), not once per
+entry. A node that covers `b` bins is sampled with the bound
+`min(total_hints, MAX_PREIMAGES * b)`. The bounds depend only on `total_hints` and `w`.
+The table is read at the offset of the entry, which is public.
+
+If a ball count exceeds its bound, or a bin holds more than `MAX_PREIMAGES` balls, the
+table reports an overflow and `plinko_hints` stops with a panic. Before this check, a bin
+above `MAX_PREIMAGES` was truncated silently and gave a wrong parity. The stop reveals only
+that an event with the probability of the `MAX_PREIMAGES` bound occurred.
+
+There is no limit on `total_hints` from the sampler.
 
 ## Performance
 
-This mode is ~2-3x slower than the standard path due to the fixed-iteration loops and branchless operations.
+Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra, hardware AES): 68 ms per database entry in this mode and 7 ms in the standard path, a factor of about 10. The cost is the 512 fixed inverse-PRP iterations per entry; the standard path does about 256 and its PRP skips the levels that an input does not reach.

@@ -14,7 +14,7 @@
 //! see `hint_gen` and [`docs/data_format.md`](../../docs/data_format.md).
 
 use crate::hints::{self, HintGeometry, HintSet};
-use crate::iprf::{Iprf, PrfKey128};
+use crate::iprf::{Iprf, IprfTable, PrfKey128};
 use crate::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -22,6 +22,11 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+
+/// PMNS tree levels that the client keeps per block (see [`Iprf::with_cached_levels`]).
+///
+/// Eight levels take 1020 bytes per block: about 29 MB for the 27,988 blocks of mainnet.
+pub const CLIENT_CACHED_PMNS_LEVELS: u32 = 8;
 
 /// Fixed entry size used by the protocol model.
 pub const ENTRY_SIZE: usize = 32;
@@ -782,27 +787,29 @@ pub fn compute_hints(
         })
         .collect();
 
-    for i in 0..params.n_effective_entries() {
-        let entry: Entry = entries.get(i).copied().unwrap_or([0u8; ENTRY_SIZE]);
-        let block = i / params.block_size;
-        let offset = i % params.block_size;
+    for (block, iprf) in iprfs.iter().enumerate() {
+        let table: IprfTable<'_> = iprf.table();
+        for offset in 0..params.block_size {
+            let i = block * params.block_size + offset;
+            let entry: Entry = entries.get(i).copied().unwrap_or([0u8; ENTRY_SIZE]);
 
-        for hint_id in iprfs[block].inverse(offset as u64) {
-            let j = hint_id as usize;
-            if j < params.num_regular_hints {
-                let hint: &mut hints::RegularHint = &mut regular[j];
-                if subset_prf.contains(hint_id, block, hint.cutoff) {
-                    xor_entry(&mut hint.parity, &entry);
-                }
-            } else if j < params.num_total_hints {
-                let hint: &mut hints::BackupHint = &mut backup[j - params.num_regular_hints];
-                if hint.cutoff == INVALID_CUTOFF {
-                    continue;
-                }
-                if subset_prf.contains(hint_id, block, hint.cutoff) {
-                    xor_entry(&mut hint.parity_in, &entry);
-                } else {
-                    xor_entry(&mut hint.parity_out, &entry);
+            for hint_id in table.inverse(offset as u64) {
+                let j = hint_id as usize;
+                if j < params.num_regular_hints {
+                    let hint: &mut hints::RegularHint = &mut regular[j];
+                    if subset_prf.contains(hint_id, block, hint.cutoff) {
+                        xor_entry(&mut hint.parity, &entry);
+                    }
+                } else if j < params.num_total_hints {
+                    let hint: &mut hints::BackupHint = &mut backup[j - params.num_regular_hints];
+                    if hint.cutoff == INVALID_CUTOFF {
+                        continue;
+                    }
+                    if subset_prf.contains(hint_id, block, hint.cutoff) {
+                        xor_entry(&mut hint.parity_in, &entry);
+                    } else {
+                        xor_entry(&mut hint.parity_out, &entry);
+                    }
                 }
             }
         }
@@ -820,10 +827,11 @@ fn block_iprfs(params: &ProtocolParams, master_seed: &[u8; 32]) -> Vec<Iprf> {
     derive_block_keys(master_seed, params.num_blocks)
         .iter()
         .map(|key| {
-            Iprf::new(
+            Iprf::with_cached_levels(
                 *key,
                 params.num_total_hints as u64,
                 params.block_size as u64,
+                CLIENT_CACHED_PMNS_LEVELS,
             )
         })
         .collect()

@@ -40,6 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - End-to-end test `plinko/tests/hint_file_e2e_test.rs`: runs the `plinko_hints` binary, compares its file with the in-memory hint set, and checks queries and an update; an ignored test does the same with 66,560 hints.
 - `scripts/local_e2e_hint_pipeline.sh` compares the hint files of the fast and the constant-time run byte for byte.
 
+- **PMNS tree reuse**: `Iprf::table()` and `IprfTee::table_ct()` compute all bin boundaries of one iPRF once; HintInit builds one table per database block in both paths and in `protocol::compute_hints`. `Iprf::with_cached_levels` keeps the top tree levels after the first call; the protocol client caches 8 levels per block (`CLIENT_CACHED_PMNS_LEVELS`). Outputs do not change. Measured at w = 65536 with hardware AES: `forward` 445 us to 28.5 us, `inverse` 7.56 ms to 7.02 ms (the inverse PRP dominates).
+- The constant-time path stops with a panic when a PMNS bin holds more than `MAX_PREIMAGES` balls. It truncated the bin silently before and gave a wrong parity.
+
 ### Changed
 
 - **Exact integer PMNS sampler (breaking)**: `binomial_sample` and `binomial_sample_tee` are replaced by `coin_binomial` and `coin_binomial_ct`. A split is the number of set bits among the first `count` bits of an AES-128 counter keystream of the tree node, which is exactly Binomial(count, 1/2) for a uniform keystream (computationally indistinguishable from it under the AES PRF assumption) and identical on every platform and in both modes. All iPRF outputs change.

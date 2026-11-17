@@ -1,5 +1,5 @@
 use plinko::constant_time::{ct_eq_u64, ct_lt_u64, ct_select_usize, ct_xor_32_masked};
-use plinko::iprf::IprfTee;
+use plinko::iprf::{IprfTee, IprfTeeTable};
 use plinko::subsets::{SubsetPrf, INVALID_CUTOFF};
 
 use crate::hint_gen::types::{parity_word_at, BackupHint, RegularHint, PARITY_WORD_SIZE};
@@ -18,9 +18,18 @@ pub struct CtProcessInput<'a> {
 
 /// Process database entries in constant-time for TEE execution.
 ///
+/// The PMNS bin boundaries of each block are computed once with
+/// `IprfTee::table_ct`, whose work depends only on the hint count and `w`.
+/// The table is read at the offset of the entry, which is public.
+///
 /// Block membership is one AES call on the hint index and one masked compare
 /// against the cutoff of the hint. The cutoffs and parities are read at the
 /// hint index, so the memory access pattern still depends on that index.
+///
+/// # Panics
+/// Panics if a PMNS ball count exceeds its public bound
+/// (`IprfTeeTable::overflowed`). `validate_hint_params` keeps the probability
+/// negligible. The hints would be wrong otherwise.
 ///
 /// # Safety Requirements
 /// - `num_backup` must be >= 1 (CT indexing clamps to index 0 for dummy access)
@@ -35,9 +44,20 @@ pub fn process_entries_ct(
         input.num_backup >= 1 && !regular_hints.is_empty() && !backup_hints.is_empty(),
         "CT path requires at least 1 regular and 1 backup hint for safe dummy indexing"
     );
+    debug_assert_eq!(input.n_effective, input.block_iprfs_ct.len() * input.w);
+    let mut table: Option<IprfTeeTable<'_>> = None;
     for i in 0..input.n_effective {
         let block = i / input.w;
         let offset = i % input.w;
+        if offset == 0 {
+            let block_table: IprfTeeTable<'_> = input.block_iprfs_ct[block].table_ct();
+            assert!(
+                !block_table.overflowed(),
+                "PMNS ball count of block {block} exceeds the constant-time bound; \
+                 reduce total_hints or increase w"
+            );
+            table = Some(block_table);
+        }
 
         let entry: [u8; PARITY_WORD_SIZE] = if i < input.n_entries {
             parity_word_at(input.db_bytes, i)
@@ -45,7 +65,10 @@ pub fn process_entries_ct(
             [0u8; PARITY_WORD_SIZE]
         };
 
-        let (indices, count) = input.block_iprfs_ct[block].inverse_ct(offset as u64);
+        let (indices, count) = table
+            .as_ref()
+            .expect("the table is built at offset 0 of each block")
+            .inverse_ct(offset as u64);
 
         for (t, &idx) in indices.iter().enumerate() {
             let in_range = ct_lt_u64(t as u64, count as u64);

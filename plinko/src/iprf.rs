@@ -10,6 +10,7 @@
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
 use aes::Aes128;
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 
 use crate::binomial::PmnsNode;
 
@@ -608,15 +609,65 @@ impl IprfTee {
 
     /// Constant-time inverse returning fixed-size array with validity mask.
     ///
+    /// Each call samples every tree level again. To invert many outputs of
+    /// one instance, use [`IprfTee::table_ct`].
+    ///
     /// # Precondition
     /// `y` must be in range `[0, range)`. This is a precondition, not runtime-checked
     /// in release builds, to avoid timing side-channels.
     pub fn inverse_ct(&self, y: u64) -> ([u64; MAX_PREIMAGES], usize) {
-        use crate::constant_time::{ct_lt_u64, ct_select_u64};
-
         debug_assert!(y < self.range, "IprfTee::inverse_ct: y must be < range");
 
         let (ball_start, ball_count) = self.trace_ball_inverse_ct(y);
+        self.preimages_ct(ball_start, ball_count)
+    }
+
+    /// Computes all bin boundaries of the PMNS tree once, with work that
+    /// depends only on the domain and the range.
+    ///
+    /// The node of a subtree with `b` bins is sampled with the public bound
+    /// `min(domain, MAX_PREIMAGES * b)` on its ball count. If a count exceeds
+    /// its bound, or a bin holds more than [`MAX_PREIMAGES`] balls, the table
+    /// reports it through [`IprfTeeTable::overflowed`] and its preimages are
+    /// not valid. With at most `MAX_PREIMAGES / 2` expected balls per bin, the
+    /// probability is below 2^-120 per node.
+    pub fn table_ct(&self) -> IprfTeeTable<'_> {
+        use crate::constant_time::{ct_lt_u64, ct_min_u64};
+
+        let max_preimages: u64 = MAX_PREIMAGES as u64;
+        let mut overflow: u64 = 0;
+
+        let loads: Vec<u64> = pmns_level_counts(
+            self.domain,
+            self.range,
+            self.tree_depth as u32,
+            |node, count| {
+                let bins: u64 = u64::from(node.high - node.low) + 1;
+                let bound: u64 = max_preimages.saturating_mul(bins).min(self.domain);
+                overflow |= ct_lt_u64(bound, count);
+                crate::binomial::coin_binomial_ct(
+                    &self.cipher,
+                    node,
+                    ct_min_u64(count, bound),
+                    bound,
+                )
+            },
+        );
+        for &load in &loads {
+            overflow |= ct_lt_u64(max_preimages, load);
+        }
+
+        IprfTeeTable {
+            iprf: self,
+            starts: bin_starts(&loads),
+            overflow,
+        }
+    }
+
+    /// Applies the inverse PRP to the balls `ball_start..ball_start + ball_count`
+    /// with a fixed number of iterations.
+    fn preimages_ct(&self, ball_start: u64, ball_count: u64) -> ([u64; MAX_PREIMAGES], usize) {
+        use crate::constant_time::{ct_lt_u64, ct_select_u64};
 
         // Constant-time min(ball_count, MAX_PREIMAGES) to avoid data-dependent branch
         let max_preimages = MAX_PREIMAGES as u64;
@@ -723,6 +774,43 @@ impl IprfTee {
     }
 }
 
+/// All bin boundaries of one [`IprfTee`], from [`IprfTee::table_ct`].
+///
+/// The table is derived from the key and is as secret as the key.
+pub struct IprfTeeTable<'a> {
+    iprf: &'a IprfTee,
+    /// `starts[y]` is the first ball of bin `y`; `starts[range]` is the domain.
+    starts: Vec<u64>,
+    overflow: u64,
+}
+
+impl IprfTeeTable<'_> {
+    /// Returns the same value as [`IprfTee::inverse_ct`] when the table did not overflow.
+    ///
+    /// `y` is read as a table index, so it must be public, as the offset of a
+    /// database entry is.
+    ///
+    /// # Precondition
+    /// `y` must be in range `[0, range)`.
+    pub fn inverse_ct(&self, y: u64) -> ([u64; MAX_PREIMAGES], usize) {
+        debug_assert!(
+            y < self.iprf.range,
+            "IprfTeeTable::inverse_ct: y must be < range"
+        );
+        let ball_start: u64 = self.starts[y as usize];
+        let ball_count: u64 = self.starts[y as usize + 1].wrapping_sub(ball_start);
+        self.iprf.preimages_ct(ball_start, ball_count)
+    }
+
+    /// Returns `true` if a ball count exceeded its public bound.
+    ///
+    /// The preimages of an overflowed table are not valid. The caller must
+    /// stop; this reveals only that an event of negligible probability occurred.
+    pub fn overflowed(&self) -> bool {
+        self.overflow != 0
+    }
+}
+
 /// Invertible PRF built from Sometimes-Recurse PRP + PMNS
 ///
 /// Uses SwapOrNotSr for full-domain PRP security (secure even when all N elements queried).
@@ -731,7 +819,11 @@ pub struct Iprf {
     prp: SwapOrNotSr,
     domain: u64,
     range: u64,
-    _tree_depth: usize,
+    /// Number of top tree levels whose left counts are kept after the first use.
+    cached_levels: u32,
+    /// Left counts of the nodes in the first `cached_levels` levels, in
+    /// breadth-first order. Derived from the key and as secret as the key.
+    top_left_counts: OnceLock<Box<[u32]>>,
 }
 
 impl Iprf {
@@ -746,9 +838,42 @@ impl Iprf {
     /// Panics if `m` is not a power of two of at most 2^32. Every PMNS split then has
     /// probability 1/2, which the exact sampler in [`crate::binomial`] requires.
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
+        Self::with_cached_levels(key, n, m, 0)
+    }
+
+    /// Creates an iPRF that keeps the left counts of the first `levels` PMNS
+    /// tree levels in memory. All outputs equal those of [`Iprf::new`].
+    ///
+    /// The first `forward` or `inverse` call computes the cache; it costs
+    /// `levels * n / 128` AES blocks. Later calls sample only the lower levels,
+    /// whose nodes hold few balls. The cache takes `4 * (2^levels - 1)` bytes.
+    /// It is derived from the key and must stay with the owner of the key.
+    ///
+    /// `levels` is limited to the tree depth. The cache stores counts as
+    /// `u32`; for a domain above `u32::MAX` nothing is cached.
+    ///
+    /// # Panics
+    /// Panics if `m` is not a power of two of at most 2^32.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::Iprf;
+    ///
+    /// let plain: Iprf = Iprf::new([7u8; 16], 4096, 64);
+    /// let cached: Iprf = Iprf::with_cached_levels([7u8; 16], 4096, 64, 4);
+    /// assert_eq!(cached.forward(1234), plain.forward(1234));
+    /// assert_eq!(cached.inverse(17), plain.inverse(17));
+    /// ```
+    pub fn with_cached_levels(key: PrfKey128, n: u64, m: u64, levels: u32) -> Self {
         assert_pmns_range(m);
 
-        let tree_depth = m.trailing_zeros() as usize;
+        let tree_depth: u32 = m.trailing_zeros();
+        let cached_levels: u32 = if n <= u64::from(u32::MAX) {
+            levels.min(tree_depth)
+        } else {
+            0
+        };
         let cipher = pmns_cipher(&key, n, m);
 
         // Derive a separate key for PRP from main key
@@ -766,7 +891,8 @@ impl Iprf {
             prp,
             domain: n,
             range: m,
-            _tree_depth: tree_depth,
+            cached_levels,
+            top_left_counts: OnceLock::new(),
         }
     }
 
@@ -798,6 +924,75 @@ impl Iprf {
             .collect()
     }
 
+    /// Computes all bin boundaries of the PMNS tree once.
+    ///
+    /// Use the table to invert many outputs of this instance, as HintInit does
+    /// for the offsets of one database block. A full tree costs about
+    /// `log2(m) * n / 128` AES blocks and `8 * (m + 1)` bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::{Iprf, IprfTable};
+    ///
+    /// let iprf: Iprf = Iprf::new([7u8; 16], 4096, 64);
+    /// let table: IprfTable<'_> = iprf.table();
+    /// for y in 0..64 {
+    ///     assert_eq!(table.inverse(y), iprf.inverse(y));
+    /// }
+    /// ```
+    pub fn table(&self) -> IprfTable<'_> {
+        let loads: Vec<u64> = pmns_level_counts(
+            self.domain,
+            self.range,
+            self.range.trailing_zeros(),
+            |node, count| crate::binomial::coin_binomial(&self.cipher, node, count),
+        );
+        IprfTable {
+            iprf: self,
+            starts: bin_starts(&loads),
+        }
+    }
+
+    /// Left counts of the cached top levels, computed on the first call.
+    fn top_left_counts(&self) -> &[u32] {
+        if self.cached_levels == 0 {
+            return &[];
+        }
+        self.top_left_counts.get_or_init(|| {
+            let mut left_counts: Vec<u32> = Vec::with_capacity((1usize << self.cached_levels) - 1);
+            pmns_level_counts(
+                self.domain,
+                self.range,
+                self.cached_levels,
+                |node, count| {
+                    let left: u64 = crate::binomial::coin_binomial(&self.cipher, node, count);
+                    // The domain fits in u32 when cached_levels > 0.
+                    left_counts.push(left as u32);
+                    left
+                },
+            );
+            left_counts.into_boxed_slice()
+        })
+    }
+
+    /// Left count of the node at `depth` with breadth-first index `node_index`.
+    #[inline]
+    fn left_count(
+        &self,
+        top: &[u32],
+        depth: u32,
+        node_index: u64,
+        node: PmnsNode,
+        ball_count: u64,
+    ) -> u64 {
+        if depth < self.cached_levels {
+            u64::from(top[node_index as usize])
+        } else {
+            crate::binomial::coin_binomial(&self.cipher, node, ball_count)
+        }
+    }
+
     /// Determines which PMNS bin a ball falls into for a given ball index.
     ///
     /// Given a total of `n` balls partitioned into `m` bins, performs the PMNS forward
@@ -808,25 +1003,31 @@ impl Iprf {
             return 0;
         }
 
+        let top: &[u32] = self.top_left_counts();
         let mut low = 0u64;
         let mut high = m - 1;
         let mut ball_count = n;
         let mut ball_index = x_prime;
+        let mut depth: u32 = 0;
+        let mut node_index: u64 = 0;
 
         while low < high {
             let mid = (low + high) / 2;
 
             let left_count =
-                crate::binomial::coin_binomial(&self.cipher, pmns_node(low, high), ball_count);
+                self.left_count(top, depth, node_index, pmns_node(low, high), ball_count);
 
             if ball_index < left_count {
                 high = mid;
                 ball_count = left_count;
+                node_index = 2 * node_index + 1;
             } else {
                 low = mid + 1;
                 ball_index -= left_count;
                 ball_count -= left_count;
+                node_index = 2 * node_index + 2;
             }
+            depth += 1;
         }
         low
     }
@@ -853,29 +1054,97 @@ impl Iprf {
             return (0..n).collect();
         }
 
+        let top: &[u32] = self.top_left_counts();
         let mut low = 0u64;
         let mut high = m - 1;
         let mut ball_count = n;
         let mut ball_start = 0u64;
+        let mut depth: u32 = 0;
+        let mut node_index: u64 = 0;
 
         while low < high {
             let mid = (low + high) / 2;
 
             let left_count =
-                crate::binomial::coin_binomial(&self.cipher, pmns_node(low, high), ball_count);
+                self.left_count(top, depth, node_index, pmns_node(low, high), ball_count);
 
             if y <= mid {
                 high = mid;
                 ball_count = left_count;
+                node_index = 2 * node_index + 1;
             } else {
                 low = mid + 1;
                 ball_start += left_count;
                 ball_count -= left_count;
+                node_index = 2 * node_index + 2;
             }
+            depth += 1;
         }
 
         (ball_start..ball_start + ball_count).collect()
     }
+}
+
+/// All bin boundaries of one [`Iprf`], from [`Iprf::table`].
+///
+/// The table is derived from the key and is as secret as the key.
+pub struct IprfTable<'a> {
+    iprf: &'a Iprf,
+    /// `starts[y]` is the first ball of bin `y`; `starts[range]` is the domain.
+    starts: Vec<u64>,
+}
+
+impl IprfTable<'_> {
+    /// Returns the same preimages as [`Iprf::inverse`], in the same order.
+    pub fn inverse(&self, y: u64) -> Vec<u64> {
+        if y >= self.iprf.range {
+            return vec![];
+        }
+        let balls = self.starts[y as usize]..self.starts[y as usize + 1];
+        balls.map(|z| self.iprf.prp.inverse(z)).collect()
+    }
+}
+
+/// Walks the first `levels` levels of the PMNS tree with `n` balls and `m`
+/// bins in breadth-first order.
+///
+/// `split(node, count)` returns the number of balls that go to the left child.
+/// Returns the ball counts of the nodes at depth `levels`, from left to right.
+/// With `levels = log2(m)` these are the bin loads.
+fn pmns_level_counts(
+    n: u64,
+    m: u64,
+    levels: u32,
+    mut split: impl FnMut(PmnsNode, u64) -> u64,
+) -> Vec<u64> {
+    debug_assert!(levels <= m.trailing_zeros());
+
+    let mut counts: Vec<u64> = vec![n];
+    for depth in 0..levels {
+        let bins: u64 = m >> depth;
+        let mut next: Vec<u64> = Vec::with_capacity(counts.len() * 2);
+        for (i, &count) in counts.iter().enumerate() {
+            let low: u64 = i as u64 * bins;
+            let left: u64 = split(pmns_node(low, low + bins - 1), count);
+            next.push(left);
+            next.push(count - left);
+        }
+        counts = next;
+    }
+    counts
+}
+
+/// Prefix sums of the bin loads: entry `y` is the first ball of bin `y`, and
+/// the last entry is the number of balls.
+fn bin_starts(loads: &[u64]) -> Vec<u64> {
+    let mut starts: Vec<u64> = Vec::with_capacity(loads.len() + 1);
+    let mut next_start: u64 = 0;
+    starts.push(next_start);
+    for &load in loads {
+        next_start += load;
+        starts.push(next_start);
+    }
+    starts
 }
 
 /// Checks that a PMNS tree with `m` bins has only splits with probability 1/2
@@ -1153,6 +1422,190 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Ball range `(start, count)` of each bin, from the per-call tree walk.
+    fn walked_ball_ranges(iprf: &Iprf, domain: u64, range: u64) -> Vec<(u64, u64)> {
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        let mut next_start: u64 = 0;
+        for y in 0..range {
+            let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range);
+            if let Some(&first) = balls.first() {
+                assert_eq!(
+                    first,
+                    next_start,
+                    "bin {y} does not start after bin {}",
+                    y.max(1) - 1
+                );
+            }
+            ranges.push((next_start, balls.len() as u64));
+            next_start += balls.len() as u64;
+        }
+        assert_eq!(next_start, domain, "the bins must hold every ball");
+        ranges
+    }
+
+    fn table_ball_ranges(starts: &[u64]) -> Vec<(u64, u64)> {
+        starts
+            .windows(2)
+            .map(|pair| (pair[0], pair[1] - pair[0]))
+            .collect()
+    }
+
+    /// The table of all bin boundaries must equal the per-call tree walk.
+    ///
+    /// The domains are not multiples of the keystream block size, and one
+    /// range has a single bin.
+    #[test]
+    fn test_pmns_table_matches_tree_walk() {
+        for (domain, range) in [(100_003u64, 64u64), (5_000, 1_024), (777, 2), (300, 1)] {
+            for index in 0..2u8 {
+                let iprf: Iprf = Iprf::new(pmns_test_key(index), domain, range);
+                let walked: Vec<(u64, u64)> = walked_ball_ranges(&iprf, domain, range);
+                assert_eq!(
+                    table_ball_ranges(&iprf.table().starts),
+                    walked,
+                    "domain {domain}, range {range}, key {index}"
+                );
+            }
+        }
+    }
+
+    /// Cached top levels must not change the tree, for every number of levels
+    /// from none to more than the tree depth.
+    #[test]
+    fn test_pmns_cached_levels_match_uncached_tree() {
+        let domain: u64 = 100_003;
+        let range: u64 = 64;
+        let key: PrfKey128 = pmns_test_key(3);
+
+        let plain: Iprf = Iprf::new(key, domain, range);
+        let walked: Vec<(u64, u64)> = walked_ball_ranges(&plain, domain, range);
+        let ball_indices = || (0..domain).step_by(97).chain([domain - 1]);
+        let bins: Vec<u64> = ball_indices()
+            .map(|ball| plain.trace_ball(ball, domain, range))
+            .collect();
+        assert!(
+            bins.iter().any(|&bin| bin != bins[0]),
+            "balls must reach several bins"
+        );
+
+        for levels in [1u32, 2, 3, 5, 6, 9] {
+            let cached: Iprf = Iprf::with_cached_levels(key, domain, range, levels);
+            assert_eq!(cached.cached_levels, levels.min(6));
+            assert_eq!(
+                walked_ball_ranges(&cached, domain, range),
+                walked,
+                "levels {levels}"
+            );
+            let cached_bins: Vec<u64> = ball_indices()
+                .map(|ball| cached.trace_ball(ball, domain, range))
+                .collect();
+            assert_eq!(cached_bins, bins, "levels {levels}");
+            assert_eq!(
+                cached.top_left_counts().len(),
+                (1usize << levels.min(6)) - 1,
+                "levels {levels}"
+            );
+        }
+    }
+
+    /// A domain above `u32::MAX` disables the cache instead of truncating counts.
+    #[test]
+    fn test_pmns_cache_is_off_for_a_domain_above_u32() {
+        let iprf: Iprf = Iprf::with_cached_levels(pmns_test_key(0), 1 << 33, 4, 2);
+        assert_eq!(iprf.cached_levels, 0);
+        assert!(iprf.top_left_counts().is_empty());
+    }
+
+    /// `forward` and `inverse` with the cache and with the table must equal
+    /// the plain instance, PRP included.
+    #[test]
+    fn test_iprf_table_and_cache_match_plain_iprf() {
+        let key: PrfKey128 = pmns_test_key(5);
+        let domain: u64 = 700;
+        let range: u64 = 16;
+
+        let plain: Iprf = Iprf::new(key, domain, range);
+        let cached: Iprf = Iprf::with_cached_levels(key, domain, range, 3);
+        let table: IprfTable<'_> = plain.table();
+
+        let mut seen: u64 = 0;
+        for y in 0..range {
+            let expected: Vec<u64> = plain.inverse(y);
+            assert_eq!(table.inverse(y), expected, "table, y={y}");
+            assert_eq!(cached.inverse(y), expected, "cache, y={y}");
+            seen += expected.len() as u64;
+        }
+        assert_eq!(seen, domain);
+        assert!(table.inverse(range).is_empty());
+
+        for x in (0..domain).step_by(7) {
+            assert_eq!(cached.forward(x), plain.forward(x), "x={x}");
+        }
+    }
+
+    /// The constant-time table must equal the per-call constant-time walk
+    /// when the bin loads are within the bound.
+    ///
+    /// With 4096 balls and 64 bins, the nodes below depth 3 are sampled with a
+    /// bound that is smaller than the domain.
+    #[test]
+    fn test_pmns_tee_table_matches_tree_walk() {
+        let domain: u64 = 4_099;
+        let range: u64 = 64;
+
+        for index in 0..2u8 {
+            let iprf_tee: IprfTee = IprfTee::new(pmns_test_key(index), domain, range);
+            let table: IprfTeeTable<'_> = iprf_tee.table_ct();
+            assert!(!table.overflowed(), "key {index}");
+
+            let walked: Vec<(u64, u64)> = (0..range)
+                .map(|y| iprf_tee.trace_ball_inverse_ct(y))
+                .collect();
+            assert_eq!(table_ball_ranges(&table.starts), walked, "key {index}");
+        }
+    }
+
+    /// Loads above the bound must be reported, not returned as valid preimages.
+    #[test]
+    fn test_pmns_tee_table_reports_overflow() {
+        // About 1563 balls per bin: above MAX_PREIMAGES.
+        let dense: IprfTee = IprfTee::new(pmns_test_key(0), 100_003, 64);
+        assert!(dense.table_ct().overflowed());
+
+        // 1024 balls in 2 bins: the root bound equals the domain, so no node
+        // overflows, but the larger bin holds more than MAX_PREIMAGES balls.
+        let small: IprfTee = IprfTee::new(pmns_test_key(0), 1_024, 2);
+        let table: IprfTeeTable<'_> = small.table_ct();
+        let (_, first_load) = small.trace_ball_inverse_ct(0);
+        assert_ne!(first_load, 512, "the test key must give unequal bins");
+        assert_eq!(table_ball_ranges(&table.starts)[0], (0, first_load));
+        assert!(table.overflowed());
+
+        // 600 balls in 2 bins: both bins are within the bound.
+        let sparse: IprfTee = IprfTee::new(pmns_test_key(0), 600, 2);
+        let (_, first_load) = sparse.trace_ball_inverse_ct(0);
+        assert!(first_load.max(600 - first_load) <= MAX_PREIMAGES as u64);
+        assert!(!sparse.table_ct().overflowed());
+    }
+
+    /// `inverse_ct` of the table must equal `inverse_ct` of the instance, PRP included.
+    #[test]
+    fn test_iprf_tee_table_inverse_matches_inverse_ct() {
+        let iprf_tee: IprfTee = IprfTee::new(pmns_test_key(6), 96, 4);
+        let table: IprfTeeTable<'_> = iprf_tee.table_ct();
+        assert!(!table.overflowed());
+
+        let mut seen: usize = 0;
+        for y in 0..4u64 {
+            let (expected, expected_count) = iprf_tee.inverse_ct(y);
+            let (got, got_count) = table.inverse_ct(y);
+            assert_eq!(got_count, expected_count, "y={y}");
+            assert_eq!(got[..got_count], expected[..expected_count], "y={y}");
+            seen += got_count;
+        }
+        assert_eq!(seen, 96);
     }
 
     /// Two trees with the same key and different shapes must not share coins.
