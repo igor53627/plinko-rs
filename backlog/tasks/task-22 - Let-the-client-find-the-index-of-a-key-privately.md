@@ -1,9 +1,10 @@
 ---
 id: TASK-22
 title: Let the client find the index of a key privately
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
+updated_date: '2026-11-17T13:44:00Z'
 labels:
   - data-layer
   - design
@@ -24,9 +25,15 @@ PIR works on an integer index. The step from an address or an (address, slot) pa
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A design document selects the layout (for example cuckoo hashing by key hash) and gives the number of PIR queries per lookup
+- [x] #1 A design document selects the layout (for example cuckoo hashing by key hash) and gives the number of PIR queries per lookup
 - [ ] #2 The client computes the candidate indices of a key without the mapping files and without a message that contains the key
 - [ ] #3 The extractor or a build tool writes database.bin in that layout
 - [ ] #4 A test on a synthetic database goes from an address and from an (address, slot) pair to the correct value
 - [ ] #5 The client checks the TAG of the answer against its key
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+docs/keyword_lookup.md proposes the layout: cuckoo table, 2 hash functions, 4 slots per bucket, load 0.90, slot = tag (8) | payload (32), 2 PIR queries per lookup. The owner has not confirmed the layout; AC 2 to 5 wait for that. Simulation crate: /tmp/plinko-review-main/cuckoo_sim.
+<!-- SECTION:NOTES:END -->
