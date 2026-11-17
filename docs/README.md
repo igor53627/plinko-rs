@@ -15,6 +15,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | [`data_format.md`](data_format.md) | v3 `database.bin`, mappings, mainnet reference counts |
 | [`protocol_overview.md`](protocol_overview.md) | End-to-end pipeline (extract → hints → query/update) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components and data flow |
+| [`trust_model.md`](trust_model.md) | Who runs HintInit, who holds the seed, what each party learns |
 | [`constant_time_mode.md`](constant_time_mode.md) | TEE / constant-time HintInit |
 | [`update_strategy.md`](update_strategy.md) | Incremental updates; see also [`../plinko/docs/delta-format.md`](../plinko/docs/delta-format.md) |
 | [`verification.md`](verification.md) | Rocq, Kani, proptest entry points |

@@ -34,6 +34,10 @@ Contributing: feature branches and PRs — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - **Scale**: Flat 40-byte entries (v3 schema) for PIR-friendly layout.
 - **Correctness**: HintInit aligned with paper Fig. 7 and [`docs/Plinko.v`](docs/Plinko.v); integer-only PMNS sampler ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)).
 
+## Trust model
+
+The client runs HintInit (`plinko_hints`) and holds the master seed; no other party gets the seed or the hints. The server publishes `database.bin` and answers queries. The constant-time (TEE) mode and the GPU path are experimental and are not part of this model. Cost for the client, and what is not covered yet: [`docs/trust_model.md`](docs/trust_model.md).
+
 ## Quick start
 
 ### Build
@@ -68,7 +72,7 @@ cargo build --release -p plinko --bin plinko_hints --bin cost_estimate
   --db-path ./data/database.bin \
   --lambda 128
 
-# Constant-time path (TEE)
+# Constant-time path (experimental, see docs/trust_model.md)
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
   --lambda 128 --constant-time
@@ -99,8 +103,8 @@ Layout and last published mainnet v3 counts: [`docs/data_format.md`](docs/data_f
 
 - **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs))
 - **Binomial / PMNS**: integer-only `Binomial(count, 1/2)` sampler, the bit count of an AES-128 counter keystream per tree node (exact for a uniform keystream) ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)); the iPRF range `w` must be a power of two
-- **TEE**: `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md))
-- **GPU** (optional): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md)
+- **TEE**: `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md)); experimental, not part of the [trust model](docs/trust_model.md#tee-mode)
+- **GPU** (optional): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md); a throughput benchmark, not Plinko hints ([trust model](docs/trust_model.md#gpu-path))
 
 Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec](https://github.com/keewoolee/rms24-plinko-spec).
 
@@ -110,7 +114,7 @@ Reference Python spec (small-scale, O(n) binomial): [keewoolee/rms24-plinko-spec
 2. Query cost trade-off O~(n/r)  
 3. O(1) updates via XOR deltas  
 4. Ethereum mainnet-scale parameters (λ=128, w≈√N)  
-5. Optional GPU hint throughput  
+5. Optional GPU throughput benchmark (not Plinko hints)  
 
 Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [`docs/benchmarks.md`](docs/benchmarks.md) (index to TEE + GPU docs).
 
@@ -126,6 +130,7 @@ Details: [`docs/protocol_overview.md`](docs/protocol_overview.md). Benchmarks: [
 |-------|-----|
 | **Full map** | [`docs/README.md`](docs/README.md) |
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Trust model | [`docs/trust_model.md`](docs/trust_model.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
 | Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |
 | Updates | [`docs/update_strategy.md`](docs/update_strategy.md) |

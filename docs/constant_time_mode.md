@@ -1,5 +1,9 @@
 # Constant-Time Mode for TEE Execution
 
+## Status
+
+Experimental. This mode is not part of the [trust model](trust_model.md#tee-mode): the client runs HintInit, and the paper has no TEE. The repository has no attestation, no seed channel into an enclave, and no hint export. The attacker that this mode must resist is not defined yet (TASK-20).
+
 ## Security Goal
 
 Eliminate timing side-channels that could leak the iPRF mapping (i.e., which hints contain which database entries).
@@ -30,7 +34,7 @@ Not covered: the round key of a round is `AES(...) mod n`, a division with a key
 
 The CT mode protects against timing side-channels but does NOT provide full memory-access obliviousness. Array indexing patterns (e.g., `regular_hints[j].cutoff` and `regular_hints[j].parity`) may leak information to cache side-channel attackers (Prime+Probe, etc.).
 
-This is acceptable for the paper's security model, which reasons in an idealized RAM model without microarchitectural side-channels. For stronger protection, an ORAM-based approach would be needed (O(n) overhead).
+The paper does not cover this case: its client runs HintInit, and no other party sees the execution. Against an attacker that sees memory accesses, such as the host of a confidential VM, this mode is not sufficient.
 
 ## MAX_PREIMAGES Bound
 

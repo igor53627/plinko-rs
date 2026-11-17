@@ -31,7 +31,7 @@ Reth node data directory (`reth-db`, MDBX on disk):
 
 ## Generate hints
 
-Reads flat `database.bin` only (not MDBX):
+The client runs this step on its own machine; the master seed must not leave the client ([`trust_model.md`](trust_model.md)). Reads flat `database.bin` only (not MDBX):
 
 ```bash
 (umask 077 && openssl rand -hex 32 > ./data/master_seed.hex)
@@ -47,6 +47,8 @@ The seed and `hints.bin` are client-secret. Whoever holds both can link each que
 
 ## Constant-time mode (TEE)
 
+Experimental, and not part of the [trust model](trust_model.md#tee-mode): there is no attestation, no seed channel into an enclave, and no hint export. The mode uses one thread.
+
 ```bash
 ./target/release/plinko_hints \
   --db-path ./data/database.bin \
@@ -59,4 +61,5 @@ The seed and `hints.bin` are client-secret. Whoever holds both can link each que
 
 - Full mainnet v3 `database.bin` is ~73 GB ([`data_format.md`](data_format.md)); plan disk for extract output, hint files, and (if using GPU) expanded VRAM uploads separately.
 - Long-running jobs: `systemd-run` examples in [`AGENTS.md`](../AGENTS.md).
-- GPU benchmarks: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md).
+- HintInit for mainnet is about 300 core-hours with hardware AES (extrapolated, see [`hint_generation.md`](hint_generation.md#mainnet-cost)). On arm64, build with `RUSTFLAGS="--cfg aes_armv8"`.
+- GPU benchmarks: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). The GPU path is a throughput benchmark; it does not write Plinko hints ([`trust_model.md`](trust_model.md#gpu-path)).

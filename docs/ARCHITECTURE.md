@@ -24,6 +24,8 @@ Reth node DB (MDBX via reth-db)
                -> Protocol client (hints.bin + master seed)
 ```
 
+The client runs the hint generator and holds the master seed; see [`trust_model.md`](trust_model.md).
+
 ## Invariants
 
 - `database.bin` is a flat array of 40-byte entries (v3 schema).
