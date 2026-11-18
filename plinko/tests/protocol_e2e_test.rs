@@ -1340,3 +1340,72 @@ fn retire_hints_ends_a_query_in_flight_that_uses_the_hint() {
         Ok(record(&entries, other_index).to_vec())
     );
 }
+
+/// The library gives no integrity (`docs/integrity.md`): a changed parity
+/// gives a wrong record with no error. Two properties must hold then. The
+/// error stays in the hints that hold it, with no other damage. The messages
+/// of the client do not depend on the bytes of an answer, so a server gets
+/// no data from the messages after a wrong answer.
+#[test]
+fn a_wrong_answer_gives_a_wrong_record_and_the_same_later_messages() {
+    let params: ProtocolParams =
+        ProtocolParams::new(64, RECORD_SIZE, Some(8), 6, None).expect("params");
+    let entries: Vec<u8> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), 0, &entries).expect("server init");
+    let new_client = || -> Client {
+        Client::offline_init(params.clone(), [0x03u8; 32], [0x77u8; 32], 0, &entries)
+            .expect("offline init")
+    };
+    let mut honest: Client = new_client();
+    let mut cheated: Client = new_client();
+
+    // Hints of the cheated client with a parity that holds the error.
+    let mut wrong_hints: HashSet<usize> = HashSet::new();
+    let mut wrong_records: usize = 0;
+    let mut queries: usize = 0;
+    for index in (0..params.num_entries).map(|k| (k * 37) % params.num_entries) {
+        let (expected, prepared) = match (honest.prepare_query(index), cheated.prepare_query(index))
+        {
+            (Ok(expected), Ok(prepared)) => (expected, prepared),
+            (Err(expected), Err(error)) => {
+                assert_eq!(error, expected, "index {index}");
+                continue;
+            }
+            _ => panic!("index {index}: one client has a query and the other has an error"),
+        };
+        assert!(
+            prepared.query == expected.query,
+            "message for index {index}"
+        );
+        assert_eq!(prepared.hint_index(), expected.hint_index());
+
+        let good: Response = server.answer(&prepared.query).expect("answer");
+        let mut bad: Response = good.clone();
+        let first: bool = queries == 0;
+        if first {
+            bad.parity_0[3] ^= 0x10;
+            bad.parity_1[3] ^= 0x10;
+        }
+        let correct: Vec<u8> = honest
+            .reconstruct_and_replenish(&expected, &good)
+            .expect("reconstruct");
+        assert_eq!(correct, record(&entries, index));
+        let got: Vec<u8> = cheated
+            .reconstruct_and_replenish(&prepared, &bad)
+            .expect("a wrong answer gives no error");
+        queries += 1;
+
+        let is_wrong: bool = first || wrong_hints.contains(&prepared.hint_index());
+        let mut want: Vec<u8> = correct;
+        if is_wrong {
+            want[3] ^= 0x10;
+            wrong_records += 1;
+            // `Recon` promotes the backup hints in the order of their numbers.
+            wrong_hints.insert(params.num_regular_hints + cheated.num_cached_entries() - 1);
+        }
+        assert_eq!(got, want, "index {index}, query {queries}");
+    }
+
+    assert!(queries >= 40, "{queries} queries");
+    assert_eq!(wrong_records, 3, "the error spreads through promoted hints");
+}

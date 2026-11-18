@@ -54,6 +54,10 @@
     {
       "content": "Client state file (plinko/src/protocol/state.rs, docs/online_protocol.md section Client State And Restart, docs/data_format.md): a hint file holds the hints of a client that sent no query. Client::write_state writes the state after queries (magic PLNKSTAT, format version 1: hint set, bitmap of sent regular hints, answered queries with promoted backup hint and record, queries in flight, retired backup hints, BLAKE3 checksum); Client::read_state builds a client from it and returns the queries in flight with the same message bytes. The caller must record each query before it leaves the client (a state, or a log of PreparedQuery::hint_index for Client::retire_hints), must use a new query seed for each start, and must keep the file secret (it holds queried indices and records). The format cannot detect a state that is older than the last query.",
       "author": "maintainer"
+    },
+    {
+      "content": "Integrity (docs/integrity.md): the library gives no integrity of an answer or of a delta; this is a decision. The client checks the database version label of an answer and of a delta and the file checksums; it must trust the parities and the changes. The hint file stores the BLAKE3 hash of the database that HintInit read (HintSet::init_database); a delta does not update it. A wrong answer gives a wrong record with no error, and the error spreads through the promoted backup hint; the messages of the client do not depend on the bytes of an answer. An application that needs integrity puts an authenticator of the publisher in each record and must not show the result of its check to the server.",
+      "author": "maintainer"
     }
   ],
   "pages": [

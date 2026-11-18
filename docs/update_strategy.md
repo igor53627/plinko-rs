@@ -69,7 +69,7 @@ one database. `Client::apply_delta` accepts a delta of another database that
 has the same record size, number of records and version, and the hints are
 then wrong with no error. The caller must give a client only the deltas of the
 database of its hints. A binding (for example a hash of the database before
-and after the delta) is a part of TASK-24.
+and after the delta) is not implemented ([integrity.md](integrity.md#deltas)).
 
 ### Answers
 
@@ -182,7 +182,8 @@ table with a new seed moves all records and needs a new HintInit.
 - **Appends inside the padding.** See [A Database That Grows](#a-database-that-grows).
 - **Authentication.** The checksum of a delta file detects damage only. A
   client cannot check that a delta holds the changes of the publisher, that a
-  version number belongs to a content, or that an answer is correct (TASK-24).
+  version number belongs to a content, or that an answer is correct. The
+  client must trust the deltas ([integrity.md](integrity.md)).
   The hint file stores the BLAKE3 hash of the database bytes that HintInit
   read; a caller can compare it with a value from the publisher. The hash is
   not updated by a delta.

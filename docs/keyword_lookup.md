@@ -185,7 +185,8 @@ lookups per hint set, and a change of one record changes a 320-byte entry.
   2^-27 for a shared bucket, 2^31 keys). The result is a lookup error for that
   key, or a wrong value for a key that is not in the table. A 16-byte tag
   removes this at a cost of 8 bytes per slot; the proposal does not select it.
-- **Wrong answers of the server** are not covered (TASK-24).
+- **Wrong answers of the server** are not covered
+  ([integrity.md](integrity.md)).
 - **Inserts after the build** move records, and a key that cannot be placed
   needs a stash or a rebuild with a new seed. A new seed moves all records, so
   all clients must run HintInit again. An insert that moves records in a table

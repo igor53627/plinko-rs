@@ -137,6 +137,7 @@ The record size is a parameter (`plinko_hints --record-size`); runs with 32-byte
 | **Full map** | [`docs/README.md`](docs/README.md) |
 | Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Trust model | [`docs/trust_model.md`](docs/trust_model.md) |
+| Integrity (what the client must trust) | [`docs/integrity.md`](docs/integrity.md) |
 | Online protocol | [`docs/online_protocol.md`](docs/online_protocol.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
 | Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |

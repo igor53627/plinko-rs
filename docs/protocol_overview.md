@@ -134,8 +134,9 @@ network transport. Open work for a general library, each with a backlog task:
 - A producer and a transport for deltas
   ([update_strategy.md](update_strategy.md#not-implemented)). The database
   version, the delta format and the client state file for a restart exist.
-- A check of an answer against a commitment of the database (TASK-24,
-  [trust_model.md](trust_model.md#not-covered)).
+
+The library gives no integrity of an answer or of a delta. This is a decision,
+not open work ([integrity.md](integrity.md)).
 
 ## References
 

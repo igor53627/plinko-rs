@@ -212,7 +212,7 @@ reference, so both stay with the caller after an error.
 
 The version is what the server states. A server that states a wrong version
 gives the client a wrong record, as a server that sends a wrong parity does
-(TASK-24). A version mismatch reveals to the server at most that the client
+([integrity.md](integrity.md)). A version mismatch reveals to the server at most that the client
 sends a query again; the message is the same.
 
 ## Query Limit
@@ -259,7 +259,8 @@ offsets, and an offset outside a block.
 ## Not Covered
 
 - **Wrong answers.** The client cannot check an answer, and it cannot check
-  the database version that an answer states (TASK-24).
+  the database version that an answer states. The library gives no
+  integrity ([integrity.md](integrity.md)).
 - **An old client state.** A client that loads a state file that is older
   than its last query, with no log of the later hints, sends hints a second
   time, which breaks the rule for a hint above. The same applies to a hint

@@ -83,13 +83,15 @@ These points are outside the privacy claim today.
   a full map from keys to indices (91 GB of mapping files for the mainnet test
   data) or a message that reveals the key (TASK-22).
 - **Wrong answers.** The games of the paper compute the answer with the honest
-  `Answer` algorithm. The client cannot check an answer, and it has no
-  commitment of the database to compare with (TASK-24).
-- **Database version.** An answer and a delta carry the version of the
-  database, and the client accepts only the version of its hints
+  `Answer` algorithm. The library gives no integrity: the client cannot check
+  an answer. This is a decision; [integrity.md](integrity.md) gives the
+  reasons, the effect of a wrong answer, and what an application can do.
+- **Database version and deltas.** An answer and a delta carry the version of
+  the database, and the client accepts only the version of its hints
   ([update_strategy.md](update_strategy.md#database-versions)). The version is
   a label that the server states; the client cannot check it. A delta is not
-  authenticated (TASK-24).
+  authenticated: the client must trust the deltas
+  ([integrity.md](integrity.md#deltas)).
 - **An old client state.** A client that starts again from its hint file
   after queries, or from a state file that is older than its last query with
   no log of the later hints, uses hints a second time. The code cannot detect
