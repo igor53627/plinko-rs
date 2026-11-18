@@ -4,7 +4,7 @@ title: Let the client check an answer against a commitment of the database
 status: To Do
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
-updated_date: '2026-11-17T17:43:00Z'
+updated_date: '2026-11-18T16:30:00Z'
 labels:
   - security
   - design
@@ -40,4 +40,6 @@ The client computes answer = server parity XOR hint parity. A server can XOR any
 
 <!-- SECTION:NOTES:BEGIN -->
 Rewritten on 2026-11-17 after the scope decision (backlog/decisions/decision-1). Removed: the state root, the block hash and the trie leaf of Ethereum (metadata.json of the extractor). Moved to TASK-31: the parity covers the whole record (before: the TAG of storage records at bytes 32..40 is outside the parity). Done outside this task: the TAG collision comment in plinko/src/schema40.rs gives the probability for the mainnet record counts. The mechanisms in criterion 2 are examples, not a selection; no analysis of them was done.
+
+From TASK-23 (2026-11-18): (1) Criterion 3 is done: plinko_hints hashes the database (BLAKE3) and the hint file (version 4) stores the hash with the version that HintInit read (HintSet::init_database). A delta does not update this hash. (2) A delta is bound to a version number only, not to a database: Client::apply_delta accepts a delta of another database with the same record size, number of records and version. Decide here on a binding, for example from_hash and to_hash of the database in the delta header, with the client keeping the current hash. (3) Response::database_version is a label that the server states; the client cannot check it.
 <!-- SECTION:NOTES:END -->
