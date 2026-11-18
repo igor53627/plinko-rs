@@ -12,7 +12,7 @@ The full Ethereum state is not a target: each client must download the database 
 | Path | Role |
 |------|------|
 | `src/main.rs` | **Extractor** — reads Reth on-disk DB via `reth-db` (MDBX-backed); writes flat `database.bin` + mappings |
-| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, hint generator (`src/bin/hint_gen/`), optional CUDA |
+| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, HintInit (`src/hint_init.rs`, binary `plinko_hints`), protocol client and server model, optional CUDA |
 | `plinko/formal/` | **Rocq** models of the algorithms and proofs about the models, not about the Rust code (`plinko/formal/README.md`) |
 | `docs/` | Protocol, data format, benchmarks, verification |
 | `tee-test/` | SEV-SNP TEE benchmark notes (historical) |

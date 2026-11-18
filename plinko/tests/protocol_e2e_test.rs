@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
+use plinko::hints::HintSet;
 use plinko::protocol::{
-    Client, EntryUpdate, PreparedQuery, ProtocolError, ProtocolParams, Query, Response, Server,
+    compute_hints, compute_hints_with_threads, derive_block_keys, Client, EntryUpdate,
+    PreparedQuery, ProtocolError, ProtocolParams, Query, Response, Server,
 };
 use plinko::subsets::{backup_subset_size, SubsetPrf};
 
@@ -751,4 +753,47 @@ fn values_of_another_record_size_are_rejected() {
             Ok(record(&entries, index).to_vec())
         );
     }
+}
+
+/// The hint set must not depend on the number of worker threads.
+#[test]
+fn hint_sets_are_equal_for_every_thread_count() {
+    // 120 records in 8 blocks of 16: the last block is partly padding.
+    let params: ProtocolParams =
+        ProtocolParams::new(120, RECORD_SIZE, Some(16), 4, None).expect("params");
+    assert_eq!(params.num_blocks, 8);
+    let entries: Vec<u8> = make_db(params.num_entries);
+    let master_seed: [u8; 32] = [0xD1u8; 32];
+
+    let one_thread: HintSet =
+        compute_hints_with_threads(&params, &master_seed, &entries, 1).expect("1 thread");
+    assert!(
+        (0..one_thread.num_backup()).any(|b| one_thread
+            .backup_parity_out(b)
+            .iter()
+            .any(|&byte| byte != 0)),
+        "the scenario must give non-zero parities"
+    );
+    // 0 counts as 1; 3 is fewer than the blocks and 11 is more.
+    for threads in [0usize, 3, 11] {
+        let hints: HintSet =
+            compute_hints_with_threads(&params, &master_seed, &entries, threads).expect("hints");
+        assert!(hints == one_thread, "{threads} threads");
+    }
+    let all_cores: HintSet = compute_hints(&params, &master_seed, &entries).expect("all cores");
+    assert!(all_cores == one_thread, "all available cores");
+}
+
+#[test]
+fn block_keys_are_distinct_and_depend_on_the_seed() {
+    let keys: HashSet<[u8; 16]> = derive_block_keys(&[1u8; 32], 100).into_iter().collect();
+    assert_eq!(keys.len(), 100);
+    assert_eq!(
+        derive_block_keys(&[1u8; 32], 3),
+        derive_block_keys(&[1u8; 32], 100)[..3]
+    );
+    assert_ne!(
+        derive_block_keys(&[1u8; 32], 3),
+        derive_block_keys(&[2u8; 32], 3)
+    );
 }

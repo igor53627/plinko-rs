@@ -5,10 +5,12 @@ mod hint_gen;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
+use plinko::hint_init::{fill_parities, hint_cutoffs};
 use plinko::hints::{seed_check, HintGeometry, HintSet};
 use plinko::iprf::Iprf;
 #[cfg(feature = "tee")]
 use plinko::iprf::IprfTee;
+use plinko::protocol::derive_block_keys;
 use plinko::subsets::SubsetPrf;
 use std::fs::File;
 use std::time::Instant;
@@ -76,8 +78,16 @@ fn main() -> eyre::Result<()> {
         count = params.num_backup,
         "Initializing backup hints"
     );
+    let threads: usize = worker_threads(&args);
+    info!(threads, "Worker threads");
     let subset_prf: SubsetPrf = SubsetPrf::new(&master_seed);
-    let (regular_cutoffs, backup_cutoffs) = hint_cutoffs(&subset_prf, geom.c, &params);
+    let (regular_cutoffs, backup_cutoffs) = hint_cutoffs(
+        &subset_prf,
+        geom.c,
+        params.num_regular,
+        params.num_backup,
+        threads,
+    );
     let mut hints: HintSet = HintSet::new(
         HintGeometry {
             num_entries: geom.n_entries as u64,
@@ -116,20 +126,13 @@ fn main() -> eyre::Result<()> {
                 .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
                 .collect();
 
-            hint_gen::ct_path::process_entries_ct(
-                hint_gen::ct_path::CtProcessInput {
-                    db_bytes,
-                    record_size: geom.record_size,
-                    n_entries: geom.n_entries,
-                    n_effective: geom.n_effective,
-                    w: geom.w,
-                    num_regular: params.num_regular,
-                    num_backup: params.num_backup,
-                    block_iprfs_ct: &block_iprfs_ct,
-                    subset_prf: &subset_prf,
-                },
+            plinko::hint_init::fill_parities_ct(
                 &mut hints,
-                |i| pb.set_position(i as u64),
+                db_bytes,
+                &block_iprfs_ct,
+                &subset_prf,
+                threads,
+                |done| pb.set_position(done as u64),
             );
         }
     } else {
@@ -137,24 +140,13 @@ fn main() -> eyre::Result<()> {
             .iter()
             .map(|key| Iprf::new(*key, params.total_hints as u64, geom.w as u64))
             .collect();
-        let threads: usize = worker_threads(&args);
-        info!(threads, "Worker threads");
-
-        hint_gen::fast_path::process_entries_fast(
-            hint_gen::fast_path::FastProcessInput {
-                db_bytes,
-                record_size: geom.record_size,
-                n_entries: geom.n_entries,
-                n_effective: geom.n_effective,
-                w: geom.w,
-                num_regular: params.num_regular,
-                num_backup: params.num_backup,
-                block_iprfs: &block_iprfs,
-                subset_prf: &subset_prf,
-                threads,
-            },
+        fill_parities(
             &mut hints,
-            |i| pb.set_position(i as u64),
+            db_bytes,
+            &block_iprfs,
+            &subset_prf,
+            threads,
+            |done| pb.set_position(done as u64),
         );
     }
 

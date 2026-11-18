@@ -56,8 +56,8 @@ pub struct Args {
     #[arg(long)]
     pub constant_time: bool,
 
-    /// Worker threads of the standard path; defaults to the number of available cores.
-    /// The hints do not depend on this value.
+    /// Worker threads of HintInit. The default is the number of available cores,
+    /// and 1 with `--constant-time`. The hints do not depend on this value.
     #[arg(long)]
     pub threads: Option<usize>,
 }
@@ -77,26 +77,9 @@ impl Args {
     }
 }
 
-/// Returns record `index` of a database of `record_size`-byte records.
-///
-/// # Panics
-/// Panics if the record is not inside `db_bytes`.
-#[inline]
-pub fn record_at(db_bytes: &[u8], record_size: usize, index: usize) -> &[u8] {
-    &db_bytes[index * record_size..(index + 1) * record_size]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn record_at_returns_the_whole_record() {
-        let db: Vec<u8> = (0u8..21).collect();
-        assert_eq!(record_at(&db, 7, 0), [0, 1, 2, 3, 4, 5, 6]);
-        assert_eq!(record_at(&db, 7, 2), [14, 15, 16, 17, 18, 19, 20]);
-        assert_eq!(record_at(&db, 21, 0), db.as_slice());
-    }
 
     #[test]
     fn default_record_size_is_the_v3_record() {

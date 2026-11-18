@@ -353,13 +353,14 @@ fn constant_time_path_writes_the_same_file_for_each_record_size() {
         ("ct_record_256", 256),
     ] {
         // 43 entries in 6 blocks of 8: the last block is partly padding.
+        // The record of 13 bytes runs on 3 worker threads in both paths.
         let scenario_for = |name: &'static str, constant_time: bool| Scenario {
             name,
             record_size: Some(record_size),
             num_entries: 43,
             block_size: 8,
             lambda: 8,
-            threads: Some(1),
+            threads: Some(if record_size == 13 { 3 } else { 1 }),
             constant_time,
         };
         let standard: Generated = generate(&scenario_for(name, false));

@@ -19,23 +19,31 @@ The GPU benchmark (`plinko/src/gpu.rs`, `gpu` feature) works with 40-byte record
 
 ## Module Structure
 
-| File         | Purpose                                                                        |
-|--------------|--------------------------------------------------------------------------------|
-| mod.rs       | Module wiring and re-exports                                                   |
-| types.rs     | `Args` (with `--record-size`) and `record_at`; the hint set is `plinko::hints::HintSet` |
-| keys.rs      | iPRF block key derivation                                                      |
-| driver.rs    | Geometry, validation, seed handling, hint cutoffs, hint file output            |
-| fast_path.rs | Standard streaming path (non-constant-time, worker threads), `FastProcessInput` |
-| ct_path.rs   | Constant-time streaming path, `CtProcessInput`; only with the `tee` feature    |
-| path_tests.rs | Tests of the streaming paths against the hint definition of Fig. 7            |
+HintInit is the library module `plinko::hint_init`. The binary `plinko_hints`
+and `plinko::protocol::compute_hints` (which `Client::offline_init` uses) call
+the same functions, so there is one implementation of the cutoffs and of the
+streaming loop.
+
+| File                                | Purpose                                                                               |
+|-------------------------------------|---------------------------------------------------------------------------------------|
+| `plinko/src/hint_init.rs`           | `hint_cutoffs` and `fill_parities` (standard streaming phase), both on worker threads |
+| `plinko/src/hint_init/tee.rs`       | `fill_parities_ct`, the constant-time streaming phase; only with the `tee` feature    |
+| `plinko/src/hint_init/tests.rs`     | Tests of both streaming phases against the hint definition of Fig. 7                  |
+| `plinko/src/bin/plinko_hints.rs`    | The binary: reads the options, maps the database, calls `plinko::hint_init`           |
+| `plinko/src/bin/hint_gen/types.rs`  | `Args` (with `--record-size` and `--threads`)                                         |
+| `plinko/src/bin/hint_gen/driver.rs` | Geometry, validation, seed handling, thread count, result log, hint file output       |
 
 ## API Notes
 
-- The streaming processors now take typed input structs instead of long argument lists:
-  - `ct_path::process_entries_ct(CtProcessInput, ...)` (`tee` feature)
-  - `fast_path::process_entries_fast(FastProcessInput, ...)`
-- Both processors write the parities into a `plinko::hints::HintSet`, which holds the
-  cutoffs and has the record size of the database. `driver::hint_cutoffs` computes the cutoffs.
+- `hint_init::hint_cutoffs(subset_prf, num_blocks, num_regular, num_backup, threads)`
+  computes the cutoffs.
+- `hint_init::fill_parities(hints, database, block_iprfs, subset_prf, threads, progress)`
+  writes the parities into a `plinko::hints::HintSet`, which holds the geometry and the
+  cutoffs and has the record size of the database. `hint_init::fill_parities_ct` is the
+  same with `IprfTee` (`tee` feature).
+- `protocol::compute_hints` uses all available cores;
+  `protocol::compute_hints_with_threads` takes the thread count.
+- The block keys come from `protocol::derive_block_keys` in the binary and in the library.
 - `driver::print_results(duration, file_len, hints, params)` logs the counts.
 - Related CPU benchmark/generator path in `plinko/src/gpu.rs` (`gpu` feature) now uses `CpuHintInput` for `generate_hints`.
 - The constant-time variants of the PRP and the iPRF are in `plinko/src/iprf/tee.rs` (`tee` feature). See [FEATURE_FLAGS.md](FEATURE_FLAGS.md).
@@ -99,13 +107,13 @@ All outputs are equal to those of the plain `Iprf`
 Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra,
 hardware AES through `--cfg aes_armv8`):
 
-| Operation                               | Before   | After                          |
-|-----------------------------------------|----------|--------------------------------|
-| `forward` (client, 8 cached levels)     | 445 us   | 28.5 us                        |
-| `inverse` (client, 8 cached levels)     | 7.56 ms  | 7.02 ms                        |
-| `inverse` per entry in HintInit (table) | 7.56 ms  | 7.03 ms, plus 4.2 ms per block |
-| `inverse_ct` per entry in HintInit      | 72.5 ms  | 68.0 ms, plus 9.2 ms per block |
-| Cache build, first call per block       | -        | 1.7 ms                         |
+| Operation                               | Before  | After                          |
+|-----------------------------------------|---------|--------------------------------|
+| `forward` (client, 8 cached levels)     | 445 us  | 28.5 us                        |
+| `inverse` (client, 8 cached levels)     | 7.56 ms | 7.02 ms                        |
+| `inverse` per entry in HintInit (table) | 7.56 ms | 7.03 ms, plus 4.2 ms per block |
+| `inverse_ct` per entry in HintInit      | 72.5 ms | 68.0 ms, plus 9.2 ms per block |
+| Cache build, first call per block       | -       | 1.7 ms                         |
 
 The tree is no longer a relevant cost. What remained in `inverse` was the inverse
 PRP of about 256 balls per offset (512 fixed iterations in the constant-time
@@ -141,33 +149,40 @@ functions (`test_sr_inverse_range_matches_inverse_at_stage_boundaries`,
 Measured at w = 65536 and 16,777,216 hints on one thread (Apple M3 Ultra,
 hardware AES through `--cfg aes_armv8`), per offset:
 
-| Operation                               | Before   | After    |
-|-----------------------------------------|----------|----------|
-| `inverse` in HintInit (table)           | 7.04 ms  | 0.52 ms  |
-| `inverse` (client, 8 cached levels)     | 7.06 ms  | 0.52 ms  |
-| `inverse` (no table, no cache)          | 7.53 ms  | 1.08 ms  |
-| `inverse_ct` in HintInit (table)        | 68.3 ms  | 16.7 ms  |
-| `inverse_ct` (no table)                 | 72.5 ms  | 21.1 ms  |
+| Operation                           | Before  | After   |
+|-------------------------------------|---------|---------|
+| `inverse` in HintInit (table)       | 7.04 ms | 0.52 ms |
+| `inverse` (client, 8 cached levels) | 7.06 ms | 0.52 ms |
+| `inverse` (no table, no cache)      | 7.53 ms | 1.08 ms |
+| `inverse_ct` in HintInit (table)    | 68.3 ms | 16.7 ms |
+| `inverse_ct` (no table)             | 72.5 ms | 21.1 ms |
 
 `forward` is a single-value function and is not changed.
 
 ## Worker Threads
 
-The standard path processes database blocks on `--threads` worker threads
-(default: the number of available cores). A worker takes the next block from a
-shared counter, builds the PMNS table of the block, and XORs the entries of the
-block into shared parity accumulators. The accumulators are atomic 64-bit words
-that the workers update with XOR. XOR is commutative, so the hint file does not
-depend on the thread count or on the schedule
-(`generator_file_is_the_same_for_every_thread_count`, and the unit tests in
-`path_tests.rs` with 1, 2, 3 and 16 threads).
+Both phases of HintInit run on `--threads` worker threads (`plinko::hint_init`).
+The default is the number of available cores; with `--constant-time` it is 1
+(see [constant_time_mode.md](constant_time_mode.md#worker-threads)).
+
+- **Cutoffs.** Each worker computes the cutoffs of one contiguous part of the
+  hints.
+- **Streaming.** A worker takes the next block from a shared counter, builds
+  the PMNS table of the block, and XORs the entries of the block into shared
+  parity accumulators. The accumulators are atomic 64-bit words that the
+  workers update with XOR.
+
+XOR is commutative, so the hint file does not depend on the thread count or on
+the schedule (`generator_file_is_the_same_for_every_thread_count`,
+`hint_sets_are_equal_for_every_thread_count` for `protocol::compute_hints`, and
+the unit tests in `plinko/src/hint_init/tests.rs` with 1, 2, 3 and 16 threads
+for both streaming phases and with 0 to 16 threads for the cutoffs).
 
 An accumulator holds a record as 64-bit words in little-endian order; a record
 size that is not a multiple of 8 leaves the last word partly unused. The
 accumulators take the record size, rounded up to 8 bytes, per regular hint and
 two times that per backup hint in addition to the hints, until the streaming
-phase ends. The constant-time path
-uses one thread and rejects `--threads` above 1.
+phase ends. The constant-time path uses the same accumulators.
 
 The measurements below were made with 32-byte parities, before the record size
 was a parameter. Runs with records of 32, 40 and 256 bytes gave CPU times within 1% of each other
@@ -177,12 +192,12 @@ peak memory grows with the record size.
 Measured with w = 65536 and 16,777,216 hints (Apple M3 Ultra, 24 performance
 cores, hardware AES), full `plinko_hints` runs with `--output`:
 
-| Database             | Threads | Wall time | CPU time | CPU per entry | Peak memory |
-|----------------------|---------|-----------|----------|---------------|-------------|
-| 2 blocks (5.2 MB)    | 1       | 70.6 s    | 69.6 s   | 0.53 ms       | 1.69 GB     |
-| 2 blocks (5.2 MB)    | 2       | 37.1 s    | 71.9 s   | 0.55 ms       | 1.69 GB     |
-| 24 blocks (62.9 MB)  | 8       | 117.0 s   | 904.5 s  | 0.58 ms       | 1.76 GB     |
-| 24 blocks (62.9 MB)  | 24      | 41.9 s    | 924.1 s  | 0.59 ms       | 1.78 GB     |
+| Database            | Threads | Wall time | CPU time | CPU per entry | Peak memory |
+|---------------------|---------|-----------|----------|---------------|-------------|
+| 2 blocks (5.2 MB)   | 1       | 70.6 s    | 69.6 s   | 0.53 ms       | 1.69 GB     |
+| 2 blocks (5.2 MB)   | 2       | 37.1 s    | 71.9 s   | 0.55 ms       | 1.69 GB     |
+| 24 blocks (62.9 MB) | 8       | 117.0 s   | 904.5 s  | 0.58 ms       | 1.76 GB     |
+| 24 blocks (62.9 MB) | 24      | 41.9 s    | 924.1 s  | 0.59 ms       | 1.78 GB     |
 
 The hint files of the two 2-block runs are byte-identical, and so are those of
 the 24-block runs.
@@ -194,6 +209,27 @@ pages). The hint file has 1,073,741,920 bytes. The memory is the hint set and
 the accumulators of the worker threads: `2 * lambda * w * 3r` bytes, which is
 2.01 GB for `r = 40`, plus the cutoffs.
 
+Cutoffs on worker threads (2026-11-18). The same 24-block run on 24 threads,
+before and after the change:
+
+| Step                 | Cutoffs on one thread | Cutoffs on 24 threads |
+|----------------------|-----------------------|-----------------------|
+| Cutoff phase         | 2.03 s                | 0.20 s                |
+| Whole run, wall time | 42.5 s                | 41.4 s                |
+| Whole run, CPU time  | 925.3 s               | 931.6 s               |
+
+The hint file of the run after the change is byte-identical to the file of the
+run before it. This database has 24 blocks, so a cutoff is cheap here; the cost
+of a cutoff grows with `c`. `hint_cutoffs` alone at c = 27,988 for 262,144
+hints: 10.58 s on 1 thread (40 us per hint), 1.48 s on 8 threads and 0.51 s on
+24 threads, with equal cutoffs.
+
+`protocol::compute_hints` used one thread before; it now calls the same code.
+24 blocks of w = 4096 (98,304 records of 40 bytes, 1,048,576 hints): 47.7 s on
+1 thread and 2.36 s on 24 threads, with equal hint sets. The timings of
+`hint_cutoffs` and of `compute_hints` come from scratch programs that are not
+in the repository.
+
 ### Mainnet Cost
 
 Mainnet v3 has 27,988 blocks of 65,536 entries (1,834,221,568 entries with
@@ -203,9 +239,10 @@ padding). No mainnet run was done; these numbers are extrapolations from the
 - About 300 core-hours (0.59 ms per entry), where the code before the batched
   PRP needed about 3,600 core-hours (7.04 ms per entry).
 - About 13 hours of wall time on 24 cores of this machine.
-- The cutoffs of the hints are computed on one thread before the streaming
-  phase: about 12 minutes at c = 27,988 (44 us per hint, measured in the
-  cutoff benchmark).
+- The cutoffs of the hints are computed before the streaming phase: about 11
+  minutes of CPU time at c = 27,988 (40 us per hint), which is about 32 s on 24
+  threads (extrapolated from 262,144 hints). They ran on one thread before.
+  The wall time of the whole HintInit stays at about 13 hours on 24 cores.
 
 A build without hardware AES is about 20 times slower. On arm64 the `aes` crate
 uses hardware AES only with `RUSTFLAGS="--cfg aes_armv8"`.
@@ -301,11 +338,11 @@ The probability is about `c / 2^33` per hint. For mainnet (c = 27988,
 
 ### Memory
 
-| Representation                       | Per hint          | Mainnet, 16,777,216 hints |
-|--------------------------------------|-------------------|---------------------------|
-| Sorted block list (client, removed)  | about `4c` bytes  | about 1.9 TB              |
-| Packed bitmap (generator, removed)   | `ceil(c/64) * 8`  | about 59 GB               |
-| Cutoff                               | 4 bytes           | 67 MB                     |
+| Representation                      | Per hint         | Mainnet, 16,777,216 hints |
+|-------------------------------------|------------------|---------------------------|
+| Sorted block list (client, removed) | about `4c` bytes | about 1.9 TB              |
+| Packed bitmap (generator, removed)  | `ceil(c/64) * 8` | about 59 GB               |
+| Cutoff                              | 4 bytes          | 67 MB                     |
 
 The values are computed from c = 27988, not measured.
 
@@ -318,8 +355,8 @@ remains the Swap-Or-Not rounds in the iPRF.
 Measured at c = 27988 on one thread (Apple M3 Ultra, hardware AES through
 `--cfg aes_armv8`):
 
-| Operation                         | Time                                   |
-|-----------------------------------|----------------------------------------|
-| Membership test (`contains`)      | 1.4 ns                                 |
-| Cutoff of one hint                | 44 us                                  |
-| Cutoffs of all 16,777,216 hints   | about 740 s (extrapolated from 20,000) |
+| Operation                       | Time                                   |
+|---------------------------------|----------------------------------------|
+| Membership test (`contains`)    | 1.4 ns                                 |
+| Cutoff of one hint              | 44 us                                  |
+| Cutoffs of all 16,777,216 hints | about 740 s (extrapolated from 20,000) |

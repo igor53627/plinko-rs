@@ -3,7 +3,7 @@
 use plinko::hints::{HintSet, MAX_RECORD_SIZE};
 #[cfg(feature = "tee")]
 use plinko::iprf::MAX_PREIMAGES;
-use plinko::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
+use plinko::subsets::INVALID_CUTOFF;
 use rand::RngCore;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
@@ -38,9 +38,6 @@ pub struct HintParams {
     /// `num_regular + num_backup`.
     pub total_hints: usize,
 }
-
-/// Return type for [`hint_cutoffs`]: `(regular_cutoffs, backup_cutoffs)`.
-pub type HintCutoffs = (Vec<u32>, Vec<u32>);
 
 impl HintParams {
     pub fn from_args(args: &Args, w: usize) -> Self {
@@ -77,12 +74,8 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     if args.backup_hints == Some(0) {
         eyre::bail!("num_backup must be > 0 (backup hints are required for correctness)");
     }
-    match args.threads {
-        Some(0) => eyre::bail!("threads must be >= 1"),
-        Some(threads) if threads > 1 && args.constant_time() => {
-            eyre::bail!("--constant-time uses one thread; remove --threads {threads}")
-        }
-        _ => {}
+    if args.threads == Some(0) {
+        eyre::bail!("threads must be >= 1");
     }
     if let Some(output) = &args.output {
         if args.seed.is_none() && args.seed_file.is_none() {
@@ -102,12 +95,18 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Worker threads of the standard path: `--threads`, or the number of available cores.
+/// Worker threads of HintInit: `--threads` if it is given.
+///
+/// The default is the number of available cores for the standard path and 1
+/// for the constant-time path, where workers that update the same parity word
+/// delay each other (see `docs/constant_time_mode.md`).
 pub fn worker_threads(args: &Args) -> usize {
     args.threads.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1)
+        if args.constant_time() {
+            1
+        } else {
+            plinko::hint_init::available_threads()
+        }
     })
 }
 
@@ -307,31 +306,6 @@ fn write_and_publish(
     Ok(())
 }
 
-/// Computes the cutoff of the block subset of each hint.
-///
-/// Regular hint `j` has hint ID `j` and a subset of `c/2 + 1` blocks. Backup
-/// hint `b` has hint ID `num_regular + b` and a subset of `c/2` blocks.
-pub fn hint_cutoffs(subset_prf: &SubsetPrf, c: usize, params: &HintParams) -> HintCutoffs {
-    let mut scratch: Vec<u32> = Vec::with_capacity(c);
-
-    let regular_cutoffs: Vec<u32> = (0..params.num_regular)
-        .map(|j| subset_prf.cutoff(j as u64, c, regular_subset_size(c), &mut scratch))
-        .collect();
-
-    let backup_cutoffs: Vec<u32> = (0..params.num_backup)
-        .map(|b| {
-            subset_prf.cutoff(
-                (params.num_regular + b) as u64,
-                c,
-                backup_subset_size(c),
-                &mut scratch,
-            )
-        })
-        .collect();
-
-    (regular_cutoffs, backup_cutoffs)
-}
-
 fn is_non_zero(parity: &[u8]) -> bool {
     parity.iter().any(|&b| b != 0)
 }
@@ -400,14 +374,15 @@ mod tests {
 
     #[test]
     #[cfg(feature = "tee")]
-    fn constant_time_mode_uses_one_thread() {
-        let args: Args = Args::parse_from(["plinko_hints", "--threads", "4", "--constant-time"]);
-        let error: String = validate_args(&args).expect_err("CT threads").to_string();
-        assert!(error.contains("uses one thread"), "{error}");
-
-        let args: Args = Args::parse_from(["plinko_hints", "--threads", "1", "--constant-time"]);
+    fn constant_time_mode_uses_one_thread_by_default() {
+        let args: Args = Args::parse_from(["plinko_hints", "--constant-time"]);
         assert!(validate_args(&args).is_ok());
         assert!(args.constant_time());
+        assert_eq!(worker_threads(&args), 1);
+
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "4", "--constant-time"]);
+        assert!(validate_args(&args).is_ok());
+        assert_eq!(worker_threads(&args), 4);
     }
 
     #[test]

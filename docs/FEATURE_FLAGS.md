@@ -11,16 +11,16 @@ This project does not use runtime feature flags. Behavior is controlled via CLI 
 
 A build of the `plinko` crate without features contains only the code of the
 [trust model](trust_model.md): the client runs HintInit. Worker threads of
-`plinko_hints` need no feature (`--threads`).
+`plinko_hints` (`--threads`) and of `protocol::compute_hints` need no feature.
 
 Two opt-in features add experimental code that is not part of the trust model:
 
-| Feature    | Adds                                                                                                  |
-|------------|-------------------------------------------------------------------------------------------------------|
-| `tee`      | `plinko::constant_time`, `IprfTee`, `SwapOrNotSrTee`, `SwapOrNotTee`, `coin_binomial_ct` (`plinko/src/iprf/tee.rs`), and `plinko_hints --constant-time` |
-| `gpu`      | `plinko::gpu` and the `bench_gpu_hints` binary with its CPU baseline (a throughput benchmark, not Plinko hints) |
-| `cuda`     | The CUDA kernel of `bench_gpu_hints` (`plinko/cuda/`); implies `gpu`                                  |
-| `parallel` | Rayon in the CPU baseline of `bench_gpu_hints`; implies `gpu`                                         |
+| Feature    | Adds                                                                                                                                                                                                                   |
+|------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `tee`      | `plinko::constant_time`, `IprfTee`, `SwapOrNotSrTee`, `SwapOrNotTee`, `coin_binomial_ct` (`plinko/src/iprf/tee.rs`), `hint_init::fill_parities_ct` (`plinko/src/hint_init/tee.rs`), and `plinko_hints --constant-time` |
+| `gpu`      | `plinko::gpu` and the `bench_gpu_hints` binary with its CPU baseline (a throughput benchmark, not Plinko hints)                                                                                                        |
+| `cuda`     | The CUDA kernel of `bench_gpu_hints` (`plinko/cuda/`); implies `gpu`                                                                                                                                                   |
+| `parallel` | Rayon in the CPU baseline of `bench_gpu_hints`; implies `gpu`                                                                                                                                                          |
 
 Build examples:
 

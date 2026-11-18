@@ -4,7 +4,7 @@
 
 Experimental. This mode is not part of the [trust model](trust_model.md#tee-mode): the client runs HintInit, and the paper has no TEE. The repository has no attestation, no seed channel into an enclave, and no hint export. The attacker that this mode must resist is not defined yet (TASK-20).
 
-The default build does not contain this mode. Build with the `tee` feature: `cargo build --release -p plinko --bin plinko_hints --features tee`. The code is in `plinko/src/iprf/tee.rs`, `plinko/src/constant_time.rs` and `plinko/src/bin/hint_gen/ct_path.rs`.
+The default build does not contain this mode. Build with the `tee` feature: `cargo build --release -p plinko --bin plinko_hints --features tee`. The code is in `plinko/src/iprf/tee.rs`, `plinko/src/constant_time.rs` and `plinko/src/hint_init/tee.rs` (`fill_parities_ct`).
 
 ## Security Goal
 
@@ -34,7 +34,9 @@ Not covered: the round key of a round is `AES(...) mod n`, a division with a key
 
 ## Security Model and Limitations
 
-The CT mode protects against timing side-channels but does NOT provide full memory-access obliviousness. Array indexing patterns (e.g., `regular_hints[j].cutoff` and `regular_hints[j].parity`) may leak information to cache side-channel attackers (Prime+Probe, etc.).
+The CT mode protects against timing side-channels but does NOT provide full memory-access obliviousness. Array indexing patterns (the cutoff and the parity accumulators of hint `j`) may leak information to cache side-channel attackers (Prime+Probe, etc.).
+
+The cutoffs are computed before the streaming phase with `hint_init::hint_cutoffs`, the same function as in the standard path. It is not constant-time: it runs a selection (`select_nth_unstable`) over the secret select values of a hint (TASK-20).
 
 The paper does not cover this case: its client runs HintInit, and no other party sees the execution. Against an attacker that sees memory accesses, such as the host of a confidential VM, this mode is not sufficient.
 
@@ -60,7 +62,19 @@ The constant-time path requires:
 2. `num_backup > 0` (use `--backup-hints` to set q > 0)
 3. Expected preimages * 2 <= MAX_PREIMAGES
 4. `w` is a power of two (required in both modes)
-5. One thread: `--threads` above 1 is rejected. The worker threads of the standard path share parity accumulators that they read and write at the hint index.
+5. One thread by default; `--threads` starts more (see [Worker Threads](#worker-threads)).
+
+## Worker Threads
+
+The path runs on one thread unless `--threads n` is given. With `n` workers it processes the database blocks as the standard path does ([hint_generation.md](hint_generation.md#worker-threads)), and the hint file does not change (`constant_time_path_gives_the_same_parities_for_every_thread_count` with 1, 2, 3 and 16 threads; `constant_time_path_writes_the_same_file_for_each_record_size` runs the binary with 3 threads for one record size).
+
+Each worker does the fixed work of its entries. The workers share the parity accumulators: atomic 64-bit words that a worker updates with a masked XOR at the hint index. The XOR value is zero for a slot that does not count.
+
+- The addresses that the path reads and writes are the same for one thread and for many threads: the cutoffs and the accumulators at the hint index. This is the leak of [Security Model and Limitations](#security-model-and-limitations); threads do not add an address.
+- With more than one worker, two workers that update the same word at the same time delay each other. Which words those are depends on the hint indices of both workers, so the time of a run then depends on secret values. The size of this effect is not measured. It is the reason for the default of one thread.
+- The dummy accesses of all workers go to hint 0 of each accumulator, as on one thread.
+
+Measured on 24 blocks with w = 1024 (24,576 entries of 40 bytes, 262,144 hints; Apple M3 Ultra, hardware AES, 2026-11-18): 294.6 s on one thread (12.0 ms per entry) and 14.3 s on 24 threads (341 s of CPU time). Both hint files are byte-identical to the file of the standard path.
 
 ## PMNS Sampler In This Mode
 

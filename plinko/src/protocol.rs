@@ -16,9 +16,10 @@
 //! records of `record_size` bytes each ([`ProtocolParams::record_size`]). A
 //! parity, an answer and an update delta have the record size.
 
+use crate::hint_init;
 use crate::hints::{self, HintGeometry, HintSet, MAX_RECORD_SIZE};
-use crate::iprf::{Iprf, IprfTable, PrfKey128};
-use crate::subsets::{backup_subset_size, regular_subset_size, SubsetPrf, INVALID_CUTOFF};
+use crate::iprf::{Iprf, PrfKey128};
+use crate::subsets::{SubsetPrf, INVALID_CUTOFF};
 use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -524,7 +525,8 @@ pub struct Client {
 impl Client {
     /// Run offline HintInit from a flat database of `num_entries * record_size` bytes.
     ///
-    /// Equal to [`compute_hints`] followed by [`Client::from_hints`].
+    /// Equal to [`compute_hints`] followed by [`Client::from_hints`]. HintInit uses all
+    /// available cores.
     pub fn offline_init(
         params: ProtocolParams,
         master_seed: [u8; 32],
@@ -959,10 +961,12 @@ impl Client {
     }
 }
 
-/// Runs HintInit (Plinko Fig. 7) over an in-memory database.
+/// Runs HintInit (Plinko Fig. 7) over an in-memory database on all available cores.
 ///
 /// `database` holds the `num_entries` records one after another. `plinko_hints`
-/// computes the same hint set from a database file with the same bytes.
+/// computes the same hint set from a database file with the same bytes; both
+/// call [`crate::hint_init`]. [`compute_hints_with_threads`] takes the number
+/// of worker threads.
 ///
 /// # Errors
 /// Returns [`ProtocolError::InvalidParams`] if `database` does not have
@@ -972,33 +976,39 @@ pub fn compute_hints(
     master_seed: &[u8; 32],
     database: &[u8],
 ) -> Result<HintSet, ProtocolError> {
+    compute_hints_with_threads(
+        params,
+        master_seed,
+        database,
+        hint_init::available_threads(),
+    )
+}
+
+/// Runs HintInit as [`compute_hints`] does, on `threads` worker threads.
+///
+/// A `threads` value of 0 counts as 1. The hint set does not depend on the
+/// thread count.
+///
+/// # Errors
+/// Returns [`ProtocolError::InvalidParams`] if `database` does not have
+/// `num_entries * record_size` bytes.
+pub fn compute_hints_with_threads(
+    params: &ProtocolParams,
+    master_seed: &[u8; 32],
+    database: &[u8],
+    threads: usize,
+) -> Result<HintSet, ProtocolError> {
     check_database_len(params, database)?;
 
     let iprfs: Vec<Iprf> = block_iprfs(params, master_seed);
     let subset_prf: SubsetPrf = SubsetPrf::new(master_seed);
-    let mut scratch: Vec<u32> = Vec::with_capacity(params.num_blocks);
-
-    let regular_cutoffs: Vec<u32> = (0..params.num_regular_hints)
-        .map(|j| {
-            subset_prf.cutoff(
-                j as u64,
-                params.num_blocks,
-                regular_subset_size(params.num_blocks),
-                &mut scratch,
-            )
-        })
-        .collect();
-
-    let backup_cutoffs: Vec<u32> = (0..params.num_backup_hints)
-        .map(|b| {
-            subset_prf.cutoff(
-                (params.num_regular_hints + b) as u64,
-                params.num_blocks,
-                backup_subset_size(params.num_blocks),
-                &mut scratch,
-            )
-        })
-        .collect();
+    let (regular_cutoffs, backup_cutoffs) = hint_init::hint_cutoffs(
+        &subset_prf,
+        params.num_blocks,
+        params.num_regular_hints,
+        params.num_backup_hints,
+        threads,
+    );
 
     let mut hint_set: HintSet = HintSet::new(
         params.hint_geometry(),
@@ -1008,38 +1018,14 @@ pub fn compute_hints(
     )
     .map_err(|_| ProtocolError::InvalidParams("the hint parities do not fit in memory"))?;
 
-    let size: usize = params.record_size;
-    for (block, iprf) in iprfs.iter().enumerate() {
-        let table: IprfTable<'_> = iprf.table();
-        for offset in 0..params.block_size {
-            let i = block * params.block_size + offset;
-            // A padding record is zero and changes no parity.
-            let Some(entry) = database.get(i * size..(i + 1) * size) else {
-                continue;
-            };
-
-            for hint_id in table.inverse(offset as u64) {
-                let j = hint_id as usize;
-                if j < params.num_regular_hints {
-                    let cutoff: u32 = hint_set.regular_cutoffs()[j];
-                    if subset_prf.contains(hint_id, block, cutoff) {
-                        xor_entry(hint_set.regular_parity_mut(j), entry);
-                    }
-                } else if j < params.num_total_hints {
-                    let b: usize = j - params.num_regular_hints;
-                    let cutoff: u32 = hint_set.backup_cutoffs()[b];
-                    if cutoff == INVALID_CUTOFF {
-                        continue;
-                    }
-                    if subset_prf.contains(hint_id, block, cutoff) {
-                        xor_entry(hint_set.backup_parity_in_mut(b), entry);
-                    } else {
-                        xor_entry(hint_set.backup_parity_out_mut(b), entry);
-                    }
-                }
-            }
-        }
-    }
+    hint_init::fill_parities(
+        &mut hint_set,
+        database,
+        &iprfs,
+        &subset_prf,
+        threads,
+        |_| {},
+    );
 
     Ok(hint_set)
 }
@@ -1087,6 +1073,9 @@ fn block_iprfs(params: &ProtocolParams, master_seed: &[u8; 32]) -> Vec<Iprf> {
         .collect()
 }
 
+/// Derives one 128-bit iPRF key per block from the master seed.
+///
+/// Each key is the first 16 bytes of `SHA-256(master_seed || "block_key" || block_idx_le)`.
 pub fn derive_block_keys(master_seed: &[u8; 32], c: usize) -> Vec<PrfKey128> {
     let mut keys = Vec::with_capacity(c);
     for block_idx in 0..c {

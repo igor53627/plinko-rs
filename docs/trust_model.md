@@ -145,9 +145,11 @@ repository has none of them:
 4. Code without secret-dependent time and memory access. The current path
    reads the hints at the secret hint index and divides by key-derived values
    (TASK-20).
-5. A cost that is practical. The path takes 16.7 ms per record on one thread
-   and has no worker threads: about 8,500 core-hours, or 355 days, for mainnet
-   (computed from the per-record measurement).
+5. A cost that is practical. The path takes 16.7 ms per record: about 8,500
+   core-hours for mainnet (computed from the per-record measurement), which
+   is 355 days on one thread. Worker threads are opt-in (`--threads`), because
+   their timing depends on the hint indices
+   ([constant_time_mode.md](constant_time_mode.md#worker-threads)).
 
 A client can use the mode on its own machine. It gives the same hint file as
 the standard path.
