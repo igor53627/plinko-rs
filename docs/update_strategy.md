@@ -94,13 +94,31 @@ hints that queries used, for the promoted backup hints, or for the cache.
 loads its hint file again after queries uses hints a second time, and the
 server then gets the queried indices
 ([online_protocol.md](online_protocol.md#query-in-flight-lost-answer-retry)).
-The code cannot detect this. A stored client state for the online phase is not
-implemented.
+The code cannot detect this.
+
+**After the first query the client writes a state file**
+(`Client::write_state`, `Client::read_state`;
+[data_format.md](data_format.md#client-state-file)). The state holds the
+hints with the version of their parities, the cache and the hints that
+queries used. After a restart the client reads `Client::database_version` and
+applies the deltas that start there. A delta that the client applied after it
+wrote the state is not in the state; the client applies it again after the
+restart.
+
+The state file is client-secret: it holds the indices of the answered queries
+with their records, and the indices of the queries in flight. The caller must record each query before it leaves the client, and
+must not load a state that is older than the last query without the log of
+the later hints. The code cannot detect an old state. The rules are in
+[online_protocol.md](online_protocol.md#client-state-and-restart).
 
 Tests: `deltas_apply_in_version_order_and_one_time_only` and
 `an_answer_of_a_later_version_is_accepted_after_the_delta` in
 `protocol_e2e_test.rs`; `a_restarted_client_applies_the_deltas_after_its_hint_file`
-in `hint_file_e2e_test.rs`, which also sends each delta through a file.
+in `hint_file_e2e_test.rs`, which also sends each delta through a file. For
+the state file: `a_restarted_client_does_not_send_a_hint_a_second_time` in
+`protocol_e2e_test.rs`, and
+`a_client_from_a_state_continues_as_the_client_that_wrote_it` in
+`plinko/src/protocol/state/tests.rs`, which applies a delta after the restart.
 
 ## Cost
 
@@ -159,7 +177,8 @@ table with a new seed moves all records and needs a new HintInit.
 - **Producer and transport.** The library has the delta format, a writer and a
   reader. No program writes delta files for a database on disk, and no service
   publishes them.
-- **Client state after a query.** See [Restart](#restart).
+- **Detection of an old client state.** The state file has no field that
+  shows its age. See [Restart](#restart).
 - **Appends inside the padding.** See [A Database That Grows](#a-database-that-grows).
 - **Authentication.** The checksum of a delta file detects damage only. A
   client cannot check that a delta holds the changes of the publisher, that a

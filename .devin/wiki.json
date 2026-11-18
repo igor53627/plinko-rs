@@ -50,6 +50,10 @@
     },
     {
       "content": "Database versions and deltas (plinko/src/delta.rs, docs/update_strategy.md): the publisher numbers each database state. plinko_hints --database-version stores the version in the hint file. Response::database_version carries the version of an answer; Client::reconstruct_and_replenish accepts only the version of the hints and leaves the query in flight on a mismatch. Delta (magic PLNKDLTA, format version 1: record size, num_entries, from_version, to_version, changes of index and old XOR new, BLAKE3 checksum) is written by Server::apply_updates; Client::apply_delta accepts only a delta that starts at the version of the hints, so a repeated or early delta changes nothing. The number of records is fixed for a hint set. Not implemented: a delta producer for files, transport, authentication of a delta or an answer, and a stored client state after the first query (Client::unused_hints is None then; a reload of the hint file after queries reuses hints)."
+    },
+    {
+      "content": "Client state file (plinko/src/protocol/state.rs, docs/online_protocol.md section Client State And Restart, docs/data_format.md): a hint file holds the hints of a client that sent no query. Client::write_state writes the state after queries (magic PLNKSTAT, format version 1: hint set, bitmap of sent regular hints, answered queries with promoted backup hint and record, queries in flight, retired backup hints, BLAKE3 checksum); Client::read_state builds a client from it and returns the queries in flight with the same message bytes. The caller must record each query before it leaves the client (a state, or a log of PreparedQuery::hint_index for Client::retire_hints), must use a new query seed for each start, and must keep the file secret (it holds queried indices and records). The format cannot detect a state that is older than the last query.",
+      "author": "maintainer"
     }
   ],
   "pages": [

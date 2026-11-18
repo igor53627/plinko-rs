@@ -129,6 +129,69 @@ contains the index, with no replacement. This document does not analyze the
 size of that bias. Use a retry; use `abandon_query` only when the server does
 not answer at all.
 
+## Client State And Restart
+
+The rule for a hint must also hold when the client process stops and starts
+again. A hint file cannot give this: it holds the hints of a client that has
+sent no query. A client that loads its hint file again after queries sends
+hints a second time.
+
+`Client::write_state` writes the state of a client that sent queries, and
+`Client::read_state` builds a client from it
+([data_format.md](data_format.md#client-state-file)). The state holds the
+hints with their database version, the regular hints that were sent, the
+promoted backup hints, the cache and the queries in flight.
+
+`read_state` returns the queries in flight. Each one has the same `Query`
+bytes as before the restart: a message is a function of its hint and of the
+stored order of the two subsets. The caller sends it again (the rule for a
+retry) or calls `abandon_query`.
+
+**Rules for the caller.** The code cannot enforce them.
+
+1. **Record a query before it leaves the client**, and make the record
+   durable first. A query that the server saw and the stored state does not
+   hold has the same effect as a hint file that is loaded again. There are
+   two ways:
+   - Write the state after `prepare_query`. The state has the size of the
+     hint file (1.07 GB with the mainnet parameters, computed), so this is a
+     large write for each query.
+   - Write the state at times. Between two writes, append
+     `PreparedQuery::hint_index` of each query to a log. After a restart,
+     load the state and pass the log to `Client::retire_hints`. The log of a
+     state holds each query that the client prepared after the `write_state`
+     call of that state, also a query that left the client before the state
+     was durable. Keep the old state and its log until the new state and its
+     log are durable.
+2. **Without the log, load only the newest state.** The file has no field
+   that shows its age, and the client has no second source to compare it
+   with. A copy from a backup is an old state. `read_state` cannot detect it.
+3. **Replace a state only with a complete one**, for example with a write to
+   a new file and a rename.
+4. **Use new random bytes as the query seed of each start.** The state does
+   not hold the query randomness. With an old seed the client repeats random
+   choices of queries that the server saw.
+5. **Keep the file secret.** It holds the hints, the indices of the answered
+   queries with their records, and the queried and the requested index of
+   each query in flight. It does not hold the master seed.
+
+`retire_hints` removes each hint of the log with no promotion, as
+`abandon_query` does, so the deviation of the section above applies to each
+of them. The
+answers of those queries are not in the state: a later query for one of those
+indices is a query for that index with another hint, not a decoy query. A
+backup hint of the log is not promoted later. If it was the last backup hint
+that a query in flight counted on, `reconstruct_and_replenish` returns
+`NoBackupHintsLeft` for that query and changes nothing; call `abandon_query`.
+
+Tests: `a_restarted_client_does_not_send_a_hint_a_second_time` in
+`protocol_e2e_test.rs` starts one client from the newest state, from an old
+state with no log (the control: hints go out a second time) and from an old
+state with the log. `a_query_with_no_backup_hint_after_retire_hints_stays_in_flight`
+is in the same file. The unit tests of `plinko/src/protocol/state.rs` compare
+a client from a state with the client that wrote it, check the layout, and
+flip each bit of a state file.
+
 ## Database Version Of An Answer
 
 The parity of a hint belongs to one database version
@@ -197,13 +260,12 @@ offsets, and an offset outside a block.
 
 - **Wrong answers.** The client cannot check an answer, and it cannot check
   the database version that an answer states (TASK-24).
-- **Client state on disk.** The hint file holds the hints of a client that
-  has sent no query. The used hints, the promoted backup hints and the cache
-  are in memory only. A client that starts again from its hint file after
-  queries uses hints a second time, which breaks the rule for a hint above.
-  The code cannot detect this
-  ([update_strategy.md](update_strategy.md#restart)).
-- **Bias after `abandon_query`.** See above.
+- **An old client state.** A client that loads a state file that is older
+  than its last query, with no log of the later hints, sends hints a second
+  time, which breaks the rule for a hint above. The same applies to a hint
+  file that is loaded again after queries. The code cannot detect this; see
+  [Client State And Restart](#client-state-and-restart).
+- **Bias after `abandon_query` and `retire_hints`.** See above.
 - **Formal model.** No machine-checked statement covers the online phase or
   the shared offsets. The Rocq models have no Query, Answer and Recon
   ([verification.md](verification.md)).

@@ -49,7 +49,8 @@
 //!
 //! The file holds the hints of a client that has sent no query. It has no
 //! field for the state that a query changes (used hints, promoted backup
-//! hints, cached records).
+//! hints, cached records). The state file of a client holds that state
+//! ([`crate::protocol::Client::write_state`]).
 
 use crate::checked_io::{
     u32_at, u64_at, HashingReader, HashingWriter, TrailerError, CHECKSUM_SIZE,
@@ -449,7 +450,12 @@ impl HintSet {
     /// ```
     pub fn write_to<W: Write>(&self, writer: W) -> io::Result<()> {
         let mut out = HashingWriter::new(writer);
+        self.write_body(&mut out)?;
+        out.finish()
+    }
 
+    /// Writes the header and the hints: the file format without its checksum.
+    pub(crate) fn write_body<W: Write>(&self, out: &mut HashingWriter<W>) -> io::Result<()> {
         let mut header = [0u8; HEADER_SIZE];
         header[0..8].copy_from_slice(&HINT_FILE_MAGIC);
         header[8..12].copy_from_slice(&HINT_FILE_VERSION.to_le_bytes());
@@ -482,8 +488,7 @@ impl HintSet {
             out.write_hashed(&cutoff.to_le_bytes())?;
             out.write_hashed(parities)?;
         }
-
-        out.finish()
+        Ok(())
     }
 
     /// Reads a hint set and checks its magic, version, record size, length, and checksum.
@@ -493,7 +498,13 @@ impl HintSet {
     /// seed; [`crate::protocol::Client::from_hints`] does that.
     pub fn read_from<R: Read>(reader: R) -> Result<Self, HintFileError> {
         let mut input = HashingReader::new(reader);
+        let hints: Self = Self::read_body(&mut input)?;
+        input.finish()?;
+        Ok(hints)
+    }
 
+    /// Reads the header and the hints: the file format without its checksum.
+    pub(crate) fn read_body<R: Read>(input: &mut HashingReader<R>) -> Result<Self, HintFileError> {
         // The header of an older version is shorter, so the magic and the
         // version are checked before the other fields are read.
         let mut header = [0u8; HEADER_SIZE];
@@ -555,8 +566,6 @@ impl HintSet {
             backup_cutoffs.push(u32_at(&record, 0));
             backup_parities.extend_from_slice(&record[CUTOFF_SIZE..]);
         }
-
-        input.finish()?;
 
         Ok(Self {
             geometry,

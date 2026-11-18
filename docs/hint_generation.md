@@ -326,7 +326,10 @@ let client = Client::from_hints(params, master_seed, query_rng_seed, hints)?;
 geometry, other hint counts, or another master seed. The client starts at the
 database version of the file. Load a hint file only into a client that has
 sent no query with these hints
-([update_strategy.md](update_strategy.md#restart)). `plinko/tests/hint_file_e2e_test.rs` runs the
+([update_strategy.md](update_strategy.md#restart)). A client that sent a
+query starts again from its state file (`Client::write_state`,
+`Client::read_state`;
+[online_protocol.md](online_protocol.md#client-state-and-restart)). `plinko/tests/hint_file_e2e_test.rs` runs the
 binary, loads the file, and checks queries and deltas.
 
 ## Block Subsets

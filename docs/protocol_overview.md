@@ -131,9 +131,9 @@ The online steps are a library model in one process. The repository has no
 network transport. Open work for a general library, each with a backlog task:
 
 - Lookup by key (TASK-22, proposal in [keyword_lookup.md](keyword_lookup.md)).
-- A producer and a transport for deltas, and a stored client state for the
-  online phase ([update_strategy.md](update_strategy.md#not-implemented)). The
-  database version and the delta format exist.
+- A producer and a transport for deltas
+  ([update_strategy.md](update_strategy.md#not-implemented)). The database
+  version, the delta format and the client state file for a restart exist.
 - A check of an answer against a commitment of the database (TASK-24,
   [trust_model.md](trust_model.md#not-covered)).
 

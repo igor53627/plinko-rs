@@ -12,6 +12,7 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 | `code_store.bin` | `[count: u32 LE][hash₀: 32B]…` | yes (if any contract code) |
 | `metadata.json` | JSON snapshot descriptor | yes |
 | `hints.bin` | Hint set of one client (see [Hint file](#hint-file-hintsbin)) | no (`plinko_hints --output`) |
+| client state file | Hint set and online state of one client (see [Client state file](#client-state-file)) | no (library only: `Client::write_state`) |
 | delta file | Changed records between two database versions (see [Delta file](#delta-file)) | no (library only: `plinko::delta`) |
 
 ### `database.bin` ordering
@@ -106,9 +107,41 @@ default 40):
 - The reader rejects a file of another version and a record size outside the range. `Client::from_hints` rejects a hint set whose record size differs from the parameters of the client.
 - `database_version` is `init_version` in a file from `plinko_hints` (`--database-version`, default 0). It is higher in a file that a client wrote after it applied deltas ([`update_strategy.md`](update_strategy.md#restart)). The reader rejects a file in which it is lower.
 - `init_hash` is the hash of the database file: the records one after another, without padding. A caller can compare it with a value from the publisher of the database. A delta does not change it.
-- The file holds the hints of a client that has sent no query. It has no field for the state that a query changes.
+- The file holds the hints of a client that has sent no query. It has no field for the state that a query changes; the [client state file](#client-state-file) has.
 - Version 3 had no database version and no database hash (a header of 64 bytes); its hint records are equal to those of version 4. Version 2 had the same layout as version 3 and other PRP round keys ([`hint_generation.md`](hint_generation.md#round-keys)), so its parities are not valid for this code. Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record. No code reads version 1, 2 or 3; run `plinko_hints` again.
 - The file holds no master seed. The file and the seed are client-secret.
+
+## Client state file
+
+Written by `Client::write_state` and read by `Client::read_state`
+(`plinko::protocol`). The file holds all that a client needs to start again
+after it sent queries
+([`online_protocol.md`](online_protocol.md#client-state-and-restart)). All
+integers are little-endian. Format version 1, where `r` is the record size in
+bytes:
+
+| Size                    | Field                                                                                            |
+|-------------------------|--------------------------------------------------------------------------------------------------|
+| 8                       | magic `PLNKSTAT`                                                                                 |
+| 4                       | format version (`1`)                                                                             |
+| hint file size - 32     | hint set: a [hint file](#hint-file-hintsbin) without its last 32 bytes                           |
+| `ceil(num_regular / 8)` | bit `j % 8` of byte `j / 8`: regular hint `j` was sent                                           |
+| 8                       | `answered`: number of answered queries                                                           |
+| `17 + r` each           | answered queries: index (`u64`), backup hint (`u64`), flags (`u8`), record (`r` bytes)           |
+| 8                       | `in_flight`: number of queries in flight                                                         |
+| 25 each                 | queries in flight: queried index (`u64`), requested index (`u64`), hint ID (`u64`), flags (`u8`) |
+| 8                       | `retired`: number of retired backup hints                                                        |
+| 8 each                  | retired backup hints: backup hint (`u64`)                                                        |
+| 32                      | BLAKE3 hash of all bytes before it                                                               |
+
+- An answered query is a cache entry with the backup hint that was promoted for it. Backup hint `b` has hint ID `num_regular + b`. Flag bit 0: the promoted hint is present (it was not sent in a later query). Flag bit 1: its subset is the complement of the cutoff subset; only with bit 0. The indices are strictly increasing.
+- The parities of the hint set are those of the client: the "in" parity of a promoted backup hint is the parity of its slot. `database_version` of the hint set is the database version of the client.
+- A query in flight has the hint that it reserves. Flag bit 0: the real subset is the first one of the message. The queried indices are strictly increasing. The requested index is the queried index, or an index with an answer (a decoy query). The reader builds the message again from the hint; the file does not hold the message.
+- A retired backup hint is one that `Client::retire_hints` removed before a promotion. The numbers are strictly increasing.
+- Size: the size of the hint file `+ 36 + ceil(num_regular / 8) + answered × (17 + r) + in_flight × 25 + retired × 8` bytes. With the mainnet parameters of the hint file above and no query: 1,074,790,580 bytes (computed).
+- The reader rejects a file of another format version, a hint set that the hint file reader rejects, a hint set of another master seed, a field that breaks a rule above, a hint of a query in flight that does not hold its index, a wrong checksum and data after the checksum.
+- **The file has no field that shows its age.** The reader cannot detect a state that is older than the last query of the client. The caller must prevent this ([`online_protocol.md`](online_protocol.md#client-state-and-restart)).
+- The file holds no master seed and no query randomness. It is client-secret: it holds the hints, the indices of the answered queries with their records, and the indices of the queries in flight.
 
 ## Delta file
 

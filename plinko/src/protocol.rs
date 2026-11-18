@@ -13,6 +13,10 @@
 //! database that it comes from, and the client accepts it only if its hints
 //! belong to the same version.
 //!
+//! A client that stops and starts again must keep its state: the hints that
+//! it sent, the promoted backup hints, the cache and the queries in flight
+//! ([`Client::write_state`], [`Client::read_state`]).
+//!
 //! The rules of the online phase (decoy, query format, retry, query limit) and
 //! the deviations from the paper are in `docs/online_protocol.md`.
 //!
@@ -29,9 +33,13 @@ use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+
+mod state;
+
+pub use state::{ClientStateError, CLIENT_STATE_MAGIC, CLIENT_STATE_VERSION};
 
 /// PMNS tree levels that the client keeps per block (see [`Iprf::with_cached_levels`]).
 ///
@@ -58,8 +66,9 @@ pub enum ProtocolError {
     },
     /// The prepared query is not a query in flight of this client.
     ///
-    /// The check compares the queried index and the hint slot. It does not
-    /// identify the client instance that built the query.
+    /// The check compares the queried index, the requested index, the hint
+    /// slot and the order of the two subsets. It does not identify the
+    /// client instance that built the query.
     UnknownPreparedQuery,
     QueryShapeMismatch {
         expected_offsets: usize,
@@ -522,7 +531,7 @@ impl Server {
 
 /// State of one hint slot. Its parity is in the hint set of the client: the
 /// parity of a regular hint, or the "in" parity of a promoted backup hint.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HintSlot {
     /// Cutoff of the original (pre-complement) subset; see [`crate::subsets`].
     cutoff: u32,
@@ -530,17 +539,26 @@ struct HintSlot {
     extra_index: Option<usize>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CacheEntry {
     value: Vec<u8>,
     hint_idx: usize,
+}
+
+/// What the client keeps for a query in flight, under the queried index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InFlight {
+    hint_idx: usize,
+    requested_index: usize,
+    real_is_first: bool,
 }
 
 /// A query in flight: built for the server, with no answer yet.
 ///
 /// Keep the value until [`Client::reconstruct_and_replenish`] accepts an
 /// answer. To retry, send `query` again without a change. To stop, call
-/// [`Client::abandon_query`].
+/// [`Client::abandon_query`]. After a restart, [`Client::read_state`] gives
+/// the queries in flight again.
 pub struct PreparedQuery {
     pub query: Query,
     requested_index: usize,
@@ -570,8 +588,10 @@ pub struct Client {
     backup_available: Vec<bool>,
     cache: HashMap<usize, CacheEntry>,
     rng: ChaCha20Rng,
-    /// Queried index and hint slot of each query in flight.
-    in_flight: HashMap<usize, usize>,
+    /// Each query in flight, under its queried index.
+    in_flight: HashMap<usize, InFlight>,
+    /// Backup hints that [`Client::retire_hints`] removed before a promotion.
+    retired_backups: BTreeSet<usize>,
     /// `true` after the first query was built. The hint set then holds state
     /// that the hint file cannot store.
     queried: bool,
@@ -604,11 +624,18 @@ impl Client {
     /// The client starts at the database version of the hint set
     /// ([`HintSet::database_version`]).
     ///
+    /// `query_rng_seed` seeds the random choices of the queries (decoy, hint
+    /// order, order of the two subsets). Use new random bytes for each
+    /// client; a seed that an earlier client used with the same hints
+    /// repeats choices of queries that the server saw.
+    ///
     /// The hint set must be one that no client has sent a query with. A hint
     /// file has no field for the hints that queries used. A client that loads
     /// the same file a second time, after queries, uses those hints again,
     /// and the server then learns the queried indices (`docs/online_protocol.md`).
-    /// The function cannot detect this.
+    /// The function cannot detect this. A client that sent a query starts
+    /// again from its state file: [`Client::write_state`] and
+    /// [`Client::read_state`].
     pub fn from_hints(
         params: ProtocolParams,
         master_seed: [u8; 32],
@@ -657,6 +684,7 @@ impl Client {
             cache: HashMap::new(),
             rng: ChaCha20Rng::from_seed(query_rng_seed),
             in_flight: HashMap::new(),
+            retired_backups: BTreeSet::new(),
             queried: false,
         })
     }
@@ -672,8 +700,8 @@ impl Client {
     /// Returns the hint set if the client has built no query, and `None` after that.
     ///
     /// Write it with [`HintSet::write_to`] to keep the deltas that the client
-    /// applied. After the first query the hints hold state that the file
-    /// format cannot store, so there is nothing safe to write.
+    /// applied. After the first query the hints hold state that the hint file
+    /// format cannot store; use [`Client::write_state`] then.
     pub fn unused_hints(&self) -> Option<&HintSet> {
         (!self.queried).then_some(&self.hints)
     }
@@ -734,7 +762,14 @@ impl Client {
                 continue;
             };
 
-            self.in_flight.insert(queried_index, hint_idx);
+            self.in_flight.insert(
+                queried_index,
+                InFlight {
+                    hint_idx,
+                    requested_index,
+                    real_is_first,
+                },
+            );
             self.queried = true;
             return Ok(PreparedQuery {
                 query,
@@ -769,6 +804,10 @@ impl Client {
     ///   it is below, send `prepared.query` again.
     /// - [`ProtocolError::RecordSizeMismatch`]: a parity of `response` does
     ///   not have the record size. Such a response is not an answer.
+    /// - [`ProtocolError::NoBackupHintsLeft`]: no backup hint can take the
+    ///   place of the hint. This occurs only after [`Client::retire_hints`]
+    ///   removed a backup hint that a query in flight had reserved. Call
+    ///   [`Client::abandon_query`].
     pub fn reconstruct_and_replenish(
         &mut self,
         prepared: &PreparedQuery,
@@ -784,6 +823,9 @@ impl Client {
         }
         check_record_len(&self.params, &response.parity_0)?;
         check_record_len(&self.params, &response.parity_1)?;
+        if !self.backup_available.contains(&true) {
+            return Err(ProtocolError::NoBackupHintsLeft);
+        }
 
         self.take_in_flight(prepared)?;
         let mut queried_entry: Vec<u8> = if prepared.real_is_first {
@@ -944,11 +986,16 @@ impl Client {
     fn hint_is_reserved(&self, hint_idx: usize) -> bool {
         self.in_flight
             .values()
-            .any(|&reserved| reserved == hint_idx)
+            .any(|reserved| reserved.hint_idx == hint_idx)
     }
 
     fn check_in_flight(&self, prepared: &PreparedQuery) -> Result<(), ProtocolError> {
-        if self.in_flight.get(&prepared.queried_index) != Some(&prepared.hint_idx) {
+        let expected = InFlight {
+            hint_idx: prepared.hint_idx,
+            requested_index: prepared.requested_index,
+            real_is_first: prepared.real_is_first,
+        };
+        if self.in_flight.get(&prepared.queried_index) != Some(&expected) {
             return Err(ProtocolError::UnknownPreparedQuery);
         }
         Ok(())
@@ -1275,7 +1322,14 @@ mod tests {
             );
         }
         for &index in in_flight {
-            client.in_flight.insert(index, 0);
+            client.in_flight.insert(
+                index,
+                InFlight {
+                    hint_idx: 0,
+                    requested_index: index,
+                    real_is_first: false,
+                },
+            );
         }
         client
     }

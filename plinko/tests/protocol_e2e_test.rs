@@ -1113,3 +1113,230 @@ fn block_keys_are_distinct_and_depend_on_the_seed() {
         derive_block_keys(&[2u8; 32], 3)
     );
 }
+
+fn state_of(client: &Client) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    client.write_state(&mut bytes).expect("write state");
+    bytes
+}
+
+/// A hint that the server saw must not go out in a second query, also when
+/// the client starts again. The test has three starts of one client: from
+/// the newest state, from an old state with no log (the control: hints go
+/// out a second time), and from an old state with the log of hints.
+#[test]
+fn a_restarted_client_does_not_send_a_hint_a_second_time() {
+    let params: ProtocolParams =
+        ProtocolParams::new(128, RECORD_SIZE, Some(16), 8, None).expect("params");
+    let entries: Vec<u8> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), 3, &entries).expect("server init");
+    let master_seed: [u8; 32] = [0xF1u8; 32];
+    let mut client: Client =
+        Client::offline_init(params.clone(), master_seed, [0xF2u8; 32], 3, &entries)
+            .expect("offline init");
+
+    // Hints that the server saw.
+    let mut sent: HashSet<usize> = HashSet::new();
+
+    // First run: the client writes its state before each query leaves it.
+    let mut state: Vec<u8> = Vec::new();
+    let mut last: Option<(usize, Query)> = None;
+    for index in 0..30 {
+        let Ok(prepared) = client.prepare_query(index) else {
+            continue;
+        };
+        state = state_of(&client);
+        assert!(sent.insert(prepared.hint_index()), "index {index}");
+        let response: Response = server.answer(&prepared.query).expect("answer");
+        assert_eq!(
+            client.reconstruct_and_replenish(&prepared, &response),
+            Ok(record(&entries, index).to_vec())
+        );
+        last = Some((index, prepared.query.clone()));
+    }
+    let (last_index, last_query) = last.expect("a query");
+    let answered_before: usize = client.num_cached_entries();
+    assert!(answered_before >= 20, "{answered_before} answered queries");
+    drop(client);
+
+    // The newest state has the last query in flight: its answer came after
+    // the write. The client gets the same message again, not a new hint.
+    let (mut client, in_flight) =
+        Client::read_state(master_seed, [0xF3u8; 32], state.as_slice()).expect("read state");
+    assert_eq!(client.database_version(), 3);
+    assert_eq!(client.num_cached_entries(), answered_before - 1);
+    assert_eq!(in_flight.len(), 1);
+    assert!(in_flight[0].query == last_query);
+    assert!(sent.contains(&in_flight[0].hint_index()));
+    let response: Response = server.answer(&in_flight[0].query).expect("answer");
+    assert_eq!(
+        client.reconstruct_and_replenish(&in_flight[0], &response),
+        Ok(record(&entries, last_index).to_vec())
+    );
+
+    // Second run: one state, then a log of the hints of the later queries.
+    let old_state: Vec<u8> = state_of(&client);
+    let mut log: Vec<usize> = Vec::new();
+    for index in 30..60 {
+        let Ok(prepared) = client.prepare_query(index) else {
+            continue;
+        };
+        log.push(prepared.hint_index());
+        assert!(sent.insert(prepared.hint_index()), "index {index}");
+        let response: Response = server.answer(&prepared.query).expect("answer");
+        assert_eq!(
+            client.reconstruct_and_replenish(&prepared, &response),
+            Ok(record(&entries, index).to_vec())
+        );
+    }
+    assert!(log.len() >= 20, "{} logged queries", log.len());
+    drop(client);
+
+    // Control: the old state with no log. The client does not know the later
+    // queries, and it sends their hints again.
+    let (mut rolled_back, _) =
+        Client::read_state(master_seed, [0xF4u8; 32], old_state.as_slice()).expect("read state");
+    let sent_again: usize = (30..60)
+        .filter_map(|index| rolled_back.prepare_query(index).ok())
+        .filter(|prepared| sent.contains(&prepared.hint_index()))
+        .count();
+    assert!(
+        sent_again > 0,
+        "the control found no hint that went out again"
+    );
+
+    // The old state with the log: no hint goes out a second time, until the
+    // client has no backup hint left.
+    let (mut client, in_flight) =
+        Client::read_state(master_seed, [0xF5u8; 32], old_state.as_slice()).expect("read state");
+    assert!(in_flight.is_empty());
+    assert_eq!(
+        client.retire_hints(&[log[0], params.num_total_hints]),
+        Err(ProtocolError::InvalidParams(
+            "a hint to retire is not a hint of this client"
+        ))
+    );
+    assert_eq!(
+        state_of(&client),
+        old_state,
+        "a rejected list changes nothing"
+    );
+    assert_eq!(client.retire_hints(&log), Ok(()));
+    assert_eq!(client.retire_hints(&log), Ok(()));
+    assert!(client.unused_hints().is_none());
+
+    let mut queries: usize = 0;
+    for index in (0..params.num_entries).cycle() {
+        let prepared: PreparedQuery = match client.prepare_query(index) {
+            Ok(prepared) => prepared,
+            Err(ProtocolError::NoHintForIndex { .. }) => continue,
+            Err(ProtocolError::NoBackupHintsLeft) => break,
+            Err(other) => panic!("index {index}: {other}"),
+        };
+        assert!(
+            sent.insert(prepared.hint_index()),
+            "index {index}: hint {} went out a second time",
+            prepared.hint_index()
+        );
+        let response: Response = server.answer(&prepared.query).expect("answer");
+        assert_eq!(
+            client.reconstruct_and_replenish(&prepared, &response),
+            Ok(record(&entries, index).to_vec())
+        );
+        queries += 1;
+    }
+    assert!(queries >= 60, "{queries} queries after the restart");
+    assert_eq!(client.remaining_backup_hints(), 0);
+}
+
+/// `retire_hints` can remove a backup hint that a query in flight counted
+/// on. The query that then has no backup hint must stay in flight, with its
+/// hint, and the caller can abandon it.
+#[test]
+fn a_query_with_no_backup_hint_after_retire_hints_stays_in_flight() {
+    let params: ProtocolParams =
+        ProtocolParams::new(128, RECORD_SIZE, Some(16), 4, Some(2)).expect("params");
+    let entries: Vec<u8> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), 0, &entries).expect("server init");
+    let master_seed: [u8; 32] = [0xF6u8; 32];
+    let mut client: Client =
+        Client::offline_init(params.clone(), master_seed, [0xF7u8; 32], 0, &entries)
+            .expect("offline init");
+
+    let (index_a, prepared_a) = prepare_first(&mut client, 0..params.num_entries);
+    let (_, prepared_b) = prepare_first(&mut client, (index_a + 1)..params.num_entries);
+    assert_eq!(client.retire_hints(&[params.num_regular_hints + 1]), Ok(()));
+    assert_eq!(client.remaining_backup_hints(), 1);
+    assert_eq!(client.queries_in_flight(), 2);
+
+    // A state with more queries in flight than backup hints is valid.
+    let state: Vec<u8> = state_of(&client);
+    let (restored, in_flight) =
+        Client::read_state(master_seed, [0xF8u8; 32], state.as_slice()).expect("read state");
+    assert_eq!(in_flight.len(), 2);
+    assert_eq!(restored.remaining_backup_hints(), 1);
+    assert_eq!(state_of(&restored), state);
+
+    let response_a: Response = server.answer(&prepared_a.query).expect("answer a");
+    let response_b: Response = server.answer(&prepared_b.query).expect("answer b");
+    assert_eq!(
+        client.reconstruct_and_replenish(&prepared_a, &response_a),
+        Ok(record(&entries, index_a).to_vec())
+    );
+    let before: Vec<u8> = state_of(&client);
+    assert_eq!(
+        client.reconstruct_and_replenish(&prepared_b, &response_b),
+        Err(ProtocolError::NoBackupHintsLeft)
+    );
+    assert_eq!(state_of(&client), before, "the error changes no state");
+    assert_eq!(client.queries_in_flight(), 1);
+    assert_eq!(client.abandon_query(prepared_b), Ok(()));
+    assert_eq!(client.queries_in_flight(), 0);
+    assert_eq!(client.num_cached_entries(), 1);
+}
+
+/// The log can hold the hint of a query that is in flight in the state. The
+/// query must end, as with `abandon_query`, and the state must stay valid.
+#[test]
+fn retire_hints_ends_a_query_in_flight_that_uses_the_hint() {
+    let params: ProtocolParams =
+        ProtocolParams::new(128, RECORD_SIZE, Some(16), 4, None).expect("params");
+    let entries: Vec<u8> = make_db(params.num_entries);
+    let server: Server = Server::new(params.clone(), 0, &entries).expect("server init");
+    let master_seed: [u8; 32] = [0xF9u8; 32];
+    let mut client: Client =
+        Client::offline_init(params.clone(), master_seed, [0xFAu8; 32], 0, &entries)
+            .expect("offline init");
+
+    let (index, retired) = prepare_first(&mut client, 0..params.num_entries);
+    let (other_index, other) = prepare_first(&mut client, (index + 1)..params.num_entries);
+    let backups_before: usize = client.remaining_backup_hints();
+    assert_eq!(client.retire_hints(&[retired.hint_index()]), Ok(()));
+    assert_eq!(client.queries_in_flight(), 1);
+    assert_eq!(client.remaining_backup_hints(), backups_before);
+
+    let response: Response = server.answer(&retired.query).expect("answer");
+    assert_eq!(
+        client.reconstruct_and_replenish(&retired, &response),
+        Err(ProtocolError::UnknownPreparedQuery)
+    );
+    assert_eq!(client.num_cached_entries(), 0);
+
+    let state: Vec<u8> = state_of(&client);
+    let (_, in_flight) =
+        Client::read_state(master_seed, [0xFBu8; 32], state.as_slice()).expect("read state");
+    assert_eq!(in_flight.len(), 1);
+    assert_eq!(in_flight[0].hint_index(), other.hint_index());
+    assert!(in_flight[0].query == other.query);
+
+    // The index of the retired query is free for a query with another hint.
+    match client.prepare_query(index) {
+        Ok(second) => assert_ne!(second.hint_index(), retired.hint_index()),
+        Err(error) => assert_eq!(error, ProtocolError::NoHintForIndex { index }),
+    }
+    let response: Response = server.answer(&other.query).expect("answer");
+    assert_eq!(
+        client.reconstruct_and_replenish(&other, &response),
+        Ok(record(&entries, other_index).to_vec())
+    );
+}

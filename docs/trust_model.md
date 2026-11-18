@@ -21,10 +21,10 @@ not implement it.
 
 ## Parties
 
-| Party  | Runs                                                | Holds                                    |
-|--------|-----------------------------------------------------|------------------------------------------|
-| Client | HintInit (`plinko_hints`), Query, Recon, UpdateHint | Master seed, hint file, cache of answers |
-| Server | Publishes `database.bin` and updates, Answer        | `database.bin`                           |
+| Party  | Runs                                                | Holds                                                        |
+|--------|-----------------------------------------------------|--------------------------------------------------------------|
+| Client | HintInit (`plinko_hints`), Query, Recon, UpdateHint | Master seed, hint file, state file (hints, cache of answers) |
+| Server | Publishes `database.bin` and updates, Answer        | `database.bin`                                               |
 
 There is no third party. A machine that the client rents to run HintInit holds
 the master seed and is thus part of the client (see
@@ -32,11 +32,12 @@ the master seed and is thus part of the client (see
 
 ## Secrets
 
-| Secret           | Where it is                                 | What a holder can do                                                      |
-|------------------|---------------------------------------------|---------------------------------------------------------------------------|
-| Master seed      | `--seed-file` of `plinko_hints`, the client | Compute all block keys and all block subsets, and so the set of each hint |
-| Hint file        | `--output` of `plinko_hints`, the client    | Client-secret; the parities and cutoffs belong to one client              |
-| PMNS level cache | Client memory (29 MB at mainnet, computed)  | Derived from the block keys; as secret as the master seed                 |
+| Secret            | Where it is                                 | What a holder can do                                                                                                           |
+|-------------------|---------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
+| Master seed       | `--seed-file` of `plinko_hints`, the client | Compute all block keys and all block subsets, and so the set of each hint                                                      |
+| Hint file         | `--output` of `plinko_hints`, the client    | Client-secret; the parities and cutoffs belong to one client                                                                   |
+| Client state file | `Client::write_state`, the client           | Read the indices of the answered queries with their records, and the indices of the queries in flight; it also holds the hints |
+| PMNS level cache  | Client memory (29 MB at mainnet, computed)  | Derived from the block keys; as secret as the master seed                                                                      |
 
 A party that holds the master seed and sees the queries can find the queried
 index of each query. For one offset of the query it computes the iPRF inverse
@@ -89,9 +90,10 @@ These points are outside the privacy claim today.
   ([update_strategy.md](update_strategy.md#database-versions)). The version is
   a label that the server states; the client cannot check it. A delta is not
   authenticated (TASK-24).
-- **Client state on disk.** A client that starts again from its hint file
-  after queries uses hints a second time
-  ([update_strategy.md](update_strategy.md#restart)).
+- **An old client state.** A client that starts again from its hint file
+  after queries, or from a state file that is older than its last query with
+  no log of the later hints, uses hints a second time. The code cannot detect
+  this ([online_protocol.md](online_protocol.md#client-state-and-restart)).
 - **Test data from the extractor.** The extractor does not read one consistent
   state; see [data_format.md](data_format.md#limits-of-the-extractor). This is
   not planned.
