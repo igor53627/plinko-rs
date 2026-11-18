@@ -183,7 +183,7 @@ Parameter sr_t_rounds : Z -> nat.
 
 - Kind: `Parameter`
 - Class: symbol
-- Meaning: Round key of a stage (level, round, stage size).
+- Meaning: Round key of a stage (level, round, stage size). In Rust it is a 128-bit AES output `r` mapped to `floor(r * n / 2^128)` for the stage size `n` (`sr_round_key`), and the constant 1 for `n = 2`.
 
 ```coq
 Parameter sr_round_key : nat -> nat -> Z -> Z.
@@ -203,7 +203,7 @@ Parameter sr_round_bit : nat -> nat -> Z -> Z -> bool.
 
 - Kind: `Axiom`
 - Class: math
-- Meaning: Each round key of a stage is below the stage size.
+- Meaning: Each round key of a stage is below the stage size. `floor(r * n / 2^128)` with `r < 2^128` has this property, and so has the constant 1 for `n = 2`.
 - Model that satisfies it: `sr_round_key := fun _ _ _ => 0`.
 
 ```coq

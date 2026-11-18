@@ -76,14 +76,14 @@ Synthetic datasets ([`gen_synthetic`](../plinko/src/bin/gen_synthetic.rs)) add `
 ## Hint file (`hints.bin`)
 
 Written by `plinko_hints --output` and read by the protocol client
-(`plinko::hints::HintSet`). All integers are little-endian. Version 2, where
+(`plinko::hints::HintSet`). All integers are little-endian. Version 3, where
 `r` is the record size of the database in bytes (`plinko_hints --record-size`,
 default 40):
 
 | Offset   | Size          | Field                                                  |
 |----------|---------------|--------------------------------------------------------|
 | 0        | 8             | magic `PLNKHINT`                                       |
-| 8        | 4             | version (`2`)                                          |
+| 8        | 4             | version (`3`)                                          |
 | 12       | 4             | `record_size` (`r`), 1 to 1,048,576                    |
 | 16       | 8             | `num_entries`: real records of the database            |
 | 24       | 8             | `block_size` (`w`)                                     |
@@ -100,7 +100,7 @@ default 40):
 - A parity is the XOR of the selected records, over all `r` bytes of a record.
 - Size: `96 + num_regular × (4 + r) + num_backup × (4 + 2r)` bytes. Mainnet v3 (`r` = 40) with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 1,073,741,920 bytes (computed).
 - The reader rejects a file of another version and a record size outside the range. `Client::from_hints` rejects a hint set whose record size differs from the parameters of the client.
-- Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record. No code reads it; run `plinko_hints` again.
+- Version 2 had the same layout and other PRP round keys ([`hint_generation.md`](hint_generation.md#round-keys)), so its parities are not valid for this code. Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record. No code reads version 1 or 2; run `plinko_hints` again.
 - The file holds no master seed. The file and the seed are client-secret.
 
 ## Limits of the extractor

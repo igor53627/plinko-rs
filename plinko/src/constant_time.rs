@@ -119,6 +119,15 @@ pub fn ct_xor_masked(dst: &mut [u8], src: &[u8], mask: u64) {
     }
 }
 
+/// Constant-time less-than for u32: returns 1 if `a < b`, else 0.
+///
+/// The result is the borrow of `a - b`, from bit operations on 32-bit words.
+/// A loop over a slice with this function can use vector instructions.
+#[inline]
+pub fn ct_lt_u32(a: u32, b: u32) -> u32 {
+    ((!a & b) | ((!a | b) & a.wrapping_sub(b))) >> 31
+}
+
 /// Constant-time select for u8: returns a if choice == 1, b if choice == 0
 #[inline]
 pub fn ct_select_u8(choice: u64, a: u8, b: u8) -> u8 {
@@ -351,6 +360,25 @@ mod tests {
         #[test]
         fn prop_ct_saturating_sub_matches_std(a: u64, b: u64) {
             prop_assert_eq!(ct_saturating_sub_u64(a, b), a.saturating_sub(b));
+        }
+
+        #[test]
+        fn prop_ct_lt_u32_matches_less_than(a: u32, b: u32) {
+            prop_assert_eq!(ct_lt_u32(a, b), u32::from(a < b));
+            // Values that differ in the low bits only.
+            let near: u32 = a ^ (b & 3);
+            prop_assert_eq!(ct_lt_u32(a, near), u32::from(a < near));
+            prop_assert_eq!(ct_lt_u32(near, a), u32::from(near < a));
+        }
+    }
+
+    #[test]
+    fn test_ct_lt_u32_basic() {
+        let values: [u32; 7] = [0, 1, 2, 0x7FFF_FFFF, 0x8000_0000, u32::MAX - 1, u32::MAX];
+        for a in values {
+            for b in values {
+                assert_eq!(ct_lt_u32(a, b), u32::from(a < b), "a {a:#x}, b {b:#x}");
+            }
         }
     }
 }

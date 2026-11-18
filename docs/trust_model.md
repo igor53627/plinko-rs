@@ -68,8 +68,8 @@ index to the server, on these conditions:
 - The client makes at most `Q` queries with one hint set. `Q` is the number of
   backup hints (8,388,608 at mainnet with lambda = 128). After that the client
   gets `NoBackupHintsLeft` and must run HintInit again.
-- The primitives are pseudorandom. See "PRP Deviations From An Ideal
-  Permutation" in [hint_generation.md](hint_generation.md).
+- The primitives are pseudorandom. See "Round Keys" in
+  [hint_generation.md](hint_generation.md#round-keys).
 
 **An observer of the network** sees the same as the server if the transport is
 not encrypted. The repository has no transport.
@@ -143,8 +143,11 @@ repository has none of them:
    bound to the attestation.
 3. An export of the hint file that only the client can read.
 4. Code without secret-dependent time and memory access. The current path
-   reads the hints at the secret hint index and divides by key-derived values
-   (TASK-20).
+   does a fixed sequence of operations on one thread, but it reads and writes
+   the hints at the secret hint index. The host of a confidential VM sees
+   these accesses and gets the iPRF mapping from them; their time also
+   depends on the caches
+   ([constant_time_mode.md](constant_time_mode.md#what-the-hint-index-access-reveals)).
 5. A cost that is practical. The path takes 16.7 ms per record: about 8,500
    core-hours for mainnet (computed from the per-record measurement), which
    is 355 days on one thread. Worker threads are opt-in (`--threads`), because

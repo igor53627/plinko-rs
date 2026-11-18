@@ -1,16 +1,39 @@
-//! Constant-time form of the streaming phase (`tee` feature, experimental).
+//! Constant-time forms of the two HintInit phases (`tee` feature, experimental).
 //!
 //! See `docs/constant_time_mode.md` for what this code hides and what it does
 //! not hide.
 
 use super::{
-    fill_entry_words, for_each_block, record_at, words_per_record, Accumulators, Layout,
-    PROGRESS_STEP,
+    fill_entry_words, for_each_block, hint_cutoffs_with, record_at, words_per_record, Accumulators,
+    HintCutoffs, Layout, PROGRESS_STEP,
 };
 use crate::constant_time::{ct_eq_u64, ct_lt_u64, ct_select_usize};
 use crate::hints::HintSet;
 use crate::iprf::{IprfTee, IprfTeeTable};
 use crate::subsets::{SubsetPrf, INVALID_CUTOFF};
+
+/// Computes the same cutoffs as [`super::hint_cutoffs`] with a fixed amount
+/// of work for each hint ([`SubsetPrf::cutoff_ct`]).
+///
+/// A worker writes only to its own part of the result, and the parts depend
+/// only on the hint counts and on `threads`. So more workers add no timing
+/// that depends on a secret value.
+pub fn hint_cutoffs_ct(
+    subset_prf: &SubsetPrf,
+    num_blocks: usize,
+    num_regular: usize,
+    num_backup: usize,
+    threads: usize,
+) -> HintCutoffs {
+    hint_cutoffs_with(
+        SubsetPrf::cutoff_ct,
+        subset_prf,
+        num_blocks,
+        num_regular,
+        num_backup,
+        threads,
+    )
+}
 
 /// Computes the parities of `hints` from `database` with a fixed amount of
 /// work for each entry.

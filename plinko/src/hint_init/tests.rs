@@ -397,6 +397,25 @@ fn record_at_returns_the_whole_record() {
     assert_eq!(record_at(&db, 21, 0), db.as_slice());
 }
 
+/// The constant-time cutoffs must equal the standard cutoffs.
+#[cfg(feature = "tee")]
+#[test]
+fn constant_time_cutoffs_equal_the_standard_cutoffs() {
+    let subset_prf: SubsetPrf = SubsetPrf::new(&[0x19u8; 32]);
+    for (num_blocks, num_regular, num_backup) in [(64usize, 7usize, 5usize), (2, 3, 3), (10, 40, 1)]
+    {
+        let expected: HintCutoffs =
+            hint_cutoffs(&subset_prf, num_blocks, num_regular, num_backup, 1);
+        for threads in [0usize, 1, 3, 16] {
+            assert_eq!(
+                hint_cutoffs_ct(&subset_prf, num_blocks, num_regular, num_backup, threads),
+                expected,
+                "{num_blocks} blocks, {threads} threads"
+            );
+        }
+    }
+}
+
 /// Sizes below a word, at a word boundary, and with a partial last word.
 #[test]
 fn shared_parity_keeps_the_byte_order_of_the_entry() {

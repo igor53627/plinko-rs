@@ -90,6 +90,71 @@ pub fn find_cutoff(values: &mut [u32], select_count: usize) -> u32 {
     }
 }
 
+/// Constant-time form of [`find_cutoff`]: the same result, and `values` is
+/// not changed.
+///
+/// The cutoff is the largest `t` that has at most `select_count` values
+/// below it. The function finds `t` bit by bit, from the most significant
+/// bit, and counts the values below a candidate with
+/// [`crate::constant_time::ct_lt_u32`]. It reads all values 33 times in
+/// index order. Its instructions and memory accesses depend only on
+/// `values.len()` and `select_count`, which are public.
+///
+/// # Panics
+///
+/// Panics if `select_count` is 0 or larger than `values.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use plinko::subsets::{find_cutoff_ct, INVALID_CUTOFF};
+///
+/// assert_eq!(find_cutoff_ct(&[50, 10, 40, 20, 30], 3), 40);
+/// assert_eq!(find_cutoff_ct(&[10, 20, 20, 30], 2), INVALID_CUTOFF);
+/// ```
+#[cfg(feature = "tee")]
+pub fn find_cutoff_ct(values: &[u32], select_count: usize) -> u32 {
+    use crate::constant_time::ct_lt_u32;
+
+    assert!(
+        select_count >= 1 && select_count <= values.len(),
+        "select_count must be in [1, {}], got {select_count}",
+        values.len()
+    );
+    assert!(
+        u32::try_from(values.len()).is_ok(),
+        "at most u32::MAX values"
+    );
+
+    if select_count == values.len() {
+        // The cutoff is the maximum plus 1; a maximum of u32::MAX wraps to
+        // INVALID_CUTOFF, which is 0.
+        let max: u32 = values.iter().fold(0u32, |max, &value| {
+            let keep_max: u32 = ct_lt_u32(value, max).wrapping_neg();
+            (max & keep_max) | (value & !keep_max)
+        });
+        return max.wrapping_add(1);
+    }
+
+    let count_below = |cutoff: u32| -> u32 {
+        values
+            .iter()
+            .fold(0u32, |count, &value| count + ct_lt_u32(value, cutoff))
+    };
+    let select_count: u32 = select_count as u32;
+
+    let mut cutoff: u32 = 0;
+    for bit in (0..u32::BITS).rev() {
+        let candidate: u32 = cutoff | (1u32 << bit);
+        let too_many: u32 = ct_lt_u32(select_count, count_below(candidate));
+        cutoff |= (1u32 << bit) & too_many.wrapping_sub(1);
+    }
+
+    // Equal values at the boundary: fewer than `select_count` values are below.
+    let has_tie: u32 = ct_lt_u32(count_below(cutoff), select_count);
+    cutoff & has_tie.wrapping_sub(1)
+}
+
 /// PRF that defines the block subset of each hint.
 ///
 /// Hint IDs are the global hint indices: regular hints are `0..num_regular`
@@ -182,6 +247,23 @@ impl SubsetPrf {
     ) -> u32 {
         self.select_values(hint_id, num_blocks, scratch);
         find_cutoff(scratch, subset_size)
+    }
+
+    /// Computes the same cutoff as [`SubsetPrf::cutoff`] in constant time.
+    ///
+    /// The select values are AES outputs of `hint_id`, and the cutoff comes
+    /// from [`find_cutoff_ct`]. The work depends only on `num_blocks` and
+    /// `subset_size`.
+    #[cfg(feature = "tee")]
+    pub fn cutoff_ct(
+        &self,
+        hint_id: u64,
+        num_blocks: usize,
+        subset_size: usize,
+        scratch: &mut Vec<u32>,
+    ) -> u32 {
+        self.select_values(hint_id, num_blocks, scratch);
+        find_cutoff_ct(scratch, subset_size)
     }
 }
 
@@ -360,5 +442,78 @@ mod tests {
         assert_eq!(subset_of(&prf_a, 0), subset_of(&prf_a, 0));
         assert_ne!(subset_of(&prf_a, 0), subset_of(&prf_a, 1));
         assert_ne!(subset_of(&prf_a, 0), subset_of(&prf_b, 0));
+    }
+
+    /// Equal values at the boundary, values at the ends of the `u32` range,
+    /// and each select count of each length.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn find_cutoff_ct_equals_find_cutoff() {
+        assert_eq!(find_cutoff_ct(&[50, 10, 40, 20, 30], 3), 40);
+        assert_eq!(find_cutoff_ct(&[10, 20, 20, 30], 2), INVALID_CUTOFF);
+        assert_eq!(find_cutoff_ct(&[7], 1), 8);
+        assert_eq!(find_cutoff_ct(&[3, u32::MAX], 2), INVALID_CUTOFF);
+        assert_eq!(find_cutoff_ct(&[u32::MAX, 3, u32::MAX], 1), u32::MAX);
+        assert_eq!(find_cutoff_ct(&[0, 0, 5], 1), INVALID_CUTOFF);
+
+        let mut state: u64 = 0x1234_5678_9ABC_DEF1;
+        let mut next = || -> u64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let (mut valid, mut invalid): (usize, usize) = (0, 0);
+        for case in 0..3000usize {
+            let len: usize = 1 + case % 40;
+            let values: Vec<u32> = (0..len)
+                .map(|_| match case % 4 {
+                    0 => (next() % 6) as u32,
+                    1 => u32::MAX - (next() % 4) as u32,
+                    2 => [0, 0x8000_0000, u32::MAX][(next() % 3) as usize],
+                    _ => next() as u32,
+                })
+                .collect();
+            for select_count in 1..=len {
+                let expected: u32 = find_cutoff(&mut values.clone(), select_count);
+                assert_eq!(
+                    find_cutoff_ct(&values, select_count),
+                    expected,
+                    "{values:?}, select_count {select_count}"
+                );
+                if expected == INVALID_CUTOFF {
+                    invalid += 1;
+                } else {
+                    valid += 1;
+                    assert_eq!(count_below(&values, expected), select_count);
+                }
+            }
+        }
+        assert!(
+            valid > 10_000 && invalid > 10_000,
+            "{valid} valid, {invalid} invalid"
+        );
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn cutoff_ct_equals_cutoff_for_prf_values() {
+        let prf: SubsetPrf = SubsetPrf::new(&[0x77u8; 32]);
+        let mut scratch: Vec<u32> = Vec::new();
+        for (num_blocks, hints) in [(2usize, 40u64), (10, 40), (64, 40), (1000, 20), (27_988, 4)] {
+            for subset_size in [
+                regular_subset_size(num_blocks),
+                backup_subset_size(num_blocks),
+            ] {
+                for hint_id in 0..hints {
+                    let expected: u32 = prf.cutoff(hint_id, num_blocks, subset_size, &mut scratch);
+                    assert_eq!(
+                        prf.cutoff_ct(hint_id, num_blocks, subset_size, &mut scratch),
+                        expected,
+                        "num_blocks {num_blocks}, subset_size {subset_size}, hint {hint_id}"
+                    );
+                }
+            }
+        }
     }
 }

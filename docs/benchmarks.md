@@ -18,7 +18,7 @@ These numbers are from the code of November 2026. All are from one machine
 | Record sizes 32, 40 and 256 bytes                    | CPU times within 1%; hint file 54.5 MB, 67.1 MB, 406.8 MB | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
 | Cutoffs of 262,144 hints at c = 27,988               | 10.58 s on 1 thread, 0.51 s on 24 threads                 | [`hint_generation.md`](hint_generation.md#worker-threads)                |
 | `protocol::compute_hints`, 24 blocks of w = 4096     | 47.7 s on 1 thread, 2.36 s on 24 threads                  | [`hint_generation.md`](hint_generation.md#worker-threads)                |
-| Constant-time path, 24 blocks of w = 1024            | 294.6 s on 1 thread, 14.3 s on 24 threads                 | [`constant_time_mode.md`](constant_time_mode.md#worker-threads)          |
+| Constant-time path, 24 blocks of w = 1024            | 291.3 s on 1 thread, 14.1 s on 24 threads                 | [`constant_time_mode.md`](constant_time_mode.md#worker-threads)          |
 | Constant-time path (feature `tee`), one thread       | 16.7 ms for each record                                   | [`trust_model.md`](trust_model.md#tee-mode)                              |
 
 Synthetic database: `cargo run --release -p plinko --bin gen_synthetic -- --help`.

@@ -89,6 +89,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`plinko_hints --constant-time --threads <n>`** is accepted (`tee` feature). The default of the constant-time path stays 1 thread: workers that update the same parity word delay each other, and which words those are depends on the hint indices (`docs/constant_time_mode.md`). Measured on 24 blocks of w = 1024: 294.6 s on 1 thread, 14.3 s on 24 threads, the same hint file as the standard path. The constant-time path now holds the parity accumulators in addition to the hint set, as the standard path does.
 - `docs/constant_time_mode.md` states that the cutoffs are not computed in constant time (`select_nth_unstable` over the select values of a hint).
 
+- **PRP round keys without a division, hint file version 3 (breaking)**: the round key of a Sometimes-Recurse stage of size `n` is a 128-bit AES output `r` mapped to `floor(r * n / 2^128)` (`reduce_below`, `sr_round_key` in `plinko/src/iprf.rs`). It was a 64-bit AES output modulo `n`: a division with a key-derived dividend in both paths. The hints of a seed change, so `HINT_FILE_VERSION` is 3 and the reader rejects version 2; run `plinko_hints` again. For a hint count that is not a power of two, the bias of a round key falls from `n / 2^64` to `n / 2^128` (`docs/hint_generation.md`, "Round Keys"). The 24-block run at w = 65536 on 24 threads takes 40.5 s (41.4 s before; inside the variation between runs).
+- **Constant-time path (feature `tee`)**: `SwapOrNotSrTee::inverse` and `SwapOrNotSrTee::forward` run every round of every stage under a mask, so their time does not depend on the input (`test_sr_tee_time_does_not_depend_on_the_input`, release build only; the test fails with the old function). `plinko_hints --constant-time` computes the cutoffs with the new `hint_init::hint_cutoffs_ct` (`subsets::find_cutoff_ct`, `SubsetPrf::cutoff_ct`, `constant_time::ct_lt_u32`): a bit-by-bit search with a fixed amount of work for each hint, 102 us against 39 us for each hint at c = 27,988. The cutoffs and the hint file are equal to those of the standard path.
+- `SwapOrNotTee` (feature `tee`) has no division on its input and panics for an input that is not below the domain (breaking). Its round key keeps the reduction modulo the domain of `SwapOrNot`.
+- `docs/constant_time_mode.md` states one claim (on one thread, the sequence of operations depends only on public values), the attacker that it covers in part (one that measures time: the number and the kind of the operations are fixed, the cache-dependent time of the accesses at the hint index is not) and the attacker that it does not cover (one that sees memory accesses, such as the host of a confidential VM). It states what the accesses at the hint index reveal (the iPRF mapping, and from it the queried index up to `c/2` candidates) and lists what remains. The help text of `--constant-time` makes the same claim.
+
 ### Fixed
 
 - **Inconsistent axiom in the formal model**: `sr_base_case_no_recurse` (`SwapOrNotSrSpec.v`) contradicted the proven bijection of Sometimes-Recurse, so `False` was derivable. The axiom is removed; `sr_base_case_equiv` now has the condition as a hypothesis.
@@ -102,6 +107,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Schema alignment**: corrected `ENTRY_SIZE` and alignment for 40-byte schema in CUDA kernel
 - **H200 misalignment crash**: reverted `ulong2` optimization that caused XID 13 crashes on H200 due to unaligned access
 - **48B expansion correctness**: ensured algorithmic correctness with chunked compaction for large datasets
+
+- The Sometimes-Recurse stage of size 2 swapped its two values with probability 1/4, not 1/2. It has the fixed round key 1 now (`test_sr_stage_of_size_2_is_uniform`). Only a PRP with a domain of exactly 2 was biased in a measurable way.
 
 ### Changed
 

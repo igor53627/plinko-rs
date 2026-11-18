@@ -5,7 +5,7 @@ mod hint_gen;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
-use plinko::hint_init::{fill_parities, hint_cutoffs};
+use plinko::hint_init::{fill_parities, hint_cutoffs, HintCutoffs};
 use plinko::hints::{seed_check, HintGeometry, HintSet};
 use plinko::iprf::Iprf;
 #[cfg(feature = "tee")]
@@ -81,7 +81,16 @@ fn main() -> eyre::Result<()> {
     let threads: usize = worker_threads(&args);
     info!(threads, "Worker threads");
     let subset_prf: SubsetPrf = SubsetPrf::new(&master_seed);
-    let (regular_cutoffs, backup_cutoffs) = hint_cutoffs(
+    type CutoffsFn = fn(&SubsetPrf, usize, usize, usize, usize) -> HintCutoffs;
+    #[cfg(feature = "tee")]
+    let cutoffs_of: CutoffsFn = if args.constant_time() {
+        plinko::hint_init::hint_cutoffs_ct
+    } else {
+        hint_cutoffs
+    };
+    #[cfg(not(feature = "tee"))]
+    let cutoffs_of: CutoffsFn = hint_cutoffs;
+    let (regular_cutoffs, backup_cutoffs) = cutoffs_of(
         &subset_prf,
         geom.c,
         params.num_regular,

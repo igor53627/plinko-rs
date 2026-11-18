@@ -17,11 +17,11 @@
       "author": "maintainer"
     },
     {
-      "content": "Constant-time HintInit (--constant-time flag) for TEE execution: Uses IprfTee::inverse_ct with fixed MAX_PREIMAGES=512 iterations, one AES-128 select value compared with the 32-bit cutoff of the hint for block membership (plinko::subsets, RMS24 median cutoff), ct_select_usize for branchless index clamping, and ct_xor_32_masked for conditional XOR. Protects against timing side-channels; cache side-channels are out of scope (would require ORAM). Verified against Plinko.v Coq spec and paper Fig. 7.",
+      "content": "Constant-time HintInit (plinko_hints --constant-time, tee build feature, experimental, not part of the trust model): hint_init::hint_cutoffs_ct (subsets::find_cutoff_ct, a bit-by-bit search) and hint_init::fill_parities_ct (IprfTeeTable::inverse_ct with MAX_PREIMAGES=512 fixed slots, SwapOrNotSrTee::inverse_many_ct over every round of every stage, one AES-128 select value compared with the 32-bit cutoff, masked XOR into the parity accumulators). Claim: on one thread the sequence of operations depends only on public values. Not hidden: the memory accesses at the secret hint index, which give the iPRF mapping to an observer of pages or cache lines, and the cache-dependent time of these accesses (docs/constant_time_mode.md). PRP round keys have no division (reduce_below in plinko/src/iprf.rs).",
       "author": "maintainer"
     },
     {
-      "content": "Hint file: plinko_hints --output writes all hints of one client to one file (plinko::hints::HintSet; magic PLNKHINT, version 2, record size, geometry, hint counts, seed check, regular records of 4 + r bytes and backup records of 4 + 2r bytes for a record size r, BLAKE3 checksum; layout in docs/data_format.md). The record size is a parameter: plinko_hints --record-size (default 40, the v3 record), ProtocolParams::record_size. A parity is the XOR of whole records. The file does not contain the master seed (--seed-file); Client::from_hints loads it and rejects another record size, geometry, hint count or seed.",
+      "content": "Hint file: plinko_hints --output writes all hints of one client to one file (plinko::hints::HintSet; magic PLNKHINT, version 3, record size, geometry, hint counts, seed check, regular records of 4 + r bytes and backup records of 4 + 2r bytes for a record size r, BLAKE3 checksum; layout in docs/data_format.md). The record size is a parameter: plinko_hints --record-size (default 40, the v3 record), ProtocolParams::record_size. A parity is the XOR of whole records. The file does not contain the master seed (--seed-file); Client::from_hints loads it and rejects another record size, geometry, hint count or seed.",
       "author": "maintainer"
     },
     {
@@ -66,7 +66,7 @@
     },
     {
       "title": "Hint Generation",
-      "purpose": "Document plinko/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, block subsets stored as one 32-bit PRF cutoff per hint (plinko::subsets), constant-time mode (--constant-time) for TEE execution with ct_lt_u64, ct_select_usize, ct_xor_32_masked",
+      "purpose": "Document plinko/src/bin/plinko_hints.rs: streaming HintInit, regular/backup hints, block subsets stored as one 32-bit PRF cutoff per hint (plinko::subsets), constant-time mode (--constant-time, tee feature) with ct_lt_u64, ct_select_usize and masked XOR",
       "parent": "Plinko Protocol"
     },
     {

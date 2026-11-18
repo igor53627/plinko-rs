@@ -13,9 +13,9 @@
 //! so a hint file and a hint set of the protocol client come from one
 //! implementation. The result does not depend on the thread count.
 //!
-//! With the `tee` feature, `fill_parities_ct` is the experimental
-//! constant-time form of the second phase. It is not part of the trust model
-//! (`docs/trust_model.md`).
+//! With the `tee` feature, `hint_cutoffs_ct` and `fill_parities_ct` are the
+//! experimental constant-time forms of the two phases. They are not part of
+//! the trust model (`docs/trust_model.md`).
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -29,7 +29,7 @@ mod tee;
 mod tests;
 
 #[cfg(feature = "tee")]
-pub use tee::fill_parities_ct;
+pub use tee::{fill_parities_ct, hint_cutoffs_ct};
 
 /// Entries between two progress reports of one worker.
 const PROGRESS_STEP: usize = 1024;
@@ -69,9 +69,33 @@ pub fn hint_cutoffs(
     num_backup: usize,
     threads: usize,
 ) -> HintCutoffs {
+    hint_cutoffs_with(
+        SubsetPrf::cutoff,
+        subset_prf,
+        num_blocks,
+        num_regular,
+        num_backup,
+        threads,
+    )
+}
+
+/// Function that computes the cutoff of one hint: [`SubsetPrf::cutoff`] or
+/// its constant-time form.
+type CutoffFn = fn(&SubsetPrf, u64, usize, usize, &mut Vec<u32>) -> u32;
+
+/// [`hint_cutoffs`] with the given cutoff function.
+fn hint_cutoffs_with(
+    cutoff_of: CutoffFn,
+    subset_prf: &SubsetPrf,
+    num_blocks: usize,
+    num_regular: usize,
+    num_backup: usize,
+    threads: usize,
+) -> HintCutoffs {
     let mut regular: Vec<u32> = vec![INVALID_CUTOFF; num_regular];
     let mut backup: Vec<u32> = vec![INVALID_CUTOFF; num_backup];
     cutoffs_into(
+        cutoff_of,
         subset_prf,
         num_blocks,
         regular_subset_size(num_blocks),
@@ -80,6 +104,7 @@ pub fn hint_cutoffs(
         threads,
     );
     cutoffs_into(
+        cutoff_of,
         subset_prf,
         num_blocks,
         backup_subset_size(num_blocks),
@@ -92,9 +117,10 @@ pub fn hint_cutoffs(
 
 /// Writes the cutoffs of the hints `first_hint_id..` to `cutoffs`.
 ///
-/// Each worker takes one contiguous part of `cutoffs`; the work for a hint
-/// does not depend on the hint.
+/// Each worker takes one contiguous part of `cutoffs` and writes only to it;
+/// which hints a worker gets depends only on the hint count and on `threads`.
 fn cutoffs_into(
+    cutoff_of: CutoffFn,
     subset_prf: &SubsetPrf,
     num_blocks: usize,
     subset_size: usize,
@@ -113,7 +139,8 @@ fn cutoffs_into(
                 let mut scratch: Vec<u32> = Vec::with_capacity(num_blocks);
                 let part_first_id: u64 = first_hint_id + (part_idx * part_len) as u64;
                 for (k, cutoff) in part.iter_mut().enumerate() {
-                    *cutoff = subset_prf.cutoff(
+                    *cutoff = cutoff_of(
+                        subset_prf,
                         part_first_id + k as u64,
                         num_blocks,
                         subset_size,

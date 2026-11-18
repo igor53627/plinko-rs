@@ -47,7 +47,7 @@ The seed and `hints.bin` are client-secret. Whoever holds both can link each que
 
 ## Constant-time mode (TEE)
 
-Experimental, and not part of the [trust model](trust_model.md#tee-mode): there is no attestation, no seed channel into an enclave, and no hint export. The mode uses one thread unless `--threads` is given ([`constant_time_mode.md`](constant_time_mode.md#worker-threads)). The default build does not contain it; build with the `tee` feature ([`FEATURE_FLAGS.md`](FEATURE_FLAGS.md)).
+Experimental, and not part of the [trust model](trust_model.md#tee-mode): there is no attestation, no seed channel into an enclave, and no hint export. The mode does a fixed sequence of operations, but it does not hide its memory accesses or their cache-dependent time; the host of a confidential VM sees the accesses ([`constant_time_mode.md`](constant_time_mode.md#attacker)). The mode uses one thread unless `--threads` is given ([`constant_time_mode.md`](constant_time_mode.md#worker-threads)). The default build does not contain it; build with the `tee` feature ([`FEATURE_FLAGS.md`](FEATURE_FLAGS.md)).
 
 ```bash
 cargo build --release -p plinko --bin plinko_hints --features tee

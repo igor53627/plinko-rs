@@ -6,14 +6,14 @@
 //! A parity is the XOR of whole database records, so it has the record size
 //! of the database. The record size is a field of the file.
 //!
-//! # File format (version 2)
+//! # File format (version 3)
 //!
 //! All integers are little-endian. `r` is the record size in bytes.
 //!
 //! | Offset | Size | Field                                              |
 //! |--------|------|----------------------------------------------------|
 //! | 0      | 8    | magic `PLNKHINT`                                   |
-//! | 8      | 4    | version (`2`)                                      |
+//! | 8      | 4    | version (`3`)                                      |
 //! | 12     | 4    | `record_size` (`r`), 1 to [`MAX_RECORD_SIZE`]      |
 //! | 16     | 8    | `num_entries`: real database records               |
 //! | 24     | 8    | `block_size` (`w`)                                 |
@@ -30,7 +30,9 @@
 //! [`crate::subsets`].
 //!
 //! Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record.
-//! This module does not read it.
+//! Version 2 has the layout of version 3; its hints come from an iPRF with
+//! other PRP round keys, so they are not the hints of this code for the same
+//! seed. This module reads neither.
 //!
 //! The file does not contain the master seed. The client needs both. The file
 //! is client-secret all the same: the parities and cutoffs belong to one client.
@@ -45,7 +47,7 @@ pub const MAX_RECORD_SIZE: usize = 1 << 20;
 /// First bytes of a hint file.
 pub const HINT_FILE_MAGIC: [u8; 8] = *b"PLNKHINT";
 /// Format version that this module reads and writes.
-pub const HINT_FILE_VERSION: u32 = 2;
+pub const HINT_FILE_VERSION: u32 = 3;
 
 const HEADER_SIZE: usize = 64;
 const CHECKSUM_SIZE: usize = 32;
@@ -535,7 +537,7 @@ mod tests {
         assert_eq!(bytes.len(), 64 + 2 * 9 + 14 + 32);
         assert_eq!(bytes.len() as u64, hints.serialized_len());
         assert_eq!(&bytes[0..8], b"PLNKHINT");
-        assert_eq!(bytes[8..12], [2, 0, 0, 0]);
+        assert_eq!(bytes[8..12], [3, 0, 0, 0]);
         assert_eq!(bytes[12..16], [5, 0, 0, 0]);
         assert_eq!(bytes[16..24], [90, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(bytes[24..32], [16, 0, 0, 0, 0, 0, 0, 0]);
@@ -675,7 +677,7 @@ mod tests {
             Err(HintFileError::BadMagic)
         ));
 
-        for version in [1u8, 3] {
+        for version in [1u8, 2, 4] {
             let mut bad_version: Vec<u8> = bytes.clone();
             bad_version[8] = version;
             assert!(matches!(

@@ -127,7 +127,7 @@ meaning = "Number of rounds of a stage with `n` values. The bijection proofs hol
 file = "specs/SwapOrNotSrSpec.v"
 name = "sr_round_key"
 class = "symbol"
-meaning = "Round key of a stage (level, round, stage size)."
+meaning = "Round key of a stage (level, round, stage size). In Rust it is a 128-bit AES output `r` mapped to `floor(r * n / 2^128)` for the stage size `n` (`sr_round_key`), and the constant 1 for `n = 2`."
 
 [[item]]
 file = "specs/SwapOrNotSrSpec.v"
@@ -139,7 +139,7 @@ meaning = "Swap decision of a stage (level, round, canonical value, stage size).
 file = "specs/SwapOrNotSrSpec.v"
 name = "sr_round_key_in_range"
 class = "math"
-meaning = "Each round key of a stage is below the stage size."
+meaning = "Each round key of a stage is below the stage size. `floor(r * n / 2^128)` with `r < 2^128` has this property, and so has the constant 1 for `n = 2`."
 model = "`sr_round_key := fun _ _ _ => 0`."
 
 # --- specs/IprfSpec.v --------------------------------------------------------

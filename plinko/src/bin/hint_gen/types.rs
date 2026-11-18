@@ -51,7 +51,10 @@ pub struct Args {
     #[arg(long)]
     pub print_seed: bool,
 
-    /// Enable the constant-time processing path (experimental, `tee` feature).
+    /// Enable the constant-time path (experimental, `tee` feature). On one
+    /// thread, the sequence of operations depends only on public values. The
+    /// memory accesses at the secret hint index, and the time that follows
+    /// from them, are not hidden (docs/constant_time_mode.md).
     #[cfg(feature = "tee")]
     #[arg(long)]
     pub constant_time: bool,

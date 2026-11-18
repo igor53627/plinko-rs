@@ -43,15 +43,7 @@ impl SwapOrNotSrTee {
     }
 
     fn derive_round_key(&self, level: usize, round: usize, n: u64) -> u64 {
-        let mut input = [0u8; 16];
-        let combined = ((level as u64) << 32) | (round as u64);
-        input[0..8].copy_from_slice(&combined.to_be_bytes());
-        input[8..16].copy_from_slice(&n.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        u64::from_be_bytes(block[0..8].try_into().unwrap()) % n
+        sr_round_key(&self.cipher, level, round, n)
     }
 
     fn prf_bit_ct(&self, level: usize, round: usize, canonical: u64) -> u64 {
@@ -66,11 +58,14 @@ impl SwapOrNotSrTee {
         (block[0] & 1) as u64
     }
 
+    /// One Swap-or-Not round of a stage of size `n`, for `x < n`.
     fn round_ct(&self, level: usize, round_num: usize, n: u64, x: u64) -> u64 {
         use crate::constant_time::{ct_lt_u64, ct_select_u64};
 
         let k_i = self.derive_round_key(level, round_num, n);
-        let partner = (k_i + n - (x % n)) % n;
+        // x < n and k_i < n, so this is (k_i - x) mod n without a division.
+        let wrap = n & ct_lt_u64(k_i, x).wrapping_neg();
+        let partner = k_i.wrapping_sub(x).wrapping_add(wrap);
 
         let x_lt_partner = ct_lt_u64(x, partner);
         let canonical = ct_select_u64(x_lt_partner, partner, x);
@@ -79,78 +74,50 @@ impl SwapOrNotSrTee {
         ct_select_u64(swap, partner, x)
     }
 
-    fn apply_rounds_forward(&self, level: usize, n: u64, x: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
-        let mut val = x;
-        for r in 0..t {
-            val = self.round_ct(level, r, n, val);
-        }
-        val
-    }
-
-    fn apply_rounds_inverse(&self, level: usize, n: u64, y: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
-        let mut val = y;
-        for r in (0..t).rev() {
-            val = self.round_ct(level, r, n, val);
-        }
-        val
-    }
-
+    /// Applies the permutation to `x`.
+    ///
+    /// Every stage runs all its rounds. After the value left the recursion (it
+    /// is in the upper half of a stage), the later stages run on 0 and a mask
+    /// keeps the value. The number of AES blocks depends only on the domain.
+    ///
+    /// # Precondition
+    /// `x` must be below the domain. This is not checked in release builds,
+    /// to avoid a branch on a secret value.
     pub fn forward(&self, x: u64) -> u64 {
         use crate::constant_time::{ct_ge_u64, ct_select_u64};
 
         debug_assert!(x < self.domain, "x must be < domain");
-        let mut val = x % self.domain;
-        let mut n = self.domain;
-        let mut result = 0u64;
+        let mut val = x;
         let mut done = 0u64;
 
-        for level in 0..self.max_levels {
-            let should_skip = ct_ge_u64(1, n) | done;
-
-            val = ct_select_u64(should_skip, val, self.apply_rounds_forward(level, n, val));
-
-            let half = n / 2;
-            let exited = ct_ge_u64(val, half);
-            result = ct_select_u64(exited & (1 - done), val, result);
-            done |= exited;
-
-            n = ct_select_u64(should_skip, n, half);
-        }
-
-        ct_select_u64(done, result, val)
-    }
-
-    pub fn inverse(&self, y: u64) -> u64 {
-        use crate::constant_time::{ct_eq_u64, ct_ge_u64, ct_gt_u64, ct_lt_u64, ct_select_u64};
-
-        debug_assert!(y < self.domain, "y must be < domain");
-        let y = y % self.domain;
-
-        let mut sizes = [0u64; 64];
-        let max_levels = self.max_levels.min(sizes.len());
-        let mut n = self.domain;
-        let mut stopped: u64 = 0;
-
-        for size in sizes.iter_mut().take(max_levels) {
-            let should_record = ct_gt_u64(n, 1) & ct_eq_u64(stopped, 0);
-            *size = ct_select_u64(should_record, n, 0);
-
-            let half = n / 2;
-            let y_in_right = ct_ge_u64(y, half);
-            let stopping_now = should_record & y_in_right;
-            stopped = ct_select_u64(stopping_now, 1, stopped);
-
-            n = ct_select_u64(should_record & ct_eq_u64(stopped, 0), half, n);
-        }
-
-        let mut val = y;
-        for (level, &n_lvl) in sizes.iter().take(max_levels).enumerate().rev() {
-            let skip = ct_lt_u64(n_lvl, 2);
-            val = ct_select_u64(skip, val, self.apply_rounds_inverse(level, n_lvl, val));
+        let sizes: Vec<u64> = sr_level_sizes(self.domain, self.max_levels);
+        for (level, &n) in sizes.iter().enumerate() {
+            // All ones while the value is in the recursion, then zero.
+            let in_stage = done.wrapping_sub(1);
+            let mut stage_val = val & in_stage;
+            let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+            for r in 0..t {
+                stage_val = self.round_ct(level, r, n, stage_val);
+            }
+            val = ct_select_u64(done, val, stage_val);
+            done |= ct_ge_u64(val, n / 2);
         }
         val
+    }
+
+    /// Inverts the permutation for `y`.
+    ///
+    /// One-element form of [`SwapOrNotSrTee::inverse_many_ct`]: every stage
+    /// runs all its rounds, so the time does not depend on `y`
+    /// (`test_sr_tee_time_does_not_depend_on_the_input`).
+    ///
+    /// # Precondition
+    /// `y` must be below the domain. This is not checked in release builds,
+    /// to avoid a branch on a secret value.
+    pub fn inverse(&self, y: u64) -> u64 {
+        let mut vals: [u64; 1] = [y];
+        self.inverse_many_ct(&mut vals);
+        vals[0]
     }
 
     /// Inverts every element of `vals` in place. Each result equals
@@ -159,8 +126,7 @@ impl SwapOrNotSrTee {
     /// Every element runs every round of every stage; a mask keeps the
     /// elements that a stage does not hold. The number of AES blocks and the
     /// memory accesses depend only on the domain and on `vals.len()`, not on
-    /// the values. [`SwapOrNotSrTee::inverse`] runs only the stages that hold
-    /// its input, so its time depends on the input.
+    /// the values.
     ///
     /// # Precondition
     /// Each element must be below the domain. This is not checked in release
@@ -206,10 +172,16 @@ impl SwapOrNotSrTee {
     }
 }
 
-/// Constant-time SwapOrNot PRP for TEE execution
+/// Branchless form of the one-level [`SwapOrNot`] PRP.
 ///
-/// Functionally equivalent to SwapOrNot but uses branchless operations
-/// to prevent timing side-channels.
+/// It gives the same values as `SwapOrNot` for inputs below the domain.
+/// HintInit does not use it; the constant-time path uses [`SwapOrNotSrTee`].
+///
+/// A round has no branch and no division on the input. The round key is
+/// `AES(round || domain) mod domain`, the same as in `SwapOrNot`: one division
+/// per round whose dividend depends on the key and the round, not on the
+/// input. The time of that division depends on the operand values on some
+/// CPUs.
 pub struct SwapOrNotTee {
     cipher: Aes128,
     domain: u64,
@@ -247,12 +219,13 @@ impl SwapOrNotTee {
         (block[0] & 1) as u64
     }
 
-    /// Constant-time round - no secret-dependent branches
+    /// One round for `x < domain`, with no branch and no division on `x`.
     fn round_ct(&self, round_num: usize, x: u64) -> u64 {
         use crate::constant_time::{ct_lt_u64, ct_select_u64};
 
         let k_i = self.derive_round_key(round_num);
-        let partner = (k_i + self.domain - (x % self.domain)) % self.domain;
+        let wrap: u64 = self.domain & ct_lt_u64(k_i, x).wrapping_neg();
+        let partner: u64 = k_i.wrapping_sub(x).wrapping_add(wrap);
 
         // Constant-time max: canonical = max(x, partner)
         let x_lt_partner = ct_lt_u64(x, partner);
@@ -263,7 +236,16 @@ impl SwapOrNotTee {
         ct_select_u64(swap, partner, x)
     }
 
+    /// Image of `x` under the permutation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `x >= domain`.
     pub fn forward(&self, x: u64) -> u64 {
+        assert!(
+            x < self.domain,
+            "SwapOrNotTee input must be below the domain"
+        );
         let mut val = x;
         for round in 0..self.num_rounds {
             val = self.round_ct(round, val);
@@ -271,7 +253,16 @@ impl SwapOrNotTee {
         val
     }
 
+    /// Preimage of `y` under the permutation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `y >= domain`.
     pub fn inverse(&self, y: u64) -> u64 {
+        assert!(
+            y < self.domain,
+            "SwapOrNotTee input must be below the domain"
+        );
         let mut val = y;
         for round in (0..self.num_rounds).rev() {
             val = self.round_ct(round, val);
@@ -816,5 +807,76 @@ mod tests {
             assert_eq!(got[..count], expected, "IprfTeeTable::inverse_ct, y={y}");
             assert!(got[count..].iter().all(|&x| x == 0), "y={y}");
         }
+    }
+
+    /// The single-value functions must equal the standard PRP on every small
+    /// domain, with the stage of size 2 and the domain of size 1.
+    #[test]
+    fn test_sr_tee_single_value_matches_standard_on_small_domains() {
+        for domain in 1..=33u64 {
+            let key: PrfKey128 = [0x40 + domain as u8; 16];
+            let prp: SwapOrNotSr = SwapOrNotSr::with_security(key, domain, 16);
+            let prp_tee: SwapOrNotSrTee = SwapOrNotSrTee::with_security(key, domain, 16);
+            for x in 0..domain {
+                let y: u64 = prp.forward(x);
+                assert_eq!(prp_tee.forward(x), y, "forward, domain {domain}, x {x}");
+                assert_eq!(prp_tee.inverse(y), x, "inverse, domain {domain}, y {y}");
+            }
+        }
+    }
+
+    /// The time of the single-value functions must not depend on the input.
+    ///
+    /// Output 4095 leaves the recursion at the first of the 12 stages, and
+    /// output 0 passes all of them. When `inverse` ran only the stages that
+    /// hold its input, its time for these two values differed by a factor of
+    /// about 12. The forward inputs are the preimages of the same outputs.
+    ///
+    /// The samples of the inputs are interleaved and the test compares
+    /// medians, so a load on the machine changes all inputs alike.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "timing test; run with --release")]
+    fn test_sr_tee_time_does_not_depend_on_the_input() {
+        use std::hint::black_box;
+        use std::time::{Duration, Instant};
+
+        const SAMPLES: usize = 101;
+        const MAX_RATIO: f64 = 1.25;
+
+        let prp: SwapOrNotSrTee = SwapOrNotSrTee::new([0x4Du8; 16], 4096);
+        let outputs: [u64; 4] = [0, 63, 2047, 4095];
+        let inputs: Vec<u64> = outputs.iter().map(|&y| prp.inverse(y)).collect();
+
+        let mut inverse_times: Vec<Vec<Duration>> = vec![Vec::new(); outputs.len()];
+        let mut forward_times: Vec<Vec<Duration>> = vec![Vec::new(); outputs.len()];
+        for _ in 0..SAMPLES {
+            for k in 0..outputs.len() {
+                let start: Instant = Instant::now();
+                black_box(prp.inverse(black_box(outputs[k])));
+                inverse_times[k].push(start.elapsed());
+
+                let start: Instant = Instant::now();
+                black_box(prp.forward(black_box(inputs[k])));
+                forward_times[k].push(start.elapsed());
+            }
+        }
+
+        let assert_equal_medians = |name: &str, times: &mut [Vec<Duration>]| {
+            let medians: Vec<f64> = times
+                .iter_mut()
+                .map(|samples| {
+                    samples.sort_unstable();
+                    samples[samples.len() / 2].as_secs_f64()
+                })
+                .collect();
+            let slowest: f64 = medians.iter().copied().fold(f64::MIN, f64::max);
+            let fastest: f64 = medians.iter().copied().fold(f64::MAX, f64::min);
+            assert!(
+                slowest < fastest * MAX_RATIO,
+                "{name}: the median time depends on the input: {medians:?}"
+            );
+        };
+        assert_equal_medians("inverse", &mut inverse_times);
+        assert_equal_medians("forward", &mut forward_times);
     }
 }

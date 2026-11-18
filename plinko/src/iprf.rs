@@ -208,6 +208,43 @@ fn sr_level_sizes(domain: u64, max_levels: usize) -> Vec<u64> {
     sizes
 }
 
+/// Maps a 128-bit value to `0..n`: `floor(r * n / 2^128)`.
+///
+/// For a uniform `r`, each result has `floor(2^128 / n)` or `ceil(2^128 / n)`
+/// preimages, so the statistical distance from uniform is at most `n / 2^128`.
+/// The function has two widening multiplications and no division, so its time
+/// does not depend on `r`.
+fn reduce_below(r: u128, n: u64) -> u64 {
+    let high: u128 = u128::from((r >> 64) as u64) * u128::from(n);
+    let low: u128 = u128::from(r as u64) * u128::from(n);
+    ((high + (low >> 64)) >> 64) as u64
+}
+
+/// Round key of round `round` of the Sometimes-Recurse stage `level`, which
+/// has size `n`: a value in `0..n`.
+///
+/// The key is one AES block, `AES(level || round || n)`, reduced with
+/// [`reduce_below`]. `level`, `round` and `n` are public.
+///
+/// The stage of size 2 has the fixed key 1. Its partner function is then
+/// `x -> 1 - x`, and the swap bit of its one round alone decides the order of
+/// the two values. With key 0 the round never swaps, so a random key gives a
+/// swap with probability 1/4 and not 1/2.
+fn sr_round_key(cipher: &Aes128, level: usize, round: usize, n: u64) -> u64 {
+    if n == 2 {
+        return 1;
+    }
+    let mut input = [0u8; 16];
+    let combined = ((level as u64) << 32) | (round as u64);
+    input[0..8].copy_from_slice(&combined.to_be_bytes());
+    input[8..16].copy_from_slice(&n.to_be_bytes());
+
+    let mut block = GenericArray::from(input);
+    cipher.encrypt_block(&mut block);
+
+    reduce_below(u128::from_be_bytes(block.into()), n)
+}
+
 /// AES input prefix of the swap decision of one round.
 fn sr_swap_prefix(level: usize, round: usize) -> [u8; 8] {
     (((level as u64) << 32) | (round as u64) | 0x80000000).to_be_bytes()
@@ -221,10 +258,9 @@ fn sr_swap_prefix(level: usize, round: usize) -> [u8; 8] {
 /// Round counts are computed per Morris-Rogaway Section 5 "Strategy 1" (equal error split)
 /// with 128-bit security by default.
 ///
-/// Two deviations from that analysis: a round key is a 64-bit AES output modulo the
-/// stage size, which is exactly uniform only for a power of two, and the stage of
-/// size 2 has one round. See "PRP Deviations From An Ideal Permutation" in
-/// `docs/hint_generation.md`.
+/// A round key is a 128-bit AES output reduced to the stage size without a division
+/// (statistical distance from uniform at most `n / 2^128`), and the stage of size 2
+/// has one round with the fixed key 1. See "Round Keys" in `docs/hint_generation.md`.
 pub struct SwapOrNotSr {
     cipher: Aes128,
     domain: u64,
@@ -255,15 +291,7 @@ impl SwapOrNotSr {
     }
 
     fn derive_round_key(&self, level: usize, round: usize, n: u64) -> u64 {
-        let mut input = [0u8; 16];
-        let combined = ((level as u64) << 32) | (round as u64);
-        input[0..8].copy_from_slice(&combined.to_be_bytes());
-        input[8..16].copy_from_slice(&n.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        u64::from_be_bytes(block[0..8].try_into().unwrap()) % n
+        sr_round_key(&self.cipher, level, round, n)
     }
 
     fn prf_bit(&self, level: usize, round: usize, canonical: u64, _n: u64) -> bool {
@@ -1352,5 +1380,100 @@ mod tests {
             domain as usize,
             "SR PRP is not a permutation"
         );
+    }
+
+    /// `reduce_below(r, n)` must be `floor(r * n / 2^128)`.
+    #[test]
+    fn test_reduce_below_is_the_scaled_floor() {
+        // For a power of two the result is the top bits of `r`.
+        let values: [u128; 5] = [
+            0,
+            1,
+            u128::MAX,
+            0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210,
+            (1u128 << 127) + 5,
+        ];
+        for bits in [1u32, 7, 32, 63] {
+            for r in values {
+                assert_eq!(
+                    u128::from(reduce_below(r, 1u64 << bits)),
+                    r >> (128 - bits),
+                    "bits {bits}, r {r:#x}"
+                );
+            }
+        }
+
+        // For r = q * 2^64 the result is floor(q * n / 2^64), one 128-bit product.
+        for n in [1u64, 3, 10, 1000, 100_003, u64::MAX] {
+            for q in [0u64, 1, 12_345, u64::MAX / 3, u64::MAX] {
+                let expected: u64 = ((u128::from(q) * u128::from(n)) >> 64) as u64;
+                assert_eq!(
+                    reduce_below(u128::from(q) << 64, n),
+                    expected,
+                    "n {n}, q {q}"
+                );
+            }
+            assert_eq!(reduce_below(0, n), 0);
+            assert_eq!(reduce_below(u128::MAX, n), n - 1);
+        }
+
+        // The low half of `r` counts. For n = 3 the results change above
+        // (2^128 - 1) / 3 and above two times that value.
+        let third: u128 = u128::MAX / 3;
+        assert_eq!(reduce_below(third, 3), 0);
+        assert_eq!(reduce_below(third + 1, 3), 1);
+        assert_eq!(reduce_below(2 * third, 3), 1);
+        assert_eq!(reduce_below(2 * third + 1, 3), 2);
+    }
+
+    #[test]
+    fn test_sr_round_key_is_below_the_stage_size() {
+        let cipher = Aes128::new(&GenericArray::from([0x21u8; 16]));
+        for n in [2u64, 3, 5, 1000, 65_536, 100_003, u64::MAX] {
+            for round in 0..200 {
+                let key: u64 = sr_round_key(&cipher, 3, round, n);
+                assert!(key < n, "n {n}, round {round}");
+                if n == 2 {
+                    assert_eq!(key, 1, "the stage of size 2 has the fixed key 1");
+                }
+            }
+        }
+
+        // 600 keys of a stage of size 3: mean 200 for each value, sd 11.5.
+        let mut counts: [u32; 3] = [0; 3];
+        for round in 0..600 {
+            counts[sr_round_key(&cipher, 1, round, 3) as usize] += 1;
+        }
+        assert!(
+            counts.iter().all(|&count| (130..=270).contains(&count)),
+            "{counts:?}"
+        );
+        // The key depends on the level and on the stage size.
+        assert_ne!(
+            (0..8)
+                .map(|round| sr_round_key(&cipher, 1, round, 1000))
+                .collect::<Vec<u64>>(),
+            (0..8)
+                .map(|round| sr_round_key(&cipher, 2, round, 1000))
+                .collect::<Vec<u64>>()
+        );
+    }
+
+    /// The stage of size 2 must swap its values with probability 1/2. With a
+    /// random round key it was 1/4: 4000 keys give a mean of 2000 with a
+    /// standard deviation of 32, where the old code gave about 1000.
+    #[test]
+    fn test_sr_stage_of_size_2_is_uniform() {
+        let mut swaps: u32 = 0;
+        for index in 0..4000u32 {
+            let mut key: PrfKey128 = [0x6Bu8; 16];
+            key[0..4].copy_from_slice(&index.to_be_bytes());
+            let prp: SwapOrNotSr = SwapOrNotSr::new(key, 2);
+            let image: u64 = prp.forward(0);
+            assert_eq!(prp.forward(1), 1 - image);
+            assert_eq!(prp.inverse(image), 0);
+            swaps += image as u32;
+        }
+        assert!((1800..=2200).contains(&swaps), "swaps: {swaps}");
     }
 }

@@ -27,7 +27,7 @@ streaming loop.
 | File                                | Purpose                                                                               |
 |-------------------------------------|---------------------------------------------------------------------------------------|
 | `plinko/src/hint_init.rs`           | `hint_cutoffs` and `fill_parities` (standard streaming phase), both on worker threads |
-| `plinko/src/hint_init/tee.rs`       | `fill_parities_ct`, the constant-time streaming phase; only with the `tee` feature    |
+| `plinko/src/hint_init/tee.rs`       | `hint_cutoffs_ct` and `fill_parities_ct`, the constant-time phases; `tee` feature     |
 | `plinko/src/hint_init/tests.rs`     | Tests of both streaming phases against the hint definition of Fig. 7                  |
 | `plinko/src/bin/plinko_hints.rs`    | The binary: reads the options, maps the database, calls `plinko::hint_init`           |
 | `plinko/src/bin/hint_gen/types.rs`  | `Args` (with `--record-size` and `--threads`)                                         |
@@ -40,7 +40,8 @@ streaming loop.
 - `hint_init::fill_parities(hints, database, block_iprfs, subset_prf, threads, progress)`
   writes the parities into a `plinko::hints::HintSet`, which holds the geometry and the
   cutoffs and has the record size of the database. `hint_init::fill_parities_ct` is the
-  same with `IprfTee` (`tee` feature).
+  same with `IprfTee`, and `hint_init::hint_cutoffs_ct` gives the same cutoffs with a
+  fixed amount of work for each hint (`tee` feature).
 - `protocol::compute_hints` uses all available cores;
   `protocol::compute_hints_with_threads` takes the thread count.
 - The block keys come from `protocol::derive_block_keys` in the binary and in the library.
@@ -222,7 +223,14 @@ The hint file of the run after the change is byte-identical to the file of the
 run before it. This database has 24 blocks, so a cutoff is cheap here; the cost
 of a cutoff grows with `c`. `hint_cutoffs` alone at c = 27,988 for 262,144
 hints: 10.58 s on 1 thread (40 us per hint), 1.48 s on 8 threads and 0.51 s on
-24 threads, with equal cutoffs.
+24 threads, with equal cutoffs. `hint_cutoffs_ct` (`tee` feature) takes 26.7 s
+on 1 thread (102 us per hint) and 1.26 s on 24 threads for the same input
+([constant_time_mode.md](constant_time_mode.md#fixed-cutoff-work)).
+
+Round keys without a division (2026-11-18, hint file version 3; see
+[Round Keys](#round-keys)). The 24-block run on 24 threads: 40.5 s of wall
+time and 915.8 s of CPU time, against 41.4 s and 931.6 s before. The
+difference is inside the variation between runs.
 
 `protocol::compute_hints` used one thread before; it now calls the same code.
 24 blocks of w = 4096 (98,304 records of 40 bytes, 1,048,576 hints): 47.7 s on
@@ -247,30 +255,39 @@ padding). No mainnet run was done; these numbers are extrapolations from the
 A build without hardware AES is about 20 times slower. On arm64 the `aes` crate
 uses hardware AES only with `RUSTFLAGS="--cfg aes_armv8"`.
 
-## PRP Deviations From An Ideal Permutation
+## Round Keys
 
-Two properties of `SwapOrNotSr` and `SwapOrNotSrTee` are not changed, because a
-change gives other hints for the same seed:
+The round key of a round in a stage of size `n` is one AES block,
+`AES(level || round || n)`, mapped to `0..n` as `floor(r * n / 2^128)` with the
+128-bit block value `r` (`reduce_below` in `plinko/src/iprf.rs`).
+`SwapOrNotSr` and `SwapOrNotSrTee` share this function (`sr_round_key`).
 
-- **Round key reduction.** The round key of a stage of size `n` is a 64-bit AES
-  output modulo `n`. For a power of two `n` the result is exactly uniform. The
-  default hint count (`2 * lambda * w` with lambda = 128) is a power of two, so
-  all stage sizes are powers of two and there is no bias. For other hint
+- **No division.** The mapping is two widening multiplications. Before hint
+  file version 3 the key was a 64-bit AES output modulo `n`: a division whose
+  dividend depends on the block key, in the standard path and in the
+  constant-time path.
+- **Bias.** For a power of two `n` the result is the top bits of `r` and is
+  exactly uniform. The default hint count (`2 * lambda * w` with lambda = 128)
+  is a power of two, so all stage sizes are powers of two. For other hint
   counts the statistical distance of a round key from uniform is at most
-  `n / 2^64`; the sum over all round keys of one block key is about
-  `1600 * total_hints / 2^64` (2^-29 for 16.8 million hints). The "128 bits"
-  of the round count formula do not include this term.
-- **Stage of size 2.** This stage has one round, which swaps its two values
-  with probability 1/4, not 1/2 (measured over 48,000 keys on a domain of 2:
-  0.2495). As the last stage of a larger domain this has no measurable effect,
-  because the stage of size 4 before it already gives a uniform order: over
-  48,000 keys, the permutations of a domain of 4 are uniform (chi-square 21.1,
-  23 degrees of freedom), and so is the pair `(inverse(0), inverse(1))` for the
-  domains 4 and 8. A PRP with a domain of exactly 2 is biased; the generator
-  makes one only with two hints in total (w = 1, lambda = 1, one backup hint).
+  `n / 2^128`; the sum over all round keys of one block key is about
+  `1600 * total_hints / 2^128` (2^-93 for 16.8 million hints; computed). With
+  the old reduction the sum was about `1600 * total_hints / 2^64` (2^-29).
+- **Stage of size 2.** This stage has one round and the fixed round key 1. The
+  partner of `x` is then `1 - x`, and the swap bit alone decides the order of
+  the two values: a swap with probability 1/2
+  (`test_sr_stage_of_size_2_is_uniform`). With a random key the round never
+  swaps for key 0, which gave a swap with probability 1/4 (measured before the
+  change over 48,000 keys on a domain of 2: 0.2495). As the last stage of a
+  larger domain the old behavior had no measurable effect; a PRP with a domain
+  of exactly 2 was biased.
 
-The replacement of the reduction is part of TASK-20, which also removes the
-division from the constant-time path.
+The change gives other hints for the same seed. A hint file of version 2 is
+not valid for this code, and the reader rejects it
+([`data_format.md`](data_format.md#hint-file-hintsbin)).
+
+The one-level `SwapOrNot` is not changed: its round key is an AES output
+modulo the domain. HintInit and the protocol do not use it.
 
 ## Hint File
 
