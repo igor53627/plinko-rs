@@ -10,6 +10,7 @@ This repository contains a Plinko PIR library for a database of fixed-size recor
 - **HintInit** (`plinko/src/hint_init.rs`): Cutoffs and parities of a hint set on worker threads (standard streaming phase; a constant-time one with the opt-in `tee` feature). The one implementation for the binary and for the protocol client.
 - **Hint generation binary** (`plinko/src/bin/plinko_hints.rs`, `plinko/src/bin/hint_gen/`): Runs HintInit over mmap'd `database.bin`. `--output` writes the hint file.
 - **Hint file** (`plinko/src/hints.rs`): Hint set of one client and its on-disk format, shared by the generator and the client.
+- **Delta** (`plinko/src/delta.rs`): Changed records between two database versions and their on-disk format; the client applies deltas in version order.
 - **Protocol client and server model** (`plinko/src/protocol.rs`): Loads a hint file (`Client::from_hints`), builds queries, reconstructs answers, and applies updates. In-memory model; the record size is a parameter (`ProtocolParams::record_size`); see [`online_protocol.md`](online_protocol.md).
 - **GPU benchmark** (`plinko/cuda/`, `plinko/src/gpu.rs`; opt-in features `gpu` and `cuda`): throughput benchmark. It does not compute Plinko hints and is not part of the [trust model](trust_model.md#gpu-path).
 - **Formal models** (`plinko/formal/`; sketch `docs/Plinko.v`): Rocq models of the algorithms and proofs about the models. They do not verify the Rust code; see [`verification.md`](verification.md).

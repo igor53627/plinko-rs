@@ -19,7 +19,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | [`online_protocol.md`](online_protocol.md) | Query, decoy, query format, retry rule, query limit; deviations from the paper |
 | [`keyword_lookup.md`](keyword_lookup.md) | Proposal: lookup by key through a cuckoo table (not implemented) |
 | [`constant_time_mode.md`](constant_time_mode.md) | TEE / constant-time HintInit |
-| [`update_strategy.md`](update_strategy.md) | Hint updates: what is implemented, cost, what is not ([`../plinko/docs/delta-format.md`](../plinko/docs/delta-format.md) is an old proposal) |
+| [`update_strategy.md`](update_strategy.md) | Database versions, deltas, restart, cost, rule for a database that grows, what is not implemented |
 | [`verification.md`](verification.md) | Rocq, Kani, proptest entry points |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | Build and run commands |
 | [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md) | `cuda`, `parallel` build features |

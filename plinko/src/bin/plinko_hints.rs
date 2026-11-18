@@ -6,7 +6,7 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use plinko::hint_init::{fill_parities, hint_cutoffs, HintCutoffs};
-use plinko::hints::{seed_check, HintGeometry, HintSet};
+use plinko::hints::{seed_check, DatabaseSnapshot, HintGeometry, HintSet};
 use plinko::iprf::Iprf;
 #[cfg(feature = "tee")]
 use plinko::iprf::IprfTee;
@@ -65,6 +65,17 @@ fn main() -> eyre::Result<()> {
     let master_seed = parse_or_generate_seed(&args)?;
     let start = Instant::now();
 
+    // One pass over the file before the parity pass. The mapping is not a
+    // snapshot: a file that changes during the run gives hints that do not
+    // belong to this hash.
+    let database: DatabaseSnapshot = DatabaseSnapshot::of(args.database_version, db_bytes);
+    info!(
+        database_version = database.version,
+        blake3 = %blake3::Hash::from_bytes(database.hash).to_hex(),
+        hash_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
+        "Database hash"
+    );
+
     info!(step = "1/4", count = geom.c, "Generating iPRF keys");
     let block_keys = derive_block_keys(&master_seed, geom.c);
 
@@ -106,6 +117,7 @@ fn main() -> eyre::Result<()> {
             num_blocks: geom.c as u64,
         },
         seed_check(&master_seed),
+        database,
         regular_cutoffs,
         backup_cutoffs,
     )?;

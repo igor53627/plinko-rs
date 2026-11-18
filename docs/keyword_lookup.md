@@ -188,10 +188,12 @@ lookups per hint set, and a change of one record changes a 320-byte entry.
 - **Wrong answers of the server** are not covered (TASK-24).
 - **Inserts after the build** move records, and a key that cannot be placed
   needs a stash or a rebuild with a new seed. A new seed moves all records, so
-  all clients must run HintInit again. The rules for this are part of TASK-23.
+  all clients must run HintInit again. An insert that moves records in a table
+  of fixed capacity is a delta
+  ([update_strategy.md](update_strategy.md#a-database-that-grows)).
 - **The seed is public.** An attacker can search for keys that share both
   buckets. More than 8 such keys cannot be placed with b = 4. At build time the
-  builder answers with a new seed; for inserts this is a point for TASK-23.
+  builder answers with a new seed; for inserts there is no answer yet.
 
 ## Implementation Steps
 

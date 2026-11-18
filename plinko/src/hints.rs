@@ -6,14 +6,20 @@
 //! A parity is the XOR of whole database records, so it has the record size
 //! of the database. The record size is a field of the file.
 //!
-//! # File format (version 3)
+//! A hint set belongs to one version of the database
+//! ([`HintSet::database_version`]). HintInit sets it, and each delta that the
+//! client applies moves it forward ([`crate::delta`]). The set also keeps the
+//! version and the hash of the database bytes that HintInit read
+//! ([`DatabaseSnapshot`]).
+//!
+//! # File format (version 4)
 //!
 //! All integers are little-endian. `r` is the record size in bytes.
 //!
 //! | Offset | Size | Field                                              |
 //! |--------|------|----------------------------------------------------|
 //! | 0      | 8    | magic `PLNKHINT`                                   |
-//! | 8      | 4    | version (`3`)                                      |
+//! | 8      | 4    | version (`4`)                                      |
 //! | 12     | 4    | `record_size` (`r`), 1 to [`MAX_RECORD_SIZE`]      |
 //! | 16     | 8    | `num_entries`: real database records               |
 //! | 24     | 8    | `block_size` (`w`)                                 |
@@ -21,7 +27,10 @@
 //! | 40     | 8    | `num_regular`: number of regular hints             |
 //! | 48     | 8    | `num_backup`: number of backup hints               |
 //! | 56     | 8    | seed check (see [`seed_check`])                    |
-//! | 64     | `4 + r` each | regular hints: cutoff (`u32`), parity      |
+//! | 64     | 8    | `database_version`: version that the parities belong to |
+//! | 72     | 8    | `init_version`: version that HintInit read         |
+//! | 80     | 32   | `init_hash`: BLAKE3 hash of the database bytes that HintInit read |
+//! | 112    | `4 + r` each | regular hints: cutoff (`u32`), parity      |
 //! | ...    | `4 + 2r` each | backup hints: cutoff (`u32`), parity in, parity out |
 //! | end-32 | 32   | BLAKE3 hash of all bytes before it                 |
 //!
@@ -32,11 +41,19 @@
 //! Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record.
 //! Version 2 has the layout of version 3; its hints come from an iPRF with
 //! other PRP round keys, so they are not the hints of this code for the same
-//! seed. This module reads neither.
+//! seed. Version 3 has no database version and no database hash. This module
+//! reads none of them.
 //!
 //! The file does not contain the master seed. The client needs both. The file
 //! is client-secret all the same: the parities and cutoffs belong to one client.
+//!
+//! The file holds the hints of a client that has sent no query. It has no
+//! field for the state that a query changes (used hints, promoted backup
+//! hints, cached records).
 
+use crate::checked_io::{
+    u32_at, u64_at, HashingReader, HashingWriter, TrailerError, CHECKSUM_SIZE,
+};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -47,10 +64,11 @@ pub const MAX_RECORD_SIZE: usize = 1 << 20;
 /// First bytes of a hint file.
 pub const HINT_FILE_MAGIC: [u8; 8] = *b"PLNKHINT";
 /// Format version that this module reads and writes.
-pub const HINT_FILE_VERSION: u32 = 3;
+pub const HINT_FILE_VERSION: u32 = 4;
 
-const HEADER_SIZE: usize = 64;
-const CHECKSUM_SIZE: usize = 32;
+const HEADER_SIZE: usize = 112;
+/// Magic and format version: the part of the header that all versions share.
+const PREFIX_SIZE: usize = 12;
 const CUTOFF_SIZE: usize = 4;
 const SEED_CHECK_LABEL: &[u8] = b"plinko_seed_check";
 /// Upper bound on the hints whose cutoffs are allocated before their records are read.
@@ -71,6 +89,41 @@ pub struct HintGeometry {
     pub num_blocks: u64,
 }
 
+/// Version and hash of the database bytes that HintInit read.
+///
+/// The publisher of a database assigns the version. The hash is the BLAKE3
+/// hash of the records one after another, without padding: the hash of the
+/// database file. A caller can compare it with a value that the publisher
+/// gives. The hash does not change when the client applies a delta.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DatabaseSnapshot {
+    /// Version of the database.
+    pub version: u64,
+    /// BLAKE3 hash of the database bytes.
+    pub hash: [u8; 32],
+}
+
+impl DatabaseSnapshot {
+    /// Computes the snapshot of `database`, which holds the records of
+    /// version `version` one after another.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::hints::DatabaseSnapshot;
+    ///
+    /// let snapshot = DatabaseSnapshot::of(7, b"records");
+    /// assert_eq!(snapshot.version, 7);
+    /// assert_eq!(snapshot.hash, *blake3::hash(b"records").as_bytes());
+    /// ```
+    pub fn of(version: u64, database: &[u8]) -> Self {
+        Self {
+            version,
+            hash: *blake3::hash(database).as_bytes(),
+        }
+    }
+}
+
 /// All hints of one client for one database and one master seed.
 ///
 /// A regular hint has a cutoff and one parity: the XOR of one record from each
@@ -85,6 +138,9 @@ pub struct HintGeometry {
 pub struct HintSet {
     geometry: HintGeometry,
     seed_check: [u8; 8],
+    /// Version of the database that the parities belong to; at least `init.version`.
+    database_version: u64,
+    init: DatabaseSnapshot,
     regular_cutoffs: Vec<u32>,
     /// `regular_cutoffs.len() * record_size` bytes.
     regular_parities: Vec<u8>,
@@ -128,6 +184,11 @@ pub enum HintFileError {
     InvalidRecordSize(u32),
     /// The parities of this many hints do not fit in memory on this platform.
     TooManyHints(u64),
+    /// The database version of the parities is below the version that HintInit read.
+    InvalidDatabaseVersion {
+        database_version: u64,
+        init_version: u64,
+    },
     /// The stored hash does not match the content.
     ChecksumMismatch,
     /// Bytes follow the checksum.
@@ -149,6 +210,13 @@ impl Display for HintFileError {
                 )
             }
             Self::TooManyHints(count) => write!(f, "hint count {count} is too large"),
+            Self::InvalidDatabaseVersion {
+                database_version,
+                init_version,
+            } => write!(
+                f,
+                "database version {database_version} is below the HintInit version {init_version}"
+            ),
             Self::ChecksumMismatch => write!(f, "hint file checksum mismatch"),
             Self::TrailingData => write!(f, "hint file has data after its checksum"),
         }
@@ -170,37 +238,14 @@ impl From<io::Error> for HintFileError {
     }
 }
 
-struct HashingWriter<W: Write> {
-    inner: W,
-    hasher: blake3::Hasher,
-}
-
-impl<W: Write> HashingWriter<W> {
-    fn write_hashed(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.hasher.update(bytes);
-        self.inner.write_all(bytes)
+impl From<TrailerError> for HintFileError {
+    fn from(error: TrailerError) -> Self {
+        match error {
+            TrailerError::Io(error) => Self::Io(error),
+            TrailerError::ChecksumMismatch => Self::ChecksumMismatch,
+            TrailerError::TrailingData => Self::TrailingData,
+        }
     }
-}
-
-struct HashingReader<R: Read> {
-    inner: R,
-    hasher: blake3::Hasher,
-}
-
-impl<R: Read> HashingReader<R> {
-    fn read_hashed(&mut self, bytes: &mut [u8]) -> io::Result<()> {
-        self.inner.read_exact(bytes)?;
-        self.hasher.update(bytes);
-        Ok(())
-    }
-}
-
-fn u32_at(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"))
-}
-
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("8 bytes"))
 }
 
 fn hint_count(count: u64) -> Result<usize, HintFileError> {
@@ -232,7 +277,9 @@ impl HintSet {
     /// Creates a hint set with the given cutoffs and zero parities.
     ///
     /// The number of regular hints is `regular_cutoffs.len()`, and the number
-    /// of backup hints is `backup_cutoffs.len()`.
+    /// of backup hints is `backup_cutoffs.len()`. `database` identifies the
+    /// database bytes that the parities are computed from; the hint set
+    /// starts at its version.
     ///
     /// # Errors
     /// Returns [`HintFileError::InvalidRecordSize`] if `geometry.record_size`
@@ -242,11 +289,14 @@ impl HintSet {
     /// # Examples
     ///
     /// ```
-    /// use plinko::hints::{seed_check, HintGeometry, HintSet};
+    /// use plinko::hints::{seed_check, DatabaseSnapshot, HintGeometry, HintSet};
     ///
     /// let geometry = HintGeometry { num_entries: 4, record_size: 5, block_size: 2, num_blocks: 2 };
-    /// let mut hints = HintSet::new(geometry, seed_check(&[7u8; 32]), vec![9, 11], vec![13]).unwrap();
+    /// let database = DatabaseSnapshot::of(3, &[0u8; 20]);
+    /// let mut hints =
+    ///     HintSet::new(geometry, seed_check(&[7u8; 32]), database, vec![9, 11], vec![13]).unwrap();
     /// assert_eq!((hints.num_regular(), hints.num_backup()), (2, 1));
+    /// assert_eq!((hints.database_version(), hints.init_database()), (3, database));
     /// assert_eq!(hints.regular_parity(1), [0u8; 5]);
     /// hints.regular_parity_mut(1).copy_from_slice(&[1, 2, 3, 4, 5]);
     /// assert_eq!(hints.regular_parity(1), [1, 2, 3, 4, 5]);
@@ -255,6 +305,7 @@ impl HintSet {
     pub fn new(
         geometry: HintGeometry,
         seed_check: [u8; 8],
+        database: DatabaseSnapshot,
         regular_cutoffs: Vec<u32>,
         backup_cutoffs: Vec<u32>,
     ) -> Result<Self, HintFileError> {
@@ -264,6 +315,8 @@ impl HintSet {
         Ok(Self {
             geometry,
             seed_check,
+            database_version: database.version,
+            init: database,
             regular_parities: vec![0u8; regular_bytes],
             backup_parities: vec![0u8; backup_bytes],
             regular_cutoffs,
@@ -279,6 +332,26 @@ impl HintSet {
     /// Check value of the master seed, from [`seed_check`].
     pub fn seed_check(&self) -> [u8; 8] {
         self.seed_check
+    }
+
+    /// Version of the database that the parities belong to.
+    ///
+    /// It is the HintInit version until the client applies a delta
+    /// ([`crate::protocol::Client::apply_delta`]).
+    pub fn database_version(&self) -> u64 {
+        self.database_version
+    }
+
+    /// Version and hash of the database bytes that HintInit read.
+    pub fn init_database(&self) -> DatabaseSnapshot {
+        self.init
+    }
+
+    /// Sets the version after a delta. The caller has applied the delta to
+    /// every parity.
+    pub(crate) fn set_database_version(&mut self, version: u64) {
+        debug_assert!(version >= self.database_version);
+        self.database_version = version;
     }
 
     /// Bytes of one database record, and of one parity.
@@ -362,10 +435,12 @@ impl HintSet {
     /// # Examples
     ///
     /// ```
-    /// use plinko::hints::{seed_check, HintGeometry, HintSet};
+    /// use plinko::hints::{seed_check, DatabaseSnapshot, HintGeometry, HintSet};
     ///
     /// let geometry = HintGeometry { num_entries: 4, record_size: 40, block_size: 2, num_blocks: 2 };
-    /// let mut hints = HintSet::new(geometry, seed_check(&[7u8; 32]), vec![9], Vec::new()).unwrap();
+    /// let database = DatabaseSnapshot::of(0, &[0u8; 160]);
+    /// let mut hints =
+    ///     HintSet::new(geometry, seed_check(&[7u8; 32]), database, vec![9], Vec::new()).unwrap();
     /// hints.regular_parity_mut(0).fill(1);
     /// let mut bytes: Vec<u8> = Vec::new();
     /// hints.write_to(&mut bytes).unwrap();
@@ -373,10 +448,7 @@ impl HintSet {
     /// assert_eq!(HintSet::read_from(bytes.as_slice()).unwrap(), hints);
     /// ```
     pub fn write_to<W: Write>(&self, writer: W) -> io::Result<()> {
-        let mut out = HashingWriter {
-            inner: writer,
-            hasher: blake3::Hasher::new(),
-        };
+        let mut out = HashingWriter::new(writer);
 
         let mut header = [0u8; HEADER_SIZE];
         header[0..8].copy_from_slice(&HINT_FILE_MAGIC);
@@ -388,6 +460,9 @@ impl HintSet {
         header[40..48].copy_from_slice(&(self.num_regular() as u64).to_le_bytes());
         header[48..56].copy_from_slice(&(self.num_backup() as u64).to_le_bytes());
         header[56..64].copy_from_slice(&self.seed_check);
+        header[64..72].copy_from_slice(&self.database_version.to_le_bytes());
+        header[72..80].copy_from_slice(&self.init.version.to_le_bytes());
+        header[80..112].copy_from_slice(&self.init.hash);
         out.write_hashed(&header)?;
 
         let size: usize = self.record_size();
@@ -408,9 +483,7 @@ impl HintSet {
             out.write_hashed(parities)?;
         }
 
-        let checksum = out.hasher.finalize();
-        out.inner.write_all(checksum.as_bytes())?;
-        out.inner.flush()
+        out.finish()
     }
 
     /// Reads a hint set and checks its magic, version, record size, length, and checksum.
@@ -419,13 +492,12 @@ impl HintSet {
     /// not check the geometry against a database or the seed check against a
     /// seed; [`crate::protocol::Client::from_hints`] does that.
     pub fn read_from<R: Read>(reader: R) -> Result<Self, HintFileError> {
-        let mut input = HashingReader {
-            inner: reader,
-            hasher: blake3::Hasher::new(),
-        };
+        let mut input = HashingReader::new(reader);
 
+        // The header of an older version is shorter, so the magic and the
+        // version are checked before the other fields are read.
         let mut header = [0u8; HEADER_SIZE];
-        input.read_hashed(&mut header)?;
+        input.read_hashed(&mut header[..PREFIX_SIZE])?;
         if header[0..8] != HINT_FILE_MAGIC {
             return Err(HintFileError::BadMagic);
         }
@@ -433,6 +505,7 @@ impl HintSet {
         if version != HINT_FILE_VERSION {
             return Err(HintFileError::UnsupportedVersion(version));
         }
+        input.read_hashed(&mut header[PREFIX_SIZE..])?;
         let geometry = HintGeometry {
             record_size: u32_at(&header, 12),
             num_entries: u64_at(&header, 16),
@@ -446,6 +519,18 @@ impl HintSet {
         let backup_bytes: usize = parity_bytes(num_backup, 2, size)?;
         let mut seed_check = [0u8; 8];
         seed_check.copy_from_slice(&header[56..64]);
+        let database_version: u64 = u64_at(&header, 64);
+        let mut init = DatabaseSnapshot {
+            version: u64_at(&header, 72),
+            hash: [0u8; 32],
+        };
+        init.hash.copy_from_slice(&header[80..112]);
+        if database_version < init.version {
+            return Err(HintFileError::InvalidDatabaseVersion {
+                database_version,
+                init_version: init.version,
+            });
+        }
 
         // The counts come from the file: allocate as the records arrive.
         let mut record: Vec<u8> = vec![0u8; CUTOFF_SIZE + 2 * size];
@@ -471,25 +556,13 @@ impl HintSet {
             backup_parities.extend_from_slice(&record[CUTOFF_SIZE..]);
         }
 
-        let mut stored = [0u8; CHECKSUM_SIZE];
-        input.inner.read_exact(&mut stored)?;
-        if input.hasher.finalize() != stored {
-            return Err(HintFileError::ChecksumMismatch);
-        }
-
-        let mut extra = [0u8; 1];
-        loop {
-            match input.inner.read(&mut extra) {
-                Ok(0) => break,
-                Ok(_) => return Err(HintFileError::TrailingData),
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(HintFileError::Io(error)),
-            }
-        }
+        input.finish()?;
 
         Ok(Self {
             geometry,
             seed_check,
+            database_version,
+            init,
             regular_cutoffs,
             regular_parities,
             backup_cutoffs,
@@ -502,6 +575,11 @@ impl HintSet {
 mod tests {
     use super::*;
 
+    const INIT: DatabaseSnapshot = DatabaseSnapshot {
+        version: 0x0102,
+        hash: [0xD4; 32],
+    };
+
     /// Record size 5: not a multiple of 8, and smaller than a cutoff plus a word.
     fn sample() -> HintSet {
         let geometry = HintGeometry {
@@ -513,10 +591,12 @@ mod tests {
         let mut hints: HintSet = HintSet::new(
             geometry,
             [1, 2, 3, 4, 5, 6, 7, 8],
+            INIT,
             vec![0x0A0B_0C0D, 0],
             vec![0xFFFF_FFFE],
         )
         .expect("valid record size");
+        hints.set_database_version(0x0305);
         hints.regular_parity_mut(0).fill(0x11);
         hints.backup_parity_in_mut(0).fill(0x22);
         hints.backup_parity_out_mut(0).fill(0x33);
@@ -534,10 +614,10 @@ mod tests {
         let hints: HintSet = sample();
         let bytes: Vec<u8> = serialized(&hints);
 
-        assert_eq!(bytes.len(), 64 + 2 * 9 + 14 + 32);
+        assert_eq!(bytes.len(), 112 + 2 * 9 + 14 + 32);
         assert_eq!(bytes.len() as u64, hints.serialized_len());
         assert_eq!(&bytes[0..8], b"PLNKHINT");
-        assert_eq!(bytes[8..12], [3, 0, 0, 0]);
+        assert_eq!(bytes[8..12], [4, 0, 0, 0]);
         assert_eq!(bytes[12..16], [5, 0, 0, 0]);
         assert_eq!(bytes[16..24], [90, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(bytes[24..32], [16, 0, 0, 0, 0, 0, 0, 0]);
@@ -545,10 +625,13 @@ mod tests {
         assert_eq!(bytes[40..48], [2, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(bytes[48..56], [1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(bytes[56..64], [1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(bytes[64..68], [0x0D, 0x0C, 0x0B, 0x0A]);
-        assert_eq!(bytes[68..73], [0x11; 5]);
-        assert_eq!(bytes[73..82], [0; 9]);
-        let backup_start: usize = 64 + 2 * 9;
+        assert_eq!(bytes[64..72], [0x05, 0x03, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes[72..80], [0x02, 0x01, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes[80..112], [0xD4; 32]);
+        assert_eq!(bytes[112..116], [0x0D, 0x0C, 0x0B, 0x0A]);
+        assert_eq!(bytes[116..121], [0x11; 5]);
+        assert_eq!(bytes[121..130], [0; 9]);
+        let backup_start: usize = 112 + 2 * 9;
         assert_eq!(
             bytes[backup_start..backup_start + 4],
             [0xFE, 0xFF, 0xFF, 0xFF]
@@ -570,7 +653,7 @@ mod tests {
             num_blocks: 2,
         };
         let mut hints: HintSet =
-            HintSet::new(geometry, [0u8; 8], vec![1, 2, 3], vec![4, 5]).expect("hint set");
+            HintSet::new(geometry, [0u8; 8], INIT, vec![1, 2, 3], vec![4, 5]).expect("hint set");
         assert_eq!(hints.regular_cutoffs(), [1, 2, 3]);
         assert_eq!(hints.backup_cutoffs(), [4, 5]);
 
@@ -592,10 +675,18 @@ mod tests {
         let hints: HintSet = sample();
         let read: HintSet = HintSet::read_from(serialized(&hints).as_slice()).expect("read");
         assert_eq!(read, hints);
+        assert_eq!(read.database_version(), 0x0305);
+        assert_eq!(read.init_database(), INIT);
 
-        let empty: HintSet =
-            HintSet::new(hints.geometry(), hints.seed_check(), Vec::new(), Vec::new())
-                .expect("empty hint set");
+        let empty: HintSet = HintSet::new(
+            hints.geometry(),
+            hints.seed_check(),
+            INIT,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("empty hint set");
+        assert_eq!(empty.database_version(), INIT.version);
         let read: HintSet = HintSet::read_from(serialized(&empty).as_slice()).expect("read");
         assert_eq!(read, empty);
 
@@ -605,7 +696,7 @@ mod tests {
                 ..hints.geometry()
             };
             let mut wide: HintSet =
-                HintSet::new(geometry, [9u8; 8], vec![7, 8], vec![9]).expect("hint set");
+                HintSet::new(geometry, [9u8; 8], INIT, vec![7, 8], vec![9]).expect("hint set");
             for (i, byte) in wide.regular_parity_mut(1).iter_mut().enumerate() {
                 *byte = i as u8 ^ 0x5A;
             }
@@ -636,7 +727,7 @@ mod tests {
     #[test]
     fn corruption_of_a_parity_is_a_checksum_mismatch() {
         let mut bytes: Vec<u8> = serialized(&sample());
-        bytes[70] ^= 0x80;
+        bytes[118] ^= 0x80;
         assert!(matches!(
             HintSet::read_from(bytes.as_slice()),
             Err(HintFileError::ChecksumMismatch)
@@ -677,7 +768,7 @@ mod tests {
             Err(HintFileError::BadMagic)
         ));
 
-        for version in [1u8, 2, 4] {
+        for version in [1u8, 2, 3, 5] {
             let mut bad_version: Vec<u8> = bytes.clone();
             bad_version[8] = version;
             assert!(matches!(
@@ -685,6 +776,30 @@ mod tests {
                 Err(HintFileError::UnsupportedVersion(found)) if found == u32::from(version)
             ));
         }
+
+        // A file of version 3 with no hint has 96 bytes, fewer than the
+        // header of version 4. It is an old file, not a damaged file.
+        let mut old_file: Vec<u8> = bytes[..96].to_vec();
+        old_file[8] = 3;
+        assert!(matches!(
+            HintSet::read_from(old_file.as_slice()),
+            Err(HintFileError::UnsupportedVersion(3))
+        ));
+        assert!(matches!(
+            HintSet::read_from(&old_file[..12]),
+            Err(HintFileError::UnsupportedVersion(3))
+        ));
+
+        // The parities cannot belong to a version before HintInit.
+        let mut bad_database_version: Vec<u8> = bytes.clone();
+        bad_database_version[64..72].copy_from_slice(&0x0101u64.to_le_bytes());
+        assert!(matches!(
+            HintSet::read_from(bad_database_version.as_slice()),
+            Err(HintFileError::InvalidDatabaseVersion {
+                database_version: 0x0101,
+                init_version: 0x0102,
+            })
+        ));
 
         let too_large: u32 = MAX_RECORD_SIZE as u32 + 1;
         for record_size in [0u32, too_large, u32::MAX] {
@@ -705,7 +820,7 @@ mod tests {
                 ..sample().geometry()
             };
             assert!(matches!(
-                HintSet::new(geometry, [0u8; 8], vec![1], vec![1]),
+                HintSet::new(geometry, [0u8; 8], INIT, vec![1], vec![1]),
                 Err(HintFileError::InvalidRecordSize(found)) if found == record_size
             ));
         }

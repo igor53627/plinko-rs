@@ -4,7 +4,7 @@
 //! checked with the `tee` feature.
 
 use super::*;
-use crate::hints::seed_check;
+use crate::hints::{seed_check, DatabaseSnapshot};
 #[cfg(feature = "tee")]
 use crate::iprf::IprfTee;
 use crate::iprf::PrfKey128;
@@ -68,7 +68,15 @@ impl Scenario {
             block_size: self.w as u64,
             num_blocks: self.c as u64,
         };
-        HintSet::new(geometry, seed_check(&self.master_seed), regular, backup).expect("hint set")
+        let database: DatabaseSnapshot = DatabaseSnapshot::of(0, &self.db_bytes());
+        HintSet::new(
+            geometry,
+            seed_check(&self.master_seed),
+            database,
+            regular,
+            backup,
+        )
+        .expect("hint set")
     }
 
     fn parities_of(hints: &HintSet) -> Parities {

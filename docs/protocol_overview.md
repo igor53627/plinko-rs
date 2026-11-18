@@ -111,7 +111,7 @@ a 40-byte database and parities over 32 bytes).
   about 26 us for each of the `c/2` blocks of the hint. This number includes
   the one inverse of the query.
 - The query message has `c/8 + 2c` bytes: 59,475 bytes at `c = 27,988`.
-- The hint file has `96 + lambda * w * (8 + 3r)` bytes with the default
+- The hint file has `144 + lambda * w * (8 + 3r)` bytes with the default
   number of backup hints (`lambda * w`): a regular hint takes `4 + r` bytes
   and a backup hint takes `4 + 2r` bytes.
 - HintInit holds the hints two times until the streaming phase ends (the
@@ -124,15 +124,16 @@ a 40-byte database and parities over 32 bytes).
 database.bin (array of fixed-size records; the server publishes it)
    -> HintInit by the client (plinko_hints --seed-file --output) -> hint file
    -> Query / Answer / Recon (plinko::protocol)
-   -> UpdateHint (Client::apply_updates)
+   -> UpdateHint (Client::apply_delta, one delta for each new database version)
 ```
 
 The online steps are a library model in one process. The repository has no
 network transport. Open work for a general library, each with a backlog task:
 
 - Lookup by key (TASK-22, proposal in [keyword_lookup.md](keyword_lookup.md)).
-- A database version and a delta feed for updates (TASK-23,
-  [update_strategy.md](update_strategy.md)).
+- A producer and a transport for deltas, and a stored client state for the
+  online phase ([update_strategy.md](update_strategy.md#not-implemented)). The
+  database version and the delta format exist.
 - A check of an answer against a commitment of the database (TASK-24,
   [trust_model.md](trust_model.md#not-covered)).
 

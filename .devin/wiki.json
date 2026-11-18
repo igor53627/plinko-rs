@@ -21,7 +21,7 @@
       "author": "maintainer"
     },
     {
-      "content": "Hint file: plinko_hints --output writes all hints of one client to one file (plinko::hints::HintSet; magic PLNKHINT, version 3, record size, geometry, hint counts, seed check, regular records of 4 + r bytes and backup records of 4 + 2r bytes for a record size r, BLAKE3 checksum; layout in docs/data_format.md). The record size is a parameter: plinko_hints --record-size (default 40, the v3 record), ProtocolParams::record_size. A parity is the XOR of whole records. The file does not contain the master seed (--seed-file); Client::from_hints loads it and rejects another record size, geometry, hint count or seed.",
+      "content": "Hint file: plinko_hints --output writes all hints of one client to one file (plinko::hints::HintSet; magic PLNKHINT, version 4, record size, geometry, hint counts, seed check, database version of the parities, version and BLAKE3 hash of the database that HintInit read, regular records of 4 + r bytes and backup records of 4 + 2r bytes for a record size r, BLAKE3 checksum; layout in docs/data_format.md). The record size is a parameter: plinko_hints --record-size (default 40, the v3 record), ProtocolParams::record_size. A parity is the XOR of whole records. The file does not contain the master seed (--seed-file); Client::from_hints loads it and rejects another record size, geometry, hint count or seed.",
       "author": "maintainer"
     },
     {
@@ -47,6 +47,9 @@
     {
       "content": "Online protocol (plinko/src/protocol.rs, docs/online_protocol.md): prepare_query reserves the hint and one backup hint; the hint leaves the client in reconstruct_and_replenish or abandon_query. The decoy for a cached index is a uniform index that is not cached and not in flight. The query format with c/2 shared offsets is from keewoolee/rms24-plinko-spec, not from RMS24 or the Plinko paper; the document gives an argument for it, not a proof.",
       "author": "maintainer"
+    },
+    {
+      "content": "Database versions and deltas (plinko/src/delta.rs, docs/update_strategy.md): the publisher numbers each database state. plinko_hints --database-version stores the version in the hint file. Response::database_version carries the version of an answer; Client::reconstruct_and_replenish accepts only the version of the hints and leaves the query in flight on a mismatch. Delta (magic PLNKDLTA, format version 1: record size, num_entries, from_version, to_version, changes of index and old XOR new, BLAKE3 checksum) is written by Server::apply_updates; Client::apply_delta accepts only a delta that starts at the version of the hints, so a repeated or early delta changes nothing. The number of records is fixed for a hint set. Not implemented: a delta producer for files, transport, authentication of a delta or an answer, and a stored client state after the first query (Client::unused_hints is None then; a reload of the hint file after queries reuses hints)."
     }
   ],
   "pages": [

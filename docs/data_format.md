@@ -12,6 +12,7 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 | `code_store.bin` | `[count: u32 LE][hash₀: 32B]…` | yes (if any contract code) |
 | `metadata.json` | JSON snapshot descriptor | yes |
 | `hints.bin` | Hint set of one client (see [Hint file](#hint-file-hintsbin)) | no (`plinko_hints --output`) |
+| delta file | Changed records between two database versions (see [Delta file](#delta-file)) | no (library only: `plinko::delta`) |
 
 ### `database.bin` ordering
 
@@ -76,14 +77,14 @@ Synthetic datasets ([`gen_synthetic`](../plinko/src/bin/gen_synthetic.rs)) add `
 ## Hint file (`hints.bin`)
 
 Written by `plinko_hints --output` and read by the protocol client
-(`plinko::hints::HintSet`). All integers are little-endian. Version 3, where
+(`plinko::hints::HintSet`). All integers are little-endian. Version 4, where
 `r` is the record size of the database in bytes (`plinko_hints --record-size`,
 default 40):
 
 | Offset   | Size          | Field                                                  |
 |----------|---------------|--------------------------------------------------------|
 | 0        | 8             | magic `PLNKHINT`                                       |
-| 8        | 4             | version (`3`)                                          |
+| 8        | 4             | version (`4`)                                          |
 | 12       | 4             | `record_size` (`r`), 1 to 1,048,576                    |
 | 16       | 8             | `num_entries`: real records of the database            |
 | 24       | 8             | `block_size` (`w`)                                     |
@@ -91,17 +92,51 @@ default 40):
 | 40       | 8             | `num_regular`                                          |
 | 48       | 8             | `num_backup`                                           |
 | 56       | 8             | seed check: `SHA-256(master_seed \|\| "plinko_seed_check")[0..8]` |
-| 64       | `4 + r` each  | regular hints: cutoff (`u32`), parity (`r` bytes)      |
+| 64       | 8             | `database_version`: database version of the parities   |
+| 72       | 8             | `init_version`: database version that HintInit read    |
+| 80       | 32            | `init_hash`: BLAKE3 hash of that database file         |
+| 112      | `4 + r` each  | regular hints: cutoff (`u32`), parity (`r` bytes)      |
 | ...      | `4 + 2r` each | backup hints: cutoff (`u32`), parity in, parity out    |
 | end - 32 | 32            | BLAKE3 hash of all bytes before it                     |
 
 - Regular hint `j` has hint ID `j`; backup hint `b` has hint ID `num_regular + b`.
 - A cutoff defines the block subset of a hint ([`hint_generation.md`](hint_generation.md#block-subsets)). Cutoff `0` marks an invalid hint with zero parities.
 - A parity is the XOR of the selected records, over all `r` bytes of a record.
-- Size: `96 + num_regular × (4 + r) + num_backup × (4 + 2r)` bytes. Mainnet v3 (`r` = 40) with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 1,073,741,920 bytes (computed).
+- Size: `144 + num_regular × (4 + r) + num_backup × (4 + 2r)` bytes. Mainnet v3 (`r` = 40) with lambda = 128 and w = 65536 (8,388,608 regular and 8,388,608 backup hints): 1,073,741,968 bytes (the size of a file from a run with this hint count).
 - The reader rejects a file of another version and a record size outside the range. `Client::from_hints` rejects a hint set whose record size differs from the parameters of the client.
-- Version 2 had the same layout and other PRP round keys ([`hint_generation.md`](hint_generation.md#round-keys)), so its parities are not valid for this code. Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record. No code reads version 1 or 2; run `plinko_hints` again.
+- `database_version` is `init_version` in a file from `plinko_hints` (`--database-version`, default 0). It is higher in a file that a client wrote after it applied deltas ([`update_strategy.md`](update_strategy.md#restart)). The reader rejects a file in which it is lower.
+- `init_hash` is the hash of the database file: the records one after another, without padding. A caller can compare it with a value from the publisher of the database. A delta does not change it.
+- The file holds the hints of a client that has sent no query. It has no field for the state that a query changes.
+- Version 3 had no database version and no database hash (a header of 64 bytes); its hint records are equal to those of version 4. Version 2 had the same layout as version 3 and other PRP round keys ([`hint_generation.md`](hint_generation.md#round-keys)), so its parities are not valid for this code. Version 1 had 32-byte parities over the first 32 bytes of a 40-byte record. No code reads version 1, 2 or 3; run `plinko_hints` again.
 - The file holds no master seed. The file and the seed are client-secret.
+
+## Delta file
+
+Written by `plinko::delta::Delta::write_to` and read by `Delta::read_from`. A
+delta holds the records that differ between two versions of a database
+([`update_strategy.md`](update_strategy.md)). All integers are little-endian.
+Format version 1, where `r` is the record size in bytes:
+
+| Offset   | Size         | Field                                                         |
+|----------|--------------|---------------------------------------------------------------|
+| 0        | 8            | magic `PLNKDLTA`                                              |
+| 8        | 4            | format version (`1`)                                          |
+| 12       | 4            | `record_size` (`r`), 1 to 1,048,576                           |
+| 16       | 8            | `num_entries`: real records of the database                   |
+| 24       | 8            | `from_version`: database version before the changes           |
+| 32       | 8            | `to_version`: database version after them                     |
+| 40       | 8            | `count`: number of changed records                            |
+| 48       | `8 + r` each | changes: index (`u64`), `old value XOR new value` (`r` bytes) |
+| end - 32 | 32           | BLAKE3 hash of all bytes before it                            |
+
+- `to_version` is above `from_version`.
+- The indices are below `num_entries` and strictly increasing, so a record occurs at most once and `count` is at most `num_entries`.
+- A change has at least one byte that is not zero. A delta with `count` 0 is valid: it moves the database to `to_version` with no change.
+- The file has no field that identifies its database. A version number identifies a state of one database only.
+- Size: `80 + count × (8 + r)` bytes.
+- The reader rejects a file of another format version, a record size outside the range, versions or indices that break the rules above, a wrong checksum and data after the checksum.
+- The file has no hash of a database and no signature. The checksum detects damage; it does not show that the publisher of the database made the delta.
+- A delta is public: it holds no value of a client.
 
 ## Limits of the extractor
 

@@ -7,17 +7,22 @@
 //! - online query construction
 //! - server answer computation
 //! - client reconstruction + backup promotion
-//! - hint updates via XOR deltas
+//! - hint updates from deltas between database versions (see [`crate::delta`])
+//!
+//! The database has a version number. An answer carries the version of the
+//! database that it comes from, and the client accepts it only if its hints
+//! belong to the same version.
 //!
 //! The rules of the online phase (decoy, query format, retry, query limit) and
 //! the deviations from the paper are in `docs/online_protocol.md`.
 //!
 //! In-memory model: the database is a flat byte array of `num_entries`
 //! records of `record_size` bytes each ([`ProtocolParams::record_size`]). A
-//! parity, an answer and an update delta have the record size.
+//! parity, an answer and the change of a record in a delta have the record size.
 
+use crate::delta::{Delta, DeltaHeader};
 use crate::hint_init;
-use crate::hints::{self, HintGeometry, HintSet, MAX_RECORD_SIZE};
+use crate::hints::{self, DatabaseSnapshot, HintGeometry, HintSet, MAX_RECORD_SIZE};
 use crate::iprf::{Iprf, PrfKey128};
 use crate::subsets::{SubsetPrf, INVALID_CUTOFF};
 use rand::seq::SliceRandom;
@@ -70,11 +75,20 @@ pub enum ProtocolError {
     },
     /// A hint set does not belong to these parameters or to this master seed.
     HintSetMismatch(&'static str),
-    /// A record, a parity or a delta does not have the record size of the database.
+    /// A record or a parity does not have the record size of the database.
     RecordSizeMismatch {
         expected: usize,
         got: usize,
     },
+    /// An answer or a delta does not belong to the database version of the
+    /// hints. `expected` is the version of the hints. `got` is the version of
+    /// the answer, or the version that the delta starts from.
+    DatabaseVersionMismatch {
+        expected: u64,
+        got: u64,
+    },
+    /// A delta is for a database with another number of records or another record size.
+    DeltaMismatch(&'static str),
 }
 
 impl Display for ProtocolError {
@@ -122,6 +136,15 @@ impl Display for ProtocolError {
                     f,
                     "record size mismatch: expected {expected} bytes, got {got}"
                 )
+            }
+            Self::DatabaseVersionMismatch { expected, got } => {
+                write!(
+                    f,
+                    "database version mismatch: the hints have version {expected}, got {got}"
+                )
+            }
+            Self::DeltaMismatch(what) => {
+                write!(f, "delta does not match the client: {what}")
             }
         }
     }
@@ -319,14 +342,6 @@ impl ProtocolParams {
     }
 }
 
-/// Change of one database record: `delta = old value XOR new value`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntryUpdate {
-    pub index: usize,
-    /// `record_size` bytes.
-    pub delta: Vec<u8>,
-}
-
 /// Query format with shared offsets: one bitmask and `num_blocks/2` offsets.
 ///
 /// Bit `k` of `mask` puts block `k` in subset 0 (set) or subset 1 (clear).
@@ -343,6 +358,8 @@ pub struct Query {
 /// Each parity has `record_size` bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
+    /// Version of the database that the parities come from.
+    pub database_version: u64,
     pub parity_0: Vec<u8>,
     pub parity_1: Vec<u8>,
 }
@@ -350,23 +367,44 @@ pub struct Response {
 /// Server for the in-memory protocol model.
 pub struct Server {
     params: ProtocolParams,
+    database_version: u64,
     /// `n_effective_entries() * record_size` bytes; the padding records are zero.
     database: Vec<u8>,
 }
 
 impl Server {
-    /// Creates a server for `database`, the records of the database one after another.
+    /// Creates a server for `database`, the records of the database one
+    /// after another. `database_version` is the version of these records.
     ///
     /// # Errors
     /// Returns [`ProtocolError::InvalidParams`] if `database` does not have
-    /// `num_entries * record_size` bytes.
-    pub fn new(params: ProtocolParams, database: &[u8]) -> Result<Self, ProtocolError> {
+    /// `num_entries * record_size` bytes, or if `params.record_size` is not
+    /// in the range 1 to [`MAX_RECORD_SIZE`] (the fields of `params` are public).
+    pub fn new(
+        params: ProtocolParams,
+        database_version: u64,
+        database: &[u8],
+    ) -> Result<Self, ProtocolError> {
+        if !(1..=MAX_RECORD_SIZE).contains(&params.record_size) {
+            return Err(ProtocolError::InvalidParams(
+                "record_size must be in the range 1 to MAX_RECORD_SIZE",
+            ));
+        }
         check_database_len(&params, database)?;
 
         let mut database: Vec<u8> = database.to_vec();
         database.resize(params.n_effective_entries() * params.record_size, 0u8);
 
-        Ok(Self { params, database })
+        Ok(Self {
+            params,
+            database_version,
+            database,
+        })
+    }
+
+    /// Version of the database that the server answers from.
+    pub fn database_version(&self) -> u64 {
+        self.database_version
     }
 
     /// Returns the record at `index`, or `None` if `index >= num_entries`.
@@ -432,40 +470,53 @@ impl Server {
             });
         }
 
-        Ok(Response { parity_0, parity_1 })
+        Ok(Response {
+            database_version: self.database_version,
+            parity_0,
+            parity_1,
+        })
     }
 
-    /// Writes new values of records and returns one delta for each of them.
+    /// Writes new values of records, moves the database to the next version
+    /// (`database_version() + 1`), and returns the delta between the two
+    /// versions.
     ///
-    /// Each update is `(index, new value)`. On an error no record is changed.
+    /// Each update is `(index, new value)`. A call with no update also makes
+    /// a new version. On an error no record and no version is changed.
     ///
     /// # Errors
     /// Returns [`ProtocolError::InvalidIndex`] for an index outside the
-    /// database and [`ProtocolError::RecordSizeMismatch`] for a value that
-    /// does not have `record_size` bytes.
-    pub fn apply_updates(
-        &mut self,
-        updates: &[(usize, Vec<u8>)],
-    ) -> Result<Vec<EntryUpdate>, ProtocolError> {
+    /// database, [`ProtocolError::RecordSizeMismatch`] for a value that
+    /// does not have `record_size` bytes, and
+    /// [`ProtocolError::InvalidParams`] if the version is `u64::MAX`.
+    pub fn apply_updates(&mut self, updates: &[(usize, Vec<u8>)]) -> Result<Delta, ProtocolError> {
         let size: usize = self.params.record_size;
         for (index, new_value) in updates {
             check_index(&self.params, *index)?;
             check_record_len(&self.params, new_value)?;
         }
+        let header = DeltaHeader {
+            num_entries: self.params.num_entries as u64,
+            // `Server::new` keeps the record size at or below `MAX_RECORD_SIZE`.
+            record_size: size as u32,
+            from_version: self.database_version,
+            to_version: self
+                .database_version
+                .checked_add(1)
+                .ok_or(ProtocolError::InvalidParams("no database version is left"))?,
+        };
 
-        let mut deltas: Vec<EntryUpdate> = Vec::with_capacity(updates.len());
+        let mut changes: Vec<(u64, Vec<u8>)> = Vec::with_capacity(updates.len());
         for (index, new_value) in updates {
             let record: &mut [u8] = &mut self.database[index * size..(index + 1) * size];
             let mut delta: Vec<u8> = record.to_vec();
             xor_entry(&mut delta, new_value);
             record.copy_from_slice(new_value);
-            deltas.push(EntryUpdate {
-                index: *index,
-                delta,
-            });
+            changes.push((*index as u64, delta));
         }
 
-        Ok(deltas)
+        self.database_version = header.to_version;
+        Ok(Delta::new(header, changes).expect("the header and the changes were checked above"))
     }
 }
 
@@ -487,8 +538,9 @@ struct CacheEntry {
 
 /// A query in flight: built for the server, with no answer yet.
 ///
-/// Keep the value until the answer arrives. To retry, send `query` again
-/// without a change. To stop, call [`Client::abandon_query`].
+/// Keep the value until [`Client::reconstruct_and_replenish`] accepts an
+/// answer. To retry, send `query` again without a change. To stop, call
+/// [`Client::abandon_query`].
 pub struct PreparedQuery {
     pub query: Query,
     requested_index: usize,
@@ -520,10 +572,14 @@ pub struct Client {
     rng: ChaCha20Rng,
     /// Queried index and hint slot of each query in flight.
     in_flight: HashMap<usize, usize>,
+    /// `true` after the first query was built. The hint set then holds state
+    /// that the hint file cannot store.
+    queried: bool,
 }
 
 impl Client {
-    /// Run offline HintInit from a flat database of `num_entries * record_size` bytes.
+    /// Run offline HintInit from a flat database of `num_entries * record_size` bytes,
+    /// which is version `database_version` of the database.
     ///
     /// Equal to [`compute_hints`] followed by [`Client::from_hints`]. HintInit uses all
     /// available cores.
@@ -531,9 +587,10 @@ impl Client {
         params: ProtocolParams,
         master_seed: [u8; 32],
         query_rng_seed: [u8; 32],
+        database_version: u64,
         database: &[u8],
     ) -> Result<Self, ProtocolError> {
-        let hints: HintSet = compute_hints(&params, &master_seed, database)?;
+        let hints: HintSet = compute_hints(&params, &master_seed, database_version, database)?;
         Self::from_hints(params, master_seed, query_rng_seed, hints)
     }
 
@@ -543,6 +600,15 @@ impl Client {
     /// geometry or the hint counts differ from `params`, or if the hints were
     /// made with another master seed. The function does not recompute cutoffs
     /// or parities.
+    ///
+    /// The client starts at the database version of the hint set
+    /// ([`HintSet::database_version`]).
+    ///
+    /// The hint set must be one that no client has sent a query with. A hint
+    /// file has no field for the hints that queries used. A client that loads
+    /// the same file a second time, after queries, uses those hints again,
+    /// and the server then learns the queried indices (`docs/online_protocol.md`).
+    /// The function cannot detect this.
     pub fn from_hints(
         params: ProtocolParams,
         master_seed: [u8; 32],
@@ -591,7 +657,25 @@ impl Client {
             cache: HashMap::new(),
             rng: ChaCha20Rng::from_seed(query_rng_seed),
             in_flight: HashMap::new(),
+            queried: false,
         })
+    }
+
+    /// Version of the database that the hints belong to.
+    ///
+    /// The client accepts an answer of this version only, and a delta that
+    /// starts from this version only.
+    pub fn database_version(&self) -> u64 {
+        self.hints.database_version()
+    }
+
+    /// Returns the hint set if the client has built no query, and `None` after that.
+    ///
+    /// Write it with [`HintSet::write_to`] to keep the deltas that the client
+    /// applied. After the first query the hints hold state that the file
+    /// format cannot store, so there is nothing safe to write.
+    pub fn unused_hints(&self) -> Option<&HintSet> {
+        (!self.queried).then_some(&self.hints)
     }
 
     /// Builds the query for `requested_index` (Plinko Fig. 7, `Query`).
@@ -651,6 +735,7 @@ impl Client {
             };
 
             self.in_flight.insert(queried_index, hint_idx);
+            self.queried = true;
             return Ok(PreparedQuery {
                 query,
                 requested_index,
@@ -668,30 +753,43 @@ impl Client {
     /// Computes the answer, consumes the hint of the query, and promotes a
     /// backup hint in its place (Plinko Fig. 7, `Recon`).
     ///
-    /// Returns the record at the requested index (`record_size` bytes).
+    /// Returns the record at the requested index (`record_size` bytes). The
+    /// query is then no longer in flight.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::UnknownPreparedQuery`] if `prepared` is not a
-    /// query in flight of this client; the client does not change.
+    /// On each of these errors the client does not change, and the query
+    /// stays in flight:
     ///
-    /// Returns [`ProtocolError::RecordSizeMismatch`] if a parity of `response`
-    /// does not have the record size. Such a response is not an answer. The
-    /// call consumed `prepared`, so the query ends as with
-    /// [`Client::abandon_query`]: its hint is removed, the index is not
-    /// cached, and no backup hint is used. Check the size of a response
-    /// before this call to keep the retry possible.
+    /// - [`ProtocolError::UnknownPreparedQuery`]: `prepared` is not a query in
+    ///   flight of this client.
+    /// - [`ProtocolError::DatabaseVersionMismatch`]: the answer comes from
+    ///   another database version than the hints have. If the version of the
+    ///   answer is above [`Client::database_version`], apply the deltas up to
+    ///   that version and call the function again with the same answer. If
+    ///   it is below, send `prepared.query` again.
+    /// - [`ProtocolError::RecordSizeMismatch`]: a parity of `response` does
+    ///   not have the record size. Such a response is not an answer.
     pub fn reconstruct_and_replenish(
         &mut self,
-        prepared: PreparedQuery,
-        response: Response,
+        prepared: &PreparedQuery,
+        response: &Response,
     ) -> Result<Vec<u8>, ProtocolError> {
-        self.take_in_flight(&prepared)?;
+        self.check_in_flight(prepared)?;
+        let expected: u64 = self.database_version();
+        if response.database_version != expected {
+            return Err(ProtocolError::DatabaseVersionMismatch {
+                expected,
+                got: response.database_version,
+            });
+        }
         check_record_len(&self.params, &response.parity_0)?;
         check_record_len(&self.params, &response.parity_1)?;
+
+        self.take_in_flight(prepared)?;
         let mut queried_entry: Vec<u8> = if prepared.real_is_first {
-            response.parity_0
+            response.parity_0.clone()
         } else {
-            response.parity_1
+            response.parity_1.clone()
         };
         xor_entry(&mut queried_entry, self.slot_parity(prepared.hint_idx));
 
@@ -723,58 +821,90 @@ impl Client {
         self.take_in_flight(&prepared).map(|_| ())
     }
 
-    /// Apply server updates: one iPRF inverse for each updated record.
+    /// Applies a delta to the hints and moves the client to the version
+    /// after it: one iPRF inverse for each changed record.
+    ///
+    /// The delta must start from [`Client::database_version`]. Apply the
+    /// deltas of a database in the order of their versions.
+    ///
+    /// A version number identifies a state of one database, and a delta has
+    /// no field that identifies its database. The caller must pass only
+    /// deltas of the database that the hints belong to. A delta of another
+    /// database with the same record size, number of records and version is
+    /// accepted, and the hints are then wrong with no error.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::InvalidIndex`] for an index outside the
-    /// database and [`ProtocolError::RecordSizeMismatch`] for a delta that
-    /// does not have `record_size` bytes. On an error no hint is changed.
-    pub fn apply_updates(&mut self, updates: &[EntryUpdate]) -> Result<(), ProtocolError> {
-        for update in updates {
-            check_index(&self.params, update.index)?;
-            check_record_len(&self.params, &update.delta)?;
+    /// On an error no hint and no version is changed.
+    ///
+    /// - [`ProtocolError::DatabaseVersionMismatch`]: the delta starts from
+    ///   another version. A delta that the client applied before starts
+    ///   below the version of the client; a delta that comes too early
+    ///   starts above it.
+    /// - [`ProtocolError::DeltaMismatch`]: the delta is for a database with
+    ///   another number of records or another record size.
+    pub fn apply_delta(&mut self, delta: &Delta) -> Result<(), ProtocolError> {
+        let header: DeltaHeader = delta.header();
+        if header.record_size as usize != self.params.record_size {
+            return Err(ProtocolError::DeltaMismatch("record size"));
+        }
+        if header.num_entries != self.params.num_entries as u64 {
+            return Err(ProtocolError::DeltaMismatch("number of records"));
+        }
+        let expected: u64 = self.database_version();
+        if header.from_version != expected {
+            return Err(ProtocolError::DatabaseVersionMismatch {
+                expected,
+                got: header.from_version,
+            });
         }
 
-        for update in updates {
-            let block = self.params.block_of(update.index);
-            let offset = self.params.offset_in_block(update.index);
-            let hint_indices = self.iprfs[block].inverse(offset as u64);
+        // An index of the delta is below `num_entries`, which is a `usize`.
+        for (index, change) in delta.changes() {
+            self.apply_change(index as usize, change);
+        }
+        self.hints.set_database_version(header.to_version);
+        Ok(())
+    }
 
-            for hint_idx in hint_indices {
-                let j = hint_idx as usize;
-                if j >= self.params.num_total_hints {
-                    continue;
-                }
+    /// XORs the change of the record at `index` into each parity that holds
+    /// the record, and into its cached value.
+    fn apply_change(&mut self, index: usize, change: &[u8]) {
+        let block = self.params.block_of(index);
+        let offset = self.params.offset_in_block(index);
+        let hint_indices = self.iprfs[block].inverse(offset as u64);
 
-                let slot_has_block: bool = self.slots[j]
-                    .as_ref()
-                    .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
-                if slot_has_block {
-                    xor_entry(self.slot_parity_mut(j), &update.delta);
-                } else if let Some(backup_idx) = j.checked_sub(self.params.num_regular_hints) {
-                    if self.backup_available[backup_idx] {
-                        let cutoff: u32 = self.hints.backup_cutoffs()[backup_idx];
-                        if self.subset_prf.contains(hint_idx, block, cutoff) {
-                            xor_entry(self.hints.backup_parity_in_mut(backup_idx), &update.delta);
-                        } else {
-                            xor_entry(self.hints.backup_parity_out_mut(backup_idx), &update.delta);
-                        }
+        for hint_idx in hint_indices {
+            let j = hint_idx as usize;
+            if j >= self.params.num_total_hints {
+                continue;
+            }
+
+            let slot_has_block: bool = self.slots[j]
+                .as_ref()
+                .is_some_and(|slot| self.slot_block_in_subset(j, slot, block));
+            if slot_has_block {
+                xor_entry(self.slot_parity_mut(j), change);
+            } else if let Some(backup_idx) = j.checked_sub(self.params.num_regular_hints) {
+                if self.backup_available[backup_idx] {
+                    let cutoff: u32 = self.hints.backup_cutoffs()[backup_idx];
+                    if self.subset_prf.contains(hint_idx, block, cutoff) {
+                        xor_entry(self.hints.backup_parity_in_mut(backup_idx), change);
+                    } else {
+                        xor_entry(self.hints.backup_parity_out_mut(backup_idx), change);
                     }
                 }
             }
-
-            let cached_slot: Option<usize> = self.cache.get_mut(&update.index).map(|cache| {
-                xor_entry(&mut cache.value, &update.delta);
-                cache.hint_idx
-            });
-            if let Some(slot_idx) = cached_slot {
-                if self.slots[slot_idx].is_some() {
-                    xor_entry(self.slot_parity_mut(slot_idx), &update.delta);
-                }
-            }
         }
 
-        Ok(())
+        let cached_slot: Option<usize> = self.cache.get_mut(&index).map(|cache| {
+            xor_entry(&mut cache.value, change);
+            cache.hint_idx
+        });
+        if let Some(slot_idx) = cached_slot {
+            if self.slots[slot_idx].is_some() {
+                xor_entry(self.slot_parity_mut(slot_idx), change);
+            }
+        }
     }
 
     /// Returns the number of backup hints that are not promoted.
@@ -817,10 +947,15 @@ impl Client {
             .any(|&reserved| reserved == hint_idx)
     }
 
-    fn take_in_flight(&mut self, prepared: &PreparedQuery) -> Result<HintSlot, ProtocolError> {
+    fn check_in_flight(&self, prepared: &PreparedQuery) -> Result<(), ProtocolError> {
         if self.in_flight.get(&prepared.queried_index) != Some(&prepared.hint_idx) {
             return Err(ProtocolError::UnknownPreparedQuery);
         }
+        Ok(())
+    }
+
+    fn take_in_flight(&mut self, prepared: &PreparedQuery) -> Result<HintSlot, ProtocolError> {
+        self.check_in_flight(prepared)?;
         self.in_flight.remove(&prepared.queried_index);
         self.slots[prepared.hint_idx]
             .take()
@@ -963,10 +1098,12 @@ impl Client {
 
 /// Runs HintInit (Plinko Fig. 7) over an in-memory database on all available cores.
 ///
-/// `database` holds the `num_entries` records one after another. `plinko_hints`
-/// computes the same hint set from a database file with the same bytes; both
-/// call [`crate::hint_init`]. [`compute_hints_with_threads`] takes the number
-/// of worker threads.
+/// `database` holds the `num_entries` records of version `database_version`
+/// one after another. The hint set gets this version and the hash of
+/// `database` ([`DatabaseSnapshot`]). `plinko_hints` computes the same hint
+/// set from a database file with the same bytes; both call
+/// [`crate::hint_init`]. [`compute_hints_with_threads`] takes the number of
+/// worker threads.
 ///
 /// # Errors
 /// Returns [`ProtocolError::InvalidParams`] if `database` does not have
@@ -974,11 +1111,13 @@ impl Client {
 pub fn compute_hints(
     params: &ProtocolParams,
     master_seed: &[u8; 32],
+    database_version: u64,
     database: &[u8],
 ) -> Result<HintSet, ProtocolError> {
     compute_hints_with_threads(
         params,
         master_seed,
+        database_version,
         database,
         hint_init::available_threads(),
     )
@@ -995,6 +1134,7 @@ pub fn compute_hints(
 pub fn compute_hints_with_threads(
     params: &ProtocolParams,
     master_seed: &[u8; 32],
+    database_version: u64,
     database: &[u8],
     threads: usize,
 ) -> Result<HintSet, ProtocolError> {
@@ -1013,6 +1153,7 @@ pub fn compute_hints_with_threads(
     let mut hint_set: HintSet = HintSet::new(
         params.hint_geometry(),
         hints::seed_check(master_seed),
+        DatabaseSnapshot::of(database_version, database),
         regular_cutoffs,
         backup_cutoffs,
     )
@@ -1122,7 +1263,7 @@ mod tests {
             ProtocolParams::new(NUM_ENTRIES, RECORD_SIZE, Some(8), 2, None).expect("params");
         let database: Vec<u8> = vec![0u8; NUM_ENTRIES * RECORD_SIZE];
         let mut client: Client =
-            Client::offline_init(params, [0x01u8; 32], [0x02u8; 32], &database)
+            Client::offline_init(params, [0x01u8; 32], [0x02u8; 32], 0, &database)
                 .expect("offline init");
         for &index in cached {
             client.cache.insert(

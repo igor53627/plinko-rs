@@ -103,7 +103,7 @@ A query is in flight from `prepare_query` until `reconstruct_and_replenish` or
   one index would promote two backup hints with the same extra index, and the
   cache holds one promoted hint for each index.
 - A decoy is not an index in flight.
-- `apply_updates` changes the parity of a reserved hint the same as that of
+- `apply_delta` changes the parity of a reserved hint the same as that of
   each other hint.
 
 **Rule for a retry: send the same `Query` bytes again.** The caller keeps the
@@ -128,6 +128,29 @@ just consumed"). After `abandon_query` the hint table has one hint less that
 contains the index, with no replacement. This document does not analyze the
 size of that bias. Use a retry; use `abandon_query` only when the server does
 not answer at all.
+
+## Database Version Of An Answer
+
+The parity of a hint belongs to one database version
+([update_strategy.md](update_strategy.md#database-versions)). An answer
+carries the version of the database that it comes from
+(`Response::database_version`). `reconstruct_and_replenish` compares the two
+before it changes the client:
+
+- **Equal:** the client computes the record.
+- **Not equal:** `DatabaseVersionMismatch`. The client does not change, and
+  the query stays in flight. If the answer is newer than the hints, the caller
+  applies the deltas up to that version and calls the function again with the
+  same answer; no new message goes to the server. If the answer is older, the
+  caller sends the same `Query` bytes again.
+
+`reconstruct_and_replenish` takes the prepared query and the answer by
+reference, so both stay with the caller after an error.
+
+The version is what the server states. A server that states a wrong version
+gives the client a wrong record, as a server that sends a wrong parity does
+(TASK-24). A version mismatch reveals to the server at most that the client
+sends a query again; the message is the same.
 
 ## Query Limit
 
@@ -157,6 +180,13 @@ index below `num_total_hints`, which is the domain.
 `IprfTee::forward` (feature `tee`, outside the trust model) has the same
 precondition, with a check in debug builds only.
 
+## Malformed Answer
+
+`reconstruct_and_replenish` returns `RecordSizeMismatch` for a parity that
+does not have the record size. The client does not change and the query stays
+in flight, so the caller can send the query again. Before the database
+version check, this error ended the query as `abandon_query` does.
+
 ## Server Checks
 
 `Server::answer` returns an error, and does not panic, for a mask of the wrong
@@ -165,19 +195,18 @@ offsets, and an offset outside a block.
 
 ## Not Covered
 
-- **Answer and update order.** An answer has no database version. The caller
-  must make sure that the client has applied the same updates as the database
-  that the answer comes from (TASK-23).
-- **Wrong answers.** The client cannot check an answer (TASK-24).
+- **Wrong answers.** The client cannot check an answer, and it cannot check
+  the database version that an answer states (TASK-24).
+- **Client state on disk.** The hint file holds the hints of a client that
+  has sent no query. The used hints, the promoted backup hints and the cache
+  are in memory only. A client that starts again from its hint file after
+  queries uses hints a second time, which breaks the rule for a hint above.
+  The code cannot detect this
+  ([update_strategy.md](update_strategy.md#restart)).
 - **Bias after `abandon_query`.** See above.
 - **Formal model.** No machine-checked statement covers the online phase or
   the shared offsets. The Rocq models have no Query, Answer and Recon
   ([verification.md](verification.md)).
-- **Malformed answer.** `reconstruct_and_replenish` returns
-  `RecordSizeMismatch` for a parity that does not have the record size. The
-  call consumed the prepared query, so the query ends as with `abandon_query`:
-  the hint is removed and no backup hint is used. A caller that wants to retry
-  must check the size of the answer before the call.
 - **Reference check.** `scripts/differential_protocol_transcript.sh` compares
   the answers and the number of queries left with the Python reference. It does
   not compare the messages. The reference selects the smallest free index as

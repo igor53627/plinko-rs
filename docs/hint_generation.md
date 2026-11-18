@@ -81,6 +81,10 @@ cargo build --release -p plinko --bin plinko_hints
   --output ./data/hints.bin
 ```
 
+`--database-version <n>` (default 0) is the version of the database file, as
+its publisher numbers it. The hint file stores it with the BLAKE3 hash of the
+file, which the run also logs ([update_strategy.md](update_strategy.md)).
+
 Without `--output` the run only logs counts. `--output` requires `--seed` or
 `--seed-file`, because a client cannot use the hints without the master seed.
 `--seed` puts the seed in the process list; use `--seed-file`.
@@ -206,7 +210,7 @@ the 24-block runs.
 The 24-block run on 24 threads with 40-byte parities (2026-11-17, the record
 size as a parameter): 42.5 s of wall time, 925.3 s of CPU time and a peak memory
 footprint of 2.11 GB (2.18 GB of resident memory with the mapped database
-pages). The hint file has 1,073,741,920 bytes. The memory is the hint set and
+pages). The hint file had 1,073,741,920 bytes (1,073,741,968 bytes since file version 4). The memory is the hint set and
 the accumulators of the worker threads: `2 * lambda * w * 3r` bytes, which is
 2.01 GB for `r = 40`, plus the cutoffs.
 
@@ -319,8 +323,11 @@ let client = Client::from_hints(params, master_seed, query_rng_seed, hints)?;
 ```
 
 `Client::from_hints` rejects a hint set with another record size, another
-geometry, other hint counts, or another master seed. `plinko/tests/hint_file_e2e_test.rs` runs the
-binary, loads the file, and checks queries and an update.
+geometry, other hint counts, or another master seed. The client starts at the
+database version of the file. Load a hint file only into a client that has
+sent no query with these hints
+([update_strategy.md](update_strategy.md#restart)). `plinko/tests/hint_file_e2e_test.rs` runs the
+binary, loads the file, and checks queries and deltas.
 
 ## Block Subsets
 

@@ -93,7 +93,7 @@ fn run_query_round(
     for &index in indices {
         let prepared = client.prepare_query(index)?;
         let response = server.answer(&prepared.query)?;
-        let got = client.reconstruct_and_replenish(prepared, response)?;
+        let got = client.reconstruct_and_replenish(&prepared, &response)?;
         let expected: &[u8] = &expected_db[index * RECORD_SIZE..(index + 1) * RECORD_SIZE];
         if got != expected {
             bail!("result mismatch at index={index}");
@@ -129,8 +129,9 @@ fn main() -> Result<()> {
     let master_seed = seed_from_label(b"plinko_protocol_scenario_master_seed_v1");
     let query_seed = seed_from_label(b"plinko_protocol_scenario_query_seed_v1");
 
-    let mut server = Server::new(params.clone(), &expected_db)?;
-    let mut client = Client::offline_init(params.clone(), master_seed, query_seed, &expected_db)?;
+    let mut server = Server::new(params.clone(), 0, &expected_db)?;
+    let mut client =
+        Client::offline_init(params.clone(), master_seed, query_seed, 0, &expected_db)?;
 
     let round_one = run_query_round(&mut client, &server, &expected_db, &[0, 5, 17, 33, 63])?;
 
@@ -142,8 +143,8 @@ fn main() -> Result<()> {
         .iter()
         .map(|(idx, _)| *idx)
         .collect::<Vec<_>>();
-    let deltas = server.apply_updates(&updates_input)?;
-    client.apply_updates(&deltas)?;
+    let delta = server.apply_updates(&updates_input)?;
+    client.apply_delta(&delta)?;
     for (idx, value) in updates_input {
         expected_db[idx * RECORD_SIZE..(idx + 1) * RECORD_SIZE].copy_from_slice(&value);
     }

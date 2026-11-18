@@ -6,6 +6,7 @@
 //! - `binomial`: True derandomized binomial sampling for PMNS
 //! - `subsets`: Block subsets of hints, from a PRF and one cutoff per hint
 //! - `hints`: Hint set of a client and its on-disk format
+//! - `delta`: Changes between two database versions and their on-disk format
 //! - `hint_init`: HintInit (cutoffs and parities of a hint set) on worker threads
 //!
 //! Two opt-in features add experimental code that is not part of the trust
@@ -14,9 +15,11 @@
 //! - `gpu`: `gpu`, a hint throughput benchmark (CUDA with the `cuda` feature)
 
 pub mod binomial;
+mod checked_io;
 #[cfg(feature = "tee")]
 pub mod constant_time;
 pub mod db;
+pub mod delta;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod hint_init;

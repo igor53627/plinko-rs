@@ -17,6 +17,12 @@ pub struct Args {
     #[arg(short, long, default_value_t = DEFAULT_RECORD_SIZE)]
     pub record_size: usize,
 
+    /// Version of the database in `--db-path`, as its publisher numbers it.
+    /// The hint file stores it; the client applies the deltas that start
+    /// from this version.
+    #[arg(long, default_value_t = 0)]
+    pub database_version: u64,
+
     /// Security parameter (number of regular hints per block).
     #[arg(short, long, default_value = "128")]
     pub lambda: usize,

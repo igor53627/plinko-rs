@@ -84,15 +84,20 @@ These points are outside the privacy claim today.
 - **Wrong answers.** The games of the paper compute the answer with the honest
   `Answer` algorithm. The client cannot check an answer, and it has no
   commitment of the database to compare with (TASK-24).
-- **Database version.** An answer and an update carry no version of the
-  database (TASK-23).
+- **Database version.** An answer and a delta carry the version of the
+  database, and the client accepts only the version of its hints
+  ([update_strategy.md](update_strategy.md#database-versions)). The version is
+  a label that the server states; the client cannot check it. A delta is not
+  authenticated (TASK-24).
+- **Client state on disk.** A client that starts again from its hint file
+  after queries uses hints a second time
+  ([update_strategy.md](update_strategy.md#restart)).
 - **Test data from the extractor.** The extractor does not read one consistent
   state; see [data_format.md](data_format.md#limits-of-the-extractor). This is
   not planned.
 - **Online protocol.** [online_protocol.md](online_protocol.md) lists the open
-  points: the query format with shared offsets has an argument and no proof, an
-  answer has no database version, `abandon_query` removes a hint with no
-  replacement, and there is no hint refresh before `Q` queries.
+  points: the query format with shared offsets has an argument and no proof,
+  `abandon_query` removes a hint with no replacement, and there is no hint refresh before `Q` queries.
 - **Traffic analysis.** The time and the number of queries are visible.
 
 ## Cost For The Client
@@ -107,12 +112,17 @@ and measurement conditions: [hint_generation.md](hint_generation.md#mainnet-cost
 | HintInit, wall time on 24 cores | About 13 hours                        | Extrapolated from the 24-thread run                      |
 | HintInit, wall time on 8 cores  | About 37 hours                        | Extrapolated from the 8-thread run                       |
 | HintInit, memory                | 2.1 GB plus the mapped database pages | Measured, 24 blocks, mainnet hint count, 40-byte records |
-| Hint file                       | 1.07 GB (1,073,741,920 bytes)         | Computed, 40-byte parities                               |
+| Hint file                       | 1.07 GB (1,073,741,968 bytes)         | Size of a file with this hint count, 40-byte parities    |
 | Update of the hints             | 0.52 ms CPU per changed record        | Measured (`inverse`, one thread)                         |
 | Query, client side              | About 0.4 s CPU                       | Computed: 13,994 `forward` calls, 28.5 us each           |
 
 The measurements are from an Apple M3 Ultra with hardware AES. No mainnet run
 was done. A build without hardware AES is about 20 times slower.
+
+`plinko_hints` hashes the database (BLAKE3) in one pass before the parity
+pass and stores the hash in the hint file: 1.1 s for 2 GiB with the file in
+the page cache (measured), so about 37 s for mainnet v3 (computed; a read from
+disk is slower). The file must not change during the run.
 
 `plinko_hints` maps `database.bin` from disk. It does not read the database
 from a network stream, so the client needs the disk space for the file until

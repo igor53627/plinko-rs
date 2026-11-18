@@ -2,13 +2,15 @@
 //!
 //! The generator reads a database file of fixed-size records and writes a
 //! hint file. The client loads the file and answers queries against a server
-//! that holds the same database.
+//! that holds the same database. The changes of the database reach the client
+//! as delta files.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use plinko::hints::{HintFileError, HintGeometry, HintSet};
+use plinko::delta::Delta;
+use plinko::hints::{DatabaseSnapshot, HintFileError, HintGeometry, HintSet};
 use plinko::protocol::{compute_hints, Client, ProtocolError, ProtocolParams, Server};
 
 /// Record size of a v3 `database.bin`, the default of `plinko_hints --record-size`.
@@ -50,11 +52,17 @@ struct Scenario {
     threads: Option<usize>,
     /// Pass `--constant-time` (needs the `tee` feature).
     constant_time: bool,
+    /// Value of `--database-version`; `None` leaves the default of the binary (0).
+    database_version: Option<u64>,
 }
 
 impl Scenario {
     fn record_size(&self) -> usize {
         self.record_size.unwrap_or(V3_RECORD_SIZE)
+    }
+
+    fn database_version(&self) -> u64 {
+        self.database_version.unwrap_or(0)
     }
 }
 
@@ -111,6 +119,11 @@ fn generate(scenario: &Scenario) -> Generated {
                 .map(|threads| format!("--threads={threads}")),
         )
         .args(scenario.constant_time.then_some("--constant-time"))
+        .args(
+            scenario
+                .database_version
+                .map(|version| format!("--database-version={version}")),
+        )
         .output()
         .expect("run plinko_hints");
     assert!(
@@ -147,6 +160,46 @@ fn load(path: &Path) -> HintSet {
     HintSet::read_from(std::io::BufReader::new(file)).expect("read hint file")
 }
 
+fn store(path: &Path, hints: &HintSet) {
+    let file = fs::File::create(path).expect("create hint file");
+    hints
+        .write_to(std::io::BufWriter::new(file))
+        .expect("write hint file");
+}
+
+/// Writes `delta` to a file and returns the delta that a reader gets from it.
+fn through_file(path: &Path, delta: &Delta) -> Delta {
+    let file = fs::File::create(path).expect("create delta file");
+    delta
+        .write_to(std::io::BufWriter::new(file))
+        .expect("write delta file");
+    assert_eq!(
+        fs::metadata(path).expect("metadata").len(),
+        delta.serialized_len()
+    );
+    let file = fs::File::open(path).expect("open delta file");
+    Delta::read_from(std::io::BufReader::new(file)).expect("read delta file")
+}
+
+/// Writes new values to `indices` in the server and in `database`.
+/// Returns the delta of the new database version.
+fn update_records(
+    server: &mut Server,
+    database: &mut [u8],
+    record_size: usize,
+    indices: &[usize],
+    salt: u64,
+) -> Delta {
+    let updates: Vec<(usize, Vec<u8>)> = indices
+        .iter()
+        .map(|&index| (index, make_record(salt + index as u64, record_size)))
+        .collect();
+    for (index, value) in &updates {
+        database[index * record_size..(index + 1) * record_size].copy_from_slice(value);
+    }
+    server.apply_updates(&updates).expect("server update")
+}
+
 /// Queries `count` indices that are spread over the database and checks each answer.
 /// Returns the queried indices. An index with no hint is skipped.
 fn query_and_check(
@@ -169,7 +222,7 @@ fn query_and_check(
         };
         let response = server.answer(&prepared.query).expect("answer");
         let got: Vec<u8> = client
-            .reconstruct_and_replenish(prepared, response)
+            .reconstruct_and_replenish(&prepared, &response)
             .expect("reconstruct");
         assert_eq!(
             got,
@@ -182,7 +235,8 @@ fn query_and_check(
     queried
 }
 
-/// Loads the generated file into a client and runs queries, an update, and more queries.
+/// Loads the generated file into a client and runs queries, three deltas that
+/// pass through files, and more queries.
 fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) {
     let params: ProtocolParams = ProtocolParams::for_hint_set(&hints).expect("params of the file");
     let record_size: usize = scenario.record_size();
@@ -201,7 +255,9 @@ fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) 
     assert_eq!(params.num_backup_hints, expected.num_backup_hints);
 
     let mut database: Vec<u8> = generated.database.clone();
-    let mut server: Server = Server::new(params.clone(), &database).expect("server");
+    let start_version: u64 = hints.database_version();
+    assert_eq!(start_version, scenario.database_version());
+    let mut server: Server = Server::new(params.clone(), start_version, &database).expect("server");
     let mut client: Client =
         Client::from_hints(params.clone(), MASTER_SEED, QUERY_SEED, hints).expect("client");
 
@@ -211,15 +267,40 @@ fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) 
         query_and_check(&mut client, &server, &database, record_size, spread(0), 5);
 
     // Change one index that was queried (it is in the client cache and in a
-    // promoted hint) and many indices that were not.
-    let mut updates: Vec<(usize, Vec<u8>)> = Vec::new();
-    for index in (0..n).filter(|index| index % 3 != 1 || *index == first[0]) {
-        let value: Vec<u8> = make_record(0xBEEF_0000 + index as u64, record_size);
-        database[index * record_size..(index + 1) * record_size].copy_from_slice(&value);
-        updates.push((index, value));
+    // promoted hint) and many indices that were not. The changes are three
+    // deltas, and the queried index changes in the first and in the last.
+    let changed: Vec<usize> = (0..n)
+        .filter(|index| index % 3 != 1 || *index == first[0])
+        .collect();
+    let dir: PathBuf = work_dir(scenario.name);
+    for round in 0..3usize {
+        let indices: Vec<usize> = changed
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(k, index)| k % 3 == round || (*index == first[0] && round != 1))
+            .map(|(_, index)| index)
+            .collect();
+        let delta: Delta = update_records(
+            &mut server,
+            &mut database,
+            record_size,
+            &indices,
+            // `make_record` uses the low 16 bits of its tag.
+            0xBE00 + 0x100 * round as u64,
+        );
+        assert_eq!(delta.len(), indices.len());
+
+        let from_file: Delta = through_file(&dir.join(format!("delta_{round}.bin")), &delta);
+        assert!(from_file == delta, "delta {round} changed in its file");
+        assert_eq!(
+            from_file.header().from_version,
+            start_version + round as u64
+        );
+        client.apply_delta(&from_file).expect("client update");
+        assert_eq!(client.database_version(), start_version + round as u64 + 1);
+        assert_eq!(client.database_version(), server.database_version());
     }
-    let deltas = server.apply_updates(&updates).expect("server update");
-    client.apply_updates(&deltas).expect("client update");
 
     // The first candidates are a changed entry and an unchanged entry that
     // were not queried before the update.
@@ -243,7 +324,7 @@ fn run_online_phase(scenario: &Scenario, generated: &Generated, hints: HintSet) 
     let prepared = client.prepare_query(first[0]).expect("re-query");
     let response = server.answer(&prepared.query).expect("answer");
     let got: Vec<u8> = client
-        .reconstruct_and_replenish(prepared, response)
+        .reconstruct_and_replenish(&prepared, &response)
         .expect("reconstruct");
     assert_eq!(
         got,
@@ -260,9 +341,20 @@ fn check_generator_file(scenario: &Scenario) -> Generated {
     let record_size: usize = scenario.record_size();
     assert_eq!(hints.record_size(), record_size);
 
+    // The file names the database that the generator read.
+    let version: u64 = scenario.database_version();
+    assert_eq!(hints.database_version(), version);
+    assert_eq!(
+        hints.init_database(),
+        DatabaseSnapshot {
+            version,
+            hash: *blake3::hash(&generated.database).as_bytes(),
+        }
+    );
+
     let params: ProtocolParams = ProtocolParams::for_hint_set(&hints).expect("params");
     let in_memory: HintSet =
-        compute_hints(&params, &MASTER_SEED, &generated.database).expect("compute_hints");
+        compute_hints(&params, &MASTER_SEED, version, &generated.database).expect("compute_hints");
     // Every byte position of a record reaches the parities, the last one included.
     for position in 0..record_size {
         assert!(
@@ -291,11 +383,12 @@ fn generator_file_equals_the_client_hint_set_and_answers_queries() {
         lambda: 8,
         threads: None,
         constant_time: false,
+        database_version: None,
     };
     let generated: Generated = check_generator_file(&scenario);
     assert_eq!(
         fs::metadata(&generated.hint_path).expect("metadata").len(),
-        96 + 128 * 44 + 128 * 84,
+        144 + 128 * 44 + 128 * 84,
         "hint file size for 40-byte records"
     );
 
@@ -332,10 +425,11 @@ fn generator_file_answers_queries_for_other_record_sizes() {
             lambda: 8,
             threads: Some(3),
             constant_time: false,
+            database_version: Some(1000 + record_size as u64),
         });
         assert_eq!(
             fs::metadata(&generated.hint_path).expect("metadata").len() as usize,
-            96 + 128 * (4 + record_size) + 128 * (4 + 2 * record_size),
+            144 + 128 * (4 + record_size) + 128 * (4 + 2 * record_size),
             "hint file size for record size {record_size}"
         );
     }
@@ -362,6 +456,7 @@ fn constant_time_path_writes_the_same_file_for_each_record_size() {
             lambda: 8,
             threads: Some(if record_size == 13 { 3 } else { 1 }),
             constant_time,
+            database_version: None,
         };
         let standard: Generated = generate(&scenario_for(name, false));
         let standard_bytes: Vec<u8> = fs::read(&standard.hint_path).expect("read hint file");
@@ -425,6 +520,7 @@ fn generator_file_is_the_same_for_every_thread_count() {
                 lambda: 8,
                 threads: Some(threads),
                 constant_time: false,
+                database_version: None,
             });
             fs::read(&generated.hint_path).expect("read hint file")
         })
@@ -457,6 +553,7 @@ fn generator_file_answers_queries_above_65536_hints() {
         lambda: 65,
         threads: None,
         constant_time: false,
+        database_version: None,
     };
     let generated: Generated = generate(&scenario);
     let hints: HintSet = load(&generated.hint_path);
@@ -464,12 +561,129 @@ fn generator_file_answers_queries_above_65536_hints() {
     run_online_phase(&scenario, &generated, hints);
 }
 
+/// A client that stops and starts again must know which deltas its hints
+/// have: the hint file holds the version.
+#[test]
+fn a_restarted_client_applies_the_deltas_after_its_hint_file() {
+    // 90 entries in 6 blocks of 16; the generator reads version 7.
+    let scenario = Scenario {
+        name: "restart",
+        record_size: Some(24),
+        num_entries: 90,
+        block_size: 16,
+        lambda: 8,
+        threads: None,
+        constant_time: false,
+        database_version: Some(7),
+    };
+    let record_size: usize = scenario.record_size();
+    let generated: Generated = generate(&scenario);
+    let dir: PathBuf = work_dir(scenario.name);
+    let init: DatabaseSnapshot = DatabaseSnapshot::of(7, &generated.database);
+
+    let hints: HintSet = load(&generated.hint_path);
+    assert_eq!(hints.database_version(), 7);
+    assert_eq!(hints.init_database(), init);
+    let params: ProtocolParams = ProtocolParams::for_hint_set(&hints).expect("params");
+
+    // The database moves from version 7 to version 10. Record 4 changes in
+    // each delta; record 89 is the last record.
+    let mut database: Vec<u8> = generated.database.clone();
+    let mut server: Server = Server::new(params.clone(), 7, &database).expect("server");
+    let batches: [Vec<usize>; 3] = [
+        vec![4, 17, 89],
+        (0..scenario.num_entries).filter(|i| i % 4 == 0).collect(),
+        vec![4, 5, 60],
+    ];
+    let delta_paths: Vec<PathBuf> = (8..=10u64)
+        .map(|to_version| dir.join(format!("delta_to_{to_version}.bin")))
+        .collect();
+    let mut deltas: Vec<Delta> = Vec::new();
+    for (round, batch) in batches.iter().enumerate() {
+        let delta: Delta = update_records(
+            &mut server,
+            &mut database,
+            record_size,
+            batch,
+            0xD000 + 0x100 * round as u64,
+        );
+        deltas.push(through_file(&delta_paths[round], &delta));
+    }
+    assert_eq!(server.database_version(), 10);
+
+    // First run: two deltas, no query, then the client writes its hints.
+    let mut first_run: Client =
+        Client::from_hints(params.clone(), MASTER_SEED, QUERY_SEED, hints).expect("client");
+    first_run.apply_delta(&deltas[0]).expect("delta to 8");
+    first_run.apply_delta(&deltas[1]).expect("delta to 9");
+    let saved_path: PathBuf = dir.join("hints_at_9.bin");
+    store(
+        &saved_path,
+        first_run.unused_hints().expect("the client sent no query"),
+    );
+    drop(first_run);
+
+    // Second run: the file gives the version, and the next delta is the third.
+    let saved: HintSet = load(&saved_path);
+    assert_eq!(saved.database_version(), 9);
+    assert_eq!(
+        saved.init_database(),
+        init,
+        "a delta changes the version, not the record of HintInit"
+    );
+    let mut second_run: Client =
+        Client::from_hints(params.clone(), MASTER_SEED, QUERY_SEED, saved).expect("client");
+    for (delta, from_version) in deltas.iter().zip(7..9u64) {
+        assert_eq!(
+            second_run.apply_delta(delta),
+            Err(ProtocolError::DatabaseVersionMismatch {
+                expected: 9,
+                got: from_version
+            })
+        );
+    }
+    second_run.apply_delta(&deltas[2]).expect("delta to 10");
+    assert_eq!(second_run.database_version(), 10);
+
+    // A client that applies all three deltas to the first file has the same hints.
+    let mut direct: Client = Client::from_hints(
+        params.clone(),
+        MASTER_SEED,
+        QUERY_SEED,
+        load(&generated.hint_path),
+    )
+    .expect("client");
+    for delta in &deltas {
+        direct.apply_delta(delta).expect("delta");
+    }
+    assert!(
+        second_run.unused_hints() == direct.unused_hints(),
+        "the restart changed the hints"
+    );
+
+    // Changed records (4, 89, 60, 8) and unchanged records (1, 2, 3, ...).
+    let candidates = [4usize, 89, 60, 8, 1, 2, 3].into_iter().chain(30..50);
+    let queried: Vec<usize> = query_and_check(
+        &mut second_run,
+        &server,
+        &database,
+        record_size,
+        candidates,
+        8,
+    );
+    assert!(queried.iter().any(|index| batches[2].contains(index)));
+    assert!(queried
+        .iter()
+        .any(|index| index % 4 != 0 && !batches[0].contains(index) && !batches[2].contains(index)));
+    assert!(second_run.unused_hints().is_none());
+}
+
 #[test]
 fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
     let entries: Vec<u8> = make_db(40, V3_RECORD_SIZE);
     let params: ProtocolParams =
         ProtocolParams::new(40, V3_RECORD_SIZE, Some(8), 2, None).expect("params");
-    let hints: HintSet = compute_hints(&params, &MASTER_SEED, &entries).expect("hints");
+    let hints: HintSet = compute_hints(&params, &MASTER_SEED, 0, &entries).expect("hints");
 
     let mismatch = |result: Result<Client, ProtocolError>| -> &'static str {
         match result {
@@ -550,6 +764,7 @@ fn client_rejects_a_hint_set_that_does_not_belong_to_it() {
             ..hints.geometry()
         },
         hints.seed_check(),
+        hints.init_database(),
         hints.regular_cutoffs().to_vec(),
         hints.backup_cutoffs().to_vec(),
     )
@@ -588,7 +803,7 @@ fn a_corrupted_generator_file_is_rejected_on_load() {
     let entries: Vec<u8> = make_db(40, V3_RECORD_SIZE);
     let params: ProtocolParams =
         ProtocolParams::new(40, V3_RECORD_SIZE, Some(8), 2, None).expect("params");
-    let hints: HintSet = compute_hints(&params, &MASTER_SEED, &entries).expect("hints");
+    let hints: HintSet = compute_hints(&params, &MASTER_SEED, 0, &entries).expect("hints");
     let mut bytes: Vec<u8> = Vec::new();
     hints.write_to(&mut bytes).expect("write");
 
