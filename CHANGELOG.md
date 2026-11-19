@@ -127,6 +127,7 @@ Not in this release:
 ### Fixed
 
 - **Findings of the review of the 0.2.0 pull request** (TASK-33):
+  - `Client::retire_hints` keeps `Client::unused_hints` when the list removes no hint (a hint with no valid cutoff). The client refused to export an unchanged hint set, and a state round trip gave another value.
   - The scalar `SwapOrNotSr` and `SwapOrNot` compute the partner of a round without `k_i + n`, which overflowed for a domain above 2^63 (a panic in a debug build, a wrong value in a release build). No hint set has such a domain; the values for all other domains do not change.
 - **Inconsistent axiom in the formal model**: `sr_base_case_no_recurse` (`SwapOrNotSrSpec.v`) contradicted the proven bijection of Sometimes-Recurse, so `False` was derivable. The axiom is removed; `sr_base_case_equiv` now has the condition as a hypothesis.
 - **Decoy index was sequential**: a query for a cached index went to the smallest index that was not cached. It now goes to a uniform index among those that are not cached and not in flight (Fig. 7).

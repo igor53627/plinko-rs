@@ -28,6 +28,13 @@
 //!   replace a state only with a complete one.
 //! - **Without the log, load only the newest state.** The format cannot
 //!   detect a state that is older than the last query of the client.
+//! - **Keep the deltas that a state needs.** A state has the database
+//!   version of its hints ([`Client::database_version`]); a log for
+//!   [`Client::retire_hints`] does not change it. After a restart, apply
+//!   the deltas from that version before you accept an answer of a later
+//!   version; no delta is necessary when the versions are equal. Keep each
+//!   delta, or a source for it, until a durable state has its `to_version`
+//!   or a later version.
 //! - **Use new random bytes as the query seed of each start.** The state does
 //!   not hold the query randomness.
 //! - **Keep the file secret.** It holds the hints, the indices of the
@@ -269,6 +276,12 @@ impl Client {
     /// Returns the client and its queries in flight, in the order of their
     /// queried indices. Each of them is the query that the client built
     /// before: send `query` again, or call [`Client::abandon_query`].
+    ///
+    /// If the caller has a log for [`Client::retire_hints`], pass the log
+    /// first. A returned query whose [`PreparedQuery::hint_index`] is in the
+    /// log is then no longer in flight: do not send it again.
+    /// [`Client::reconstruct_and_replenish`] and [`Client::abandon_query`]
+    /// return [`ProtocolError::UnknownPreparedQuery`] for it.
     ///
     /// **The state must hold each query that the client sent, or the caller
     /// must pass the hints of the later queries to [`Client::retire_hints`]
@@ -543,12 +556,14 @@ impl Client {
     /// of these hints.
     ///
     /// A query in flight that uses one of the hints ends as with
-    /// [`Client::abandon_query`]. A backup hint of the list is not promoted
+    /// [`Client::abandon_query`]; the caller must drop the `PreparedQuery`
+    /// that [`Client::read_state`] returned for it. A backup hint of the list is not promoted
     /// later, so the client can then have more queries in flight than backup
     /// hints: [`Client::reconstruct_and_replenish`] returns
     /// [`ProtocolError::NoBackupHintsLeft`] for the queries that have no
     /// backup hint. A hint that occurs two times, and a hint that is not
-    /// present, are not errors.
+    /// present, are not errors. A list that removes no hint leaves
+    /// [`Client::unused_hints`] as it is.
     ///
     /// The client has fewer hints after the call, with no replacement, as
     /// after [`Client::abandon_query`] (`docs/online_protocol.md`). The
@@ -570,14 +585,15 @@ impl Client {
         self.in_flight
             .retain(|_, query| !retired.contains(&query.hint_idx));
         for &hint_idx in hint_indices {
-            self.slots[hint_idx] = None;
+            let mut removed: bool = self.slots[hint_idx].take().is_some();
             if let Some(backup_idx) = hint_idx.checked_sub(self.params.num_regular_hints) {
                 if self.backup_available[backup_idx] {
                     self.backup_available[backup_idx] = false;
                     self.retired_backups.insert(backup_idx);
+                    removed = true;
                 }
             }
-            self.queried = true;
+            self.queried |= removed;
         }
         Ok(())
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::hints::DatabaseSnapshot;
 use crate::protocol::{Query, Response, Server};
 
 const NUM_ENTRIES: usize = 97;
@@ -664,7 +665,8 @@ fn retired_hints_are_not_used_and_not_promoted() {
         answer(&busy.server, &mut client, query);
         later_hints.push(query.hint_idx);
     }
-    for index in (0..NUM_ENTRIES).cycle() {
+    // The bound ends the loop if no index has a hint while backup hints remain.
+    for index in (0..NUM_ENTRIES).cycle().take(20 * NUM_ENTRIES) {
         let query: PreparedQuery = match client.prepare_query(index) {
             Ok(query) => query,
             Err(ProtocolError::NoBackupHintsLeft) => break,
@@ -693,4 +695,37 @@ fn retired_hints_are_not_used_and_not_promoted() {
             .all(|entry| entry.hint_idx != NUM_REGULAR + backup_idx));
         assert!(client.slots[NUM_REGULAR + backup_idx].is_none());
     }
+}
+
+/// A hint with no valid cutoff has no slot and is not an available backup
+/// hint, so its number in the list of `retire_hints` removes nothing.
+#[test]
+fn retiring_a_hint_with_no_valid_cutoff_leaves_the_hint_set_unused() {
+    let params: ProtocolParams = ProtocolParams::new(30, 5, Some(4), 3, None).expect("params");
+    let mut regular: Vec<u32> = vec![1u32; params.num_regular_hints];
+    let mut backup: Vec<u32> = vec![1u32; params.num_backup_hints];
+    regular[2] = INVALID_CUTOFF;
+    backup[3] = INVALID_CUTOFF;
+    let hints: HintSet = HintSet::new(
+        params.hint_geometry(),
+        hints::seed_check(&MASTER_SEED),
+        DatabaseSnapshot::of(0, &make_database(30, 5)),
+        regular,
+        backup,
+    )
+    .expect("hint set");
+    let invalid: [usize; 2] = [2, params.num_regular_hints + 3];
+    let mut client: Client =
+        Client::from_hints(params, MASTER_SEED, [0xB2u8; 32], hints).expect("client");
+    let before: Vec<u8> = state_bytes(&client);
+
+    assert_eq!(client.retire_hints(&invalid), Ok(()));
+    assert!(client.unused_hints().is_some());
+    assert_eq!(state_bytes(&client), before);
+    let (restored, _) = read(&before).expect("read state");
+    assert_same_state(&restored, &client);
+
+    // Control: a hint with a valid cutoff.
+    assert_eq!(client.retire_hints(&[0]), Ok(()));
+    assert!(client.unused_hints().is_none());
 }
