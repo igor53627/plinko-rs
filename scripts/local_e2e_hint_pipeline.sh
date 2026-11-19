@@ -4,10 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/plinko-e2e.XXXXXX)}"
+# A work directory of the caller is not removed on exit.
+if [[ -n "${WORK_DIR:-}" ]]; then
+  REMOVE_WORK_DIR=0
+else
+  WORK_DIR="$(mktemp -d /tmp/plinko-e2e.XXXXXX)"
+  REMOVE_WORK_DIR=1
+fi
 KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 
-if [[ "$KEEP_ARTIFACTS" != "1" ]]; then
+if [[ "$REMOVE_WORK_DIR" == "1" && "$KEEP_ARTIFACTS" != "1" ]]; then
   trap 'rm -rf "$WORK_DIR"' EXIT
 fi
 

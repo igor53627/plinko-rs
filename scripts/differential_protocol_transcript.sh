@@ -4,7 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/plinko-protocol-diff.XXXXXX)}"
+# A work directory of the caller is not removed on exit.
+if [[ -n "${WORK_DIR:-}" ]]; then
+  REMOVE_WORK_DIR=0
+else
+  WORK_DIR="$(mktemp -d /tmp/plinko-protocol-diff.XXXXXX)"
+  REMOVE_WORK_DIR=1
+fi
 KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 REF_REPO_URL="${REF_REPO_URL:-https://github.com/keewoolee/rms24-plinko-spec}"
 REF_REPO_DIR="${REF_REPO_DIR:-$WORK_DIR/rms24-plinko-spec}"
@@ -12,7 +18,7 @@ PY_VENV="${PY_VENV:-$WORK_DIR/.venv}"
 REF_JSON="${REF_JSON:-$WORK_DIR/reference_summary.json}"
 RUST_JSON="${RUST_JSON:-$WORK_DIR/rust_summary.json}"
 
-if [[ "$KEEP_ARTIFACTS" != "1" ]]; then
+if [[ "$REMOVE_WORK_DIR" == "1" && "$KEEP_ARTIFACTS" != "1" ]]; then
   trap 'rm -rf "$WORK_DIR"' EXIT
 fi
 
