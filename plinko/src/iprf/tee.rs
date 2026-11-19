@@ -274,11 +274,14 @@ impl SwapOrNotTee {
 /// Maximum preimages for fixed-size array return
 pub const MAX_PREIMAGES: usize = 512;
 
-/// Constant-time iPRF for TEE execution
+/// iPRF with fixed work in its inverse (experimental).
 ///
-/// Functionally equivalent to Iprf but uses branchless operations and
-/// fixed iteration counts to prevent timing side-channels.
-/// Uses SwapOrNotSrTee for full-domain PRP security.
+/// [`IprfTee::inverse_ct`] and [`IprfTee::table_ct`] do work that depends
+/// only on the domain and the range, which are public. [`IprfTee::forward`]
+/// is not constant-time. The values are those of [`Iprf`] for a bin of at
+/// most [`MAX_PREIMAGES`] balls; a larger bin is cut. The PRP is
+/// [`SwapOrNotSrTee`]. `docs/constant_time_mode.md` gives the attacker that
+/// this covers and the limits.
 pub struct IprfTee {
     cipher: Aes128,
     prp: SwapOrNotSrTee,
@@ -288,7 +291,7 @@ pub struct IprfTee {
 }
 
 impl IprfTee {
-    /// Creates a new TEE-safe iPRF instance.
+    /// Creates an instance with `n` balls (the domain) and `m` bins (the range).
     ///
     /// # Panics
     /// Panics if `m` is not a power of two of at most 2^32.
@@ -320,8 +323,9 @@ impl IprfTee {
     ///
     /// # Security Note
     /// This method is NOT constant-time: the internal `trace_ball` loop branches
-    /// on `ball_index < left_count`. For PIR query privacy, only `inverse_ct` needs
-    /// to be constant-time (the server computes inverse, not forward).
+    /// on `ball_index < left_count`, and the time of the sampler depends on the
+    /// ball count of the selected child. HintInit, which the client runs,
+    /// calls only the inverse.
     ///
     /// # Precondition
     /// `x` must be in range `[0, domain)`. This is a precondition, not runtime-checked
@@ -332,7 +336,14 @@ impl IprfTee {
         self.trace_ball(permuted, self.domain, self.range)
     }
 
-    /// Constant-time inverse returning fixed-size array with validity mask.
+    /// Inverse with fixed work: returns `MAX_PREIMAGES` slots and the number
+    /// of slots that hold a preimage. The other slots are 0.
+    ///
+    /// A bin with more than [`MAX_PREIMAGES`] balls is cut to its first
+    /// `MAX_PREIMAGES` balls. The result does not show this: a count of
+    /// `MAX_PREIMAGES` is a full bin or a cut bin. A caller that needs all
+    /// preimages uses [`IprfTee::table_ct`] and stops if
+    /// [`IprfTeeTable::overflowed`] is true, as HintInit does.
     ///
     /// Each call samples every tree level again. To invert many outputs of
     /// one instance, use [`IprfTee::table_ct`].
@@ -496,7 +507,9 @@ impl IprfTee {
         low
     }
 
-    /// Helper to get Vec<u64> like standard inverse (for testing)
+    /// Helper to get Vec<u64> like standard inverse (for testing).
+    ///
+    /// It has the cut of [`IprfTee::inverse_ct`] for a bin above `MAX_PREIMAGES`.
     pub fn inverse(&self, y: u64) -> Vec<u64> {
         let (arr, count) = self.inverse_ct(y);
         arr[..count].to_vec()
@@ -631,6 +644,11 @@ mod tests {
         assert_ne!(first_load, 512, "the test key must give unequal bins");
         assert_eq!(table_ball_ranges(&table.starts)[0], (0, first_load));
         assert!(table.overflowed());
+
+        // One bin of 513 balls: the direct inverse cuts it and gives no sign.
+        let one_bin: IprfTee = IprfTee::new(pmns_test_key(0), 513, 1);
+        assert_eq!(one_bin.inverse_ct(0).1, MAX_PREIMAGES);
+        assert!(one_bin.table_ct().overflowed());
 
         // 600 balls in 2 bins: both bins are within the bound.
         let sparse: IprfTee = IprfTee::new(pmns_test_key(0), 600, 2);
