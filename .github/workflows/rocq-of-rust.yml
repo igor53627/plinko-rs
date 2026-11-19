@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -167,12 +166,10 @@ jobs:
           print(f"Patched {path} (Set -> Type in OfTy/OfValue)")
           PY
           
-          if [ ! -f target/release/rocq-of-rust ]; then
-            echo "Building rocq-of-rust..."
-            cargo +nightly-2024-12-07 build --release
-          else
-            echo "Using cached rocq-of-rust binary"
-          fi
+          # Build after each checkout: the cache key does not hold the fork revision,
+          # so a cached binary can be older than the source. Cargo reuses the cached
+          # artifacts when the source did not change.
+          cargo +nightly-2024-12-07 build --release
 
       - name: Build minimal RocqOfRust library
         run: |
