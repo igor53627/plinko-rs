@@ -19,6 +19,12 @@ cargo run -p plinko --bin cost_estimate -- --mainnet
 cargo run -p plinko --bin cost_estimate -- --entries 100000000 --gpus 2 --tee --json
 ```
 
+The CPU section is the HintInit cost of `plinko_hints`, extrapolated from the
+measurements in [`hint_generation.md`](hint_generation.md#mainnet-cost): about 300
+core-hours for mainnet with hardware AES. `--tee` selects the constant-time path
+(about 8,500 core-hours); it adds no overhead of a TEE. The GPU section is the
+throughput benchmark, which does not compute Plinko hints.
+
 ## Extract state
 
 Reth node data directory (`reth-db`, MDBX on disk):

@@ -1,8 +1,9 @@
 //! Cost attribution estimator for Plinko PIR deployments.
 //!
-//! Estimates resource costs by component: storage, GPU compute, CPU compute,
-//! and memory requirements. Uses measured throughput constants from production
-//! benchmarks — no CUDA dependency required.
+//! Estimates resource costs by component: storage, CPU time of HintInit, the
+//! GPU throughput benchmark, and memory. The CPU numbers are extrapolations
+//! from the measurements in `docs/hint_generation.md` and
+//! `docs/constant_time_mode.md`. No CUDA dependency is necessary.
 
 use clap::{value_parser, Parser};
 use eyre::eyre;
@@ -38,13 +39,23 @@ const BACKUP_HINT_SIZE: u64 = HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE;
 /// Source: production benchmarks on Modal H200 instances
 const GPU_HINTS_PER_SEC: f64 = 3_012.0;
 
-/// CPU hint generation throughput: MB/s on bare metal (64-core)
-/// Source: production benchmarks
-const CPU_THROUGHPUT_MBPS: f64 = 55.8;
-const BASELINE_CPU_VCPUS: u64 = 64;
+/// CPU time of HintInit for one database record in the standard path, in
+/// milliseconds, at [`MEASURED_LAMBDA`].
+///
+/// Source: 24 blocks of w = 65536 with 16,777,216 hints on 24 threads, Apple
+/// M3 Ultra with hardware AES: 925.3 s of CPU time for 1,572,864 records
+/// (`docs/hint_generation.md`). An AMD EPYC 9375F gave 1.04 ms of thread time.
+const STANDARD_MS_PER_ENTRY: f64 = 0.59;
 
-/// TEE overhead multiplier (SGX/TDX constant-time mode)
-const TEE_OVERHEAD: f64 = 2.6;
+/// The same for the constant-time path (`plinko_hints --constant-time`,
+/// feature `tee`): one thread, same machine (`docs/constant_time_mode.md`).
+/// The path runs 512 slots for each record, for every lambda that it accepts.
+const CONSTANT_TIME_MS_PER_ENTRY: f64 = 16.7;
+
+/// Lambda of the two measurements: 256 hints for each offset of a block.
+const MEASURED_LAMBDA: u64 = 128;
+
+const DEFAULT_CPU_VCPUS: u64 = 64;
 
 /// Default GPU hourly rate (H200 on Modal/cloud)
 const DEFAULT_GPU_HOURLY_RATE: f64 = 3.50;
@@ -89,15 +100,16 @@ struct Args {
     )]
     gpu_hourly_rate: f64,
 
-    /// Number of CPU vCPUs for throughput scaling
+    /// Worker threads of HintInit; the wall time is the CPU time divided by this number
     #[arg(
         long,
-        default_value_t = BASELINE_CPU_VCPUS,
+        default_value_t = DEFAULT_CPU_VCPUS,
         value_parser = value_parser!(u64).range(1..)
     )]
     cpu_vcpus: u64,
 
-    /// Apply TEE (SGX/TDX) overhead to CPU estimates
+    /// Estimate the constant-time path (`plinko_hints --constant-time`, feature `tee`).
+    /// The estimate includes no overhead of a TEE
     #[arg(long, default_value_t = false)]
     tee: bool,
 
@@ -155,12 +167,17 @@ struct GpuCompute {
     hourly_rate_usd: f64,
 }
 
+/// Extrapolated CPU cost of HintInit (`plinko_hints`) with hardware AES.
 #[derive(Serialize)]
 struct CpuCompute {
+    /// The constant-time path, not the standard path.
     tee: bool,
     vcpus: u64,
-    throughput_mbps: f64,
+    ms_per_entry: f64,
+    core_secs: f64,
+    /// `core_secs / vcpus`: the wall time if the threads scale linearly.
     time_secs: f64,
+    throughput_mbps: f64,
 }
 
 #[derive(Serialize)]
@@ -240,18 +257,18 @@ fn main() -> eyre::Result<()> {
 
     // --- CPU compute estimates ---
     let db_size_mb = db_size as f64 / (1024.0 * 1024.0);
-    let scaled_cpu_throughput =
-        CPU_THROUGHPUT_MBPS * (args.cpu_vcpus as f64 / BASELINE_CPU_VCPUS as f64);
-    let cpu_throughput = if args.tee {
-        scaled_cpu_throughput / TEE_OVERHEAD
-    } else {
-        scaled_cpu_throughput
-    };
-    let cpu_time_secs = db_size_mb / cpu_throughput;
+    let cpu_ms_per_entry = hint_init_ms_per_entry(args.lambda, args.tee)?;
+    // The standard path does no iPRF inverse for a padding record. The
+    // constant-time path does the same work for it as for a real record.
+    let cpu_entries = if args.tee { capacity } else { entries };
+    let cpu_core_secs = cpu_entries as f64 * cpu_ms_per_entry / 1000.0;
+    let cpu_time_secs = cpu_core_secs / args.cpu_vcpus as f64;
+    let cpu_throughput = db_size_mb / cpu_time_secs;
 
     ensure_finite(&[
         ("gpu_time_secs", gpu_time_secs),
         ("gpu_cost", gpu_cost),
+        ("cpu_core_secs", cpu_core_secs),
         ("cpu_throughput", cpu_throughput),
         ("cpu_time_secs", cpu_time_secs),
     ])?;
@@ -306,8 +323,10 @@ fn main() -> eyre::Result<()> {
         cpu_compute: CpuCompute {
             tee: args.tee,
             vcpus: args.cpu_vcpus,
-            throughput_mbps: cpu_throughput,
+            ms_per_entry: cpu_ms_per_entry,
+            core_secs: cpu_core_secs,
             time_secs: cpu_time_secs,
+            throughput_mbps: cpu_throughput,
         },
         memory: Memory {
             vram_packed_db_bytes: vram_packed_db,
@@ -352,6 +371,25 @@ fn hint_geometry(entries: u64, lambda: u64) -> eyre::Result<HintGeometry> {
         num_regular: params.num_regular_hints as u64,
         num_backup: params.num_backup_hints as u64,
     })
+}
+
+/// CPU time of HintInit for one record, in milliseconds.
+///
+/// The standard path inverts `2 * lambda` hints for each record, so its
+/// measured time is scaled with `lambda`; only lambda = 128 was measured. The
+/// constant-time path has a fixed number of slots and accepts lambda up to
+/// [`MEASURED_LAMBDA`] with the default number of backup hints.
+fn hint_init_ms_per_entry(lambda: u64, constant_time: bool) -> eyre::Result<f64> {
+    if !constant_time {
+        return Ok(STANDARD_MS_PER_ENTRY * lambda as f64 / MEASURED_LAMBDA as f64);
+    }
+    if lambda > MEASURED_LAMBDA {
+        return Err(eyre!(
+            "the constant-time path accepts lambda up to {MEASURED_LAMBDA} with the default \
+             number of backup hints, got {lambda}"
+        ));
+    }
+    Ok(CONSTANT_TIME_MS_PER_ENTRY)
 }
 
 fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
@@ -569,31 +607,44 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     );
     println!();
     println!(
-        "CPU Compute ({})",
+        "CPU HintInit ({}, extrapolated)",
         if estimate.cpu_compute.tee {
-            "TEE mode"
+            "constant-time path"
         } else {
-            "bare metal"
+            "standard path"
         }
     );
-    println!("------------------");
+    println!("------------------------------------------");
     println!(
-        "  Throughput:         {:.1} MB/s ({}-vCPU{})",
-        estimate.cpu_compute.throughput_mbps,
-        estimate.cpu_compute.vcpus,
-        if estimate.cpu_compute.tee {
-            ", TEE 2.6x overhead"
-        } else {
+        "  CPU per record:     {:.2} ms (hardware AES; measured at lambda = {}{})",
+        estimate.cpu_compute.ms_per_entry,
+        MEASURED_LAMBDA,
+        if estimate.parameters.lambda == MEASURED_LAMBDA || estimate.cpu_compute.tee {
             ""
+        } else {
+            ", scaled with lambda"
         }
     );
+    if estimate.cpu_compute.core_secs >= 3600.0 {
+        println!(
+            "  CPU time:           {:.0} core-hours",
+            estimate.cpu_compute.core_secs / 3600.0
+        );
+    } else {
+        println!(
+            "  CPU time:           {} on one core",
+            fmt_duration(estimate.cpu_compute.core_secs)
+        );
+    }
     println!(
         "  Database size:      {}",
         fmt_bytes(estimate.storage.database_bytes)
     );
     println!(
-        "  Estimated time:     {}",
-        fmt_duration(estimate.cpu_compute.time_secs)
+        "  Estimated time:     {} on {} threads ({:.2} MB/s, if the threads scale linearly)",
+        fmt_duration(estimate.cpu_compute.time_secs),
+        estimate.cpu_compute.vcpus,
+        estimate.cpu_compute.throughput_mbps
     );
     println!();
     println!("Memory");
@@ -762,6 +813,34 @@ mod tests {
         );
     }
 
+    /// The mainnet numbers of `docs/hint_generation.md` (about 300 core-hours)
+    /// and of `docs/trust_model.md` (about 8,500 core-hours in the
+    /// constant-time path). The estimator said 20.9 minutes on 64 vCPUs
+    /// before, which is 22 core-hours.
+    #[test]
+    fn mainnet_hint_init_cost_matches_the_documents() {
+        let core_hours = |constant_time: bool| -> f64 {
+            let ms: f64 = hint_init_ms_per_entry(128, constant_time).expect("ms per entry");
+            MAINNET_ENTRIES as f64 * ms / 1000.0 / 3600.0
+        };
+        assert!(
+            (295.0..=305.0).contains(&core_hours(false)),
+            "{}",
+            core_hours(false)
+        );
+        assert!(
+            (8_400.0..=8_600.0).contains(&core_hours(true)),
+            "{}",
+            core_hours(true)
+        );
+
+        // Half the hints for each offset: half the inverse PRP work.
+        let half: f64 = hint_init_ms_per_entry(64, false).expect("ms per entry");
+        assert_eq!(half, STANDARD_MS_PER_ENTRY / 2.0);
+        // 2 * lambda hints for each offset must stay at or below half of 512 slots.
+        assert!(hint_init_ms_per_entry(129, true).is_err());
+    }
+
     #[test]
     fn clap_rejects_zero_entries() {
         let args = Args::try_parse_from(["cost_estimate", "--entries", "0"]);
@@ -889,9 +968,11 @@ mod tests {
             },
             cpu_compute: CpuCompute {
                 tee: false,
-                vcpus: BASELINE_CPU_VCPUS,
-                throughput_mbps: 0.0,
+                vcpus: DEFAULT_CPU_VCPUS,
+                ms_per_entry: 0.0,
+                core_secs: 0.0,
                 time_secs: 0.0,
+                throughput_mbps: 0.0,
             },
             memory: Memory {
                 vram_packed_db_bytes: 0,
