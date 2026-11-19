@@ -1,20 +1,19 @@
 # Plinko RS - Agent Rules
 
-## Local-Only Phase (No GitHub)
+## Workflow
 
-The repository is not on GitHub at this time; `origin` is a local Git server. Until the owner
-publishes it again, this section replaces the GitHub rules of the global agent instructions
-(issue tracking, PR workflow, branch cleanup) and the CI references below.
+The repository has two remotes: `origin` is a local Git server, and `github` is
+`igor53627/plinko-rs` on GitHub.
 
-- Do not use `gh`. Do not create issues, pull requests, or review comments.
-- Track work in `backlog/` with the `backlog` CLI. A task is necessary for work that spans more
-  than one commit and for each deferred item (follow-up, revert, TODO). A small fix needs no task.
-- Version control is `jj` in a colocated repository, without feature branches. `jj` does not run
-  Git hooks, so check each commit message with `.githooks/commit-msg <file>` (see Commit Messages).
+- Version control is `jj` in a colocated repository. `jj` does not run Git hooks, so check each
+  commit message with `.githooks/commit-msg <file>` (see Commit Messages).
+- Track work in `backlog/` with the `backlog` CLI, not in GitHub issues. This replaces the issue
+  rules of the global agent instructions. A task is necessary for work that spans more than one
+  commit and for each deferred item (follow-up, revert, TODO). A small fix needs no task.
 - Review local changes before a commit: `coderabbit review --uncommitted --agent`.
-- Push only when the owner asks.
-
-Remove this section when the repository is on GitHub again.
+- A change goes to `main` through a pull request on GitHub, with one commit for each logical
+  change and no squash merge. After the merge, move `main` on `origin` to the same commit.
+- Push, and open or merge a pull request, only when the owner asks.
 
 ## Scope
 
@@ -39,9 +38,20 @@ If the parsed JSON and the paper PDF (`docs/2024-318.pdf`) disagree, the PDF is 
 
 ## Host: root@aya
 
-- **Reth DB location**: `/mnt/mainnet/data`
-- **Working directory**: `/mnt/mainnet/plinko`
-- **DO NOT** create artifacts outside `/mnt/mainnet/plinko` without explicit user permission
+`aya` is a shared machine of the owner (x86-64 Linux, 64 cores, AES-NI). Other projects run on it.
+
+- **Working directory**: `/root/plinko-work`, with one subdirectory for each run (for example
+  `/root/plinko-work/v0.2.0`). Set `CARGO_TARGET_DIR` and `TMPDIR` inside the subdirectory; the
+  binaries are then in `$CARGO_TARGET_DIR/release`, not in `./target/release` as in the run
+  commands below.
+- Builds, tests and benchmarks in the working directory need no permission. Start them with `nice`.
+- Ask the owner before you write outside the working directory, install or remove a system
+  package, start or stop a service, or start a run that needs more than 100 GB of disk.
+- Do not change the files of other projects.
+- `aya` has no route to `origin`. Copy a commit with
+  `git archive <commit> | ssh aya 'tar -x -C <directory>'`.
+- `/mnt/mainnet` (the Reth database `/mnt/mainnet/data` and the mainnet `database.bin`) was not
+  on the host on 2026-11-19. The run commands below need a database from the owner.
 
 ## Build Commands
 
