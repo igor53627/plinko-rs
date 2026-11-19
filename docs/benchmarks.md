@@ -32,7 +32,7 @@ details. Do not use their numbers for the current code.
 
 | Document                                                            | Date     | What it measured                                                                                    |
 |---------------------------------------------------------------------|----------|-----------------------------------------------------------------------------------------------------|
-| [`tee-test/SEV-SNP-BENCHMARK.md`](../tee-test/SEV-SNP-BENCHMARK.md) | Dec 2025 | A generator with regular hints only and no iPRF (revision `0b3fccb` or earlier), in KVM and SEV-SNP |
+| [`tee-test/SEV-SNP-BENCHMARK.md`](../tee-test/SEV-SNP-BENCHMARK.md) | Dec 2025 | A generator with regular hints only and no iPRF (revision `3e3fe92` or earlier), in KVM and SEV-SNP |
 | [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md)                      | Jan 2026 | GPU throughput kernel; the output is not a Plinko hint set (TASK-21)                                |
 | [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md)            | Jan 2026 | Commands and reports of the same GPU benchmark                                                      |
 | [`archived/gpu_runs/`](archived/gpu_runs/)                          | Jan 2026 | Modal run logs                                                                                      |

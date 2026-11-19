@@ -2,7 +2,7 @@
 
 > **Historical (December 2025). These numbers do not apply to the current code.**
 >
-> - Measured code: `state-syncer/src/bin/plinko_hints.rs` at revision `0b3fccb`
+> - Measured code: `state-syncer/src/bin/plinko_hints.rs` at revision `3e3fe92`
 >   (2025-12-05) or earlier; the exact revision of the binary is not recorded.
 > - That generator made regular hints only. Its file header says "Backup hints:
 >   Not implemented". It had no iPRF and no inverse. A BLAKE3 hash per

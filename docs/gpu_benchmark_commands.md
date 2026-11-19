@@ -10,7 +10,7 @@ Quick reference for running the GPU throughput benchmark on Modal Labs.
 >   the full hint count of that benchmark. The file from "Download Generated
 >   Hints" holds raw 40-byte parities; no client code reads it.
 > - The reports name ChaCha8 and ChaCha20. The kernel has `CHACHA_ROUNDS 12`
->   since `aae2060` (2026-01-24) and no option for the round count
+>   since `c52c4f4` (2026-01-24) and no option for the round count
 >   (`plinko/cuda/hint_kernel.cu`). The revision of each run is not recorded,
 >   so the commands below do not reproduce the reports.
 > - The summary table gives "~80s" on 50 GPUs for 7,002 hints/s on 2 GPUs. The

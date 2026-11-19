@@ -10,8 +10,8 @@
 >   cost of HintInit for a client.
 > - The kernels "Split", "Buffered Aggregation" and "Interleaved 4x" of the
 >   table below are not in `hint_kernel.cu` today. The revision of each run is
->   not recorded; the kernel last changed in `5a851ca` (2026-01-25), and this
->   document was added in `1c50b9c` (2026-01-29).
+>   not recorded; the kernel last changed in `6387c92` (2026-01-25), and this
+>   document was added in `68dfa95` (2026-01-29).
 > - Not measured again since then. No CUDA build was run in the review of
 >   November 2026.
 >
