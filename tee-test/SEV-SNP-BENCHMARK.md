@@ -19,7 +19,8 @@
 >   part of the trust model (`docs/trust_model.md`).
 >
 > What the document still shows: the relative overhead of SEV-SNP over KVM for
-> a compute-bound workload with AES-NI on this host.
+> a compute-bound workload on this host. The PRF mode of the two runs in the
+> first table (BLAKE3 or AES-CTR) is not recorded.
 
 ## Summary
 

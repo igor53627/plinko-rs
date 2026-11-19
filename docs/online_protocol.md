@@ -145,7 +145,9 @@ promoted backup hints, the cache and the queries in flight.
 `read_state` returns the queries in flight. Each one has the same `Query`
 bytes as before the restart: a message is a function of its hint and of the
 stored order of the two subsets. The caller sends it again (the rule for a
-retry) or calls `abandon_query`.
+retry) or calls `abandon_query`. A caller with a log passes the log to
+`retire_hints` first: a returned query whose `PreparedQuery::hint_index` is
+in the log is then no longer in flight, and the caller drops it.
 
 **Rules for the caller.** The code cannot enforce them.
 
@@ -174,6 +176,13 @@ retry) or calls `abandon_query`.
 5. **Keep the file secret.** It holds the hints, the indices of the answered
    queries with their records, and the queried and the requested index of
    each query in flight. It does not hold the master seed.
+6. **Keep the deltas that a state needs.** A state has the database version
+   of its hints, and a log for `retire_hints` does not change it. After a
+   restart, apply the deltas from `Client::database_version` before you
+   accept an answer of a later version
+   ([update_strategy.md](update_strategy.md#restart)); no delta is necessary
+   when the versions are equal. Keep each delta, or a source for it, until a
+   durable state has its `to_version` or a later version.
 
 `retire_hints` removes each hint of the log with no promotion, as
 `abandon_query` does, so the deviation of the section above applies to each
@@ -224,6 +233,8 @@ one.
 When no backup hint is free, `prepare_query` returns `NoBackupHintsLeft` before
 it builds a message. This also applies to an index in the cache, because the
 decoy query needs a hint and a backup hint. No hint is used and nothing is sent.
+A query in flight keeps its reserved backup hint and can still get its
+answer: complete the queries in flight before you replace the client.
 
 After the limit, **the client must run HintInit again with a new master seed.**
 The hints are a function of the master seed. The same seed gives the same

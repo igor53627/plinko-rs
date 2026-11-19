@@ -119,8 +119,14 @@ With the mainnet parameters of
 
 - **Compare the hash of HintInit.** Get the BLAKE3 hash of the database file
   from the publisher through a channel that the server does not control, and
-  compare it with `HintSet::init_database`. This shows that HintInit read the
-  database of the publisher. It shows nothing about later answers.
+  compare it with `HintSet::init_database`. `plinko_hints` hashes the file in
+  one pass and computes the parities in a second pass over the same mapped
+  file. **The file must not change until HintInit ends**: if it changes
+  between the passes, the hash can be equal to the value of the publisher
+  while the hints hold other records. With an unchanged file, an equal hash
+  shows that HintInit read the database of the publisher. It shows nothing
+  about later answers. `compute_hints` hashes and reads one slice in memory,
+  so this condition applies only to the file of `plinko_hints`.
 - **Put an authenticator in each record**, if the publisher is not the
   server. The publisher signs the index and the value of a record and stores
   the signature in the record. The client checks the signature after `Recon`.

@@ -15,7 +15,7 @@ The GPU benchmark (`plinko/src/gpu.rs`, `gpu` feature) works with 40-byte record
 - Backup hints: block subset of size c/2, dual parities (in/out)
 - A block subset is one 32-bit cutoff per hint (see [Block Subsets](#block-subsets))
 - iPRF domain = total hints (λw + q), range = w (block size)
-- `w` must be a power of two. The default is the smallest power of two >= sqrt(N), the same rule as the protocol client (`plinko::protocol::default_block_size`). Mainnet v3: w = 65536, c = 27988
+- `w` must be a power of two of at most 2^32. The default is the smallest power of two >= sqrt(N), the same rule as the protocol client (`plinko::protocol::default_block_size`). Mainnet v3: w = 65536, c = 27988
 
 ## Module Structure
 
@@ -83,11 +83,15 @@ cargo build --release -p plinko --bin plinko_hints
 
 `--database-version <n>` (default 0) is the version of the database file, as
 its publisher numbers it. The hint file stores it with the BLAKE3 hash of the
-file, which the run also logs ([update_strategy.md](update_strategy.md)).
+file, which the run also logs ([update_strategy.md](update_strategy.md)). The
+hash pass comes before the parity pass, so the file must not change during
+the run ([integrity.md](integrity.md#what-an-application-can-do)).
 
 Without `--output` the run only logs counts. `--output` requires `--seed` or
 `--seed-file`, because a client cannot use the hints without the master seed.
-`--seed` puts the seed in the process list; use `--seed-file`.
+`--seed` puts the seed in the process list; use `--seed-file`. The hint file
+takes the place of the `--output` path with a rename, so the run refuses an
+`--output` that is the database file, the seed file or a directory.
 
 See [constant_time_mode.md](constant_time_mode.md) for TEE security details.
 
