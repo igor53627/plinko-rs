@@ -334,11 +334,13 @@ Proof.
 Qed.
 
 (** ============================================================================
-    Section 8: Lifted Properties (From Spec to Rust Implementation)
+    Section 8: Properties Of The Model (From Spec To Model)
     ============================================================================ *)
 
-(** These theorems lift the verified properties from SwapOrNotProofs.v
-    to the Rust implementation via the simulation relation. *)
+(** These theorems carry the properties that SwapOrNotProofs.v proves for
+    the spec over to the model functions of this file ([rust_forward],
+    [rust_inverse]) through the simulation relation. They are statements
+    about the Rocq model, not about the Rust code (see STATUS above). *)
 
 (** Rust forward preserves range *)
 Theorem rust_forward_in_range : forall s x,

@@ -8,12 +8,15 @@ Open Scope Z_scope.
 
 (** Simulation relations connect:
     - Rocq specs (pure functional, in specs/)
-    - Translated Rust (from rocq-of-rust, in src/)
-    
+    - Rocq models of the Rust functions (hand-written, in sims/)
+
+    No tool compares a model with the Rust source, and the repository has
+    no translated Rust code. A theorem here is a statement about a model.
+
     The approach:
-    1. Define refinement relations between spec types and Rust types
-    2. Prove that Rust functions refine spec functions
-    3. Lift spec properties to Rust implementations
+    1. Define refinement relations between spec types and model types
+    2. Prove that the model functions refine spec functions
+    3. Carry spec properties over to the model functions
 *)
 
 (** ============================================================================
