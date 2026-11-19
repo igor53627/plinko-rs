@@ -1,7 +1,6 @@
 # Plinko RS
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/plinko-rs)
-[![Interactive Visualization](https://img.shields.io/badge/Demo-Protocol%20Visualization-blue)](https://igor53627.github.io/plinko-rs/protocol-visualization.html)
 
 Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server PIR for a database of fixed-size records: invertible PRF (iPRF) primitives, hint generation by the client, the online protocol, hint updates, and Rocq models.
 

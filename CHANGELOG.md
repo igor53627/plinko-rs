@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`). GitHub Pages is not in use for the repository, and the workflow failed on each push to `main` that changed `docs/`. The protocol demo is not hosted: the badge with the `igor53627.github.io` link is removed from `README.md`, and `docs/README.md` says to open `docs/protocol-visualization.html` from a clone in a browser.
+
 ## [0.2.0] - 2026-11-19
 
 The target of the repository is now a PIR library for a database of fixed-size records
