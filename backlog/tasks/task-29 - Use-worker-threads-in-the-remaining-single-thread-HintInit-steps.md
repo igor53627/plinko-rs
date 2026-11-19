@@ -37,7 +37,7 @@ TASK-18 added worker threads only to the streaming phase of the standard path of
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Commit c711d6f0 (local jj, not pushed).
+Commit bbafc210 (local jj, not pushed).
 
 Done:
 - HintInit is the library module plinko::hint_init (hint_cutoffs, fill_parities, and fill_parities_ct with the tee feature). plinko_hints and protocol::compute_hints call the same code; the second streaming loop (protocol.rs) and the second derive_block_keys (hint_gen/keys.rs) are removed. Note: driver::init_hints of the task text was named hint_cutoffs since TASK-31.

@@ -40,7 +40,7 @@ database.bin has 40-byte records (plinko/src/schema40.rs). The hints XOR the fir
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Commit f3360714 (local jj, not pushed).
+Commit 9c42012b (local jj, not pushed).
 
 Done:
 - plinko_hints --record-size (1 to 1,048,576 bytes, default 40). The record size comes from the option, not from metadata.json. A hint parity is the XOR of whole records.
