@@ -97,7 +97,9 @@ if [[ ! -s "$DB_PATH" ]]; then
   exit 1
 fi
 
-(umask 077 && printf '%s\n' "$MASTER_SEED" > "$SEED_FILE")
+# A file from an earlier run keeps its mode, so the seed goes to a new file.
+rm -f "$SEED_FILE"
+(umask 077 && set -o noclobber && printf '%s\n' "$MASTER_SEED" > "$SEED_FILE")
 
 log "running plinko_hints (fast path)"
 RUST_LOG="${RUST_LOG:-info}" RUST_LOG_STYLE=never "$HINTS_BIN" \
