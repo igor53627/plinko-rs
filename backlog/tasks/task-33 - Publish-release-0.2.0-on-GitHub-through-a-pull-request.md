@@ -4,7 +4,7 @@ title: Publish release 0.2.0 on GitHub through a pull request
 status: To Do
 assignee: []
 created_date: '2026-11-19T03:25:00Z'
-updated_date: '2026-11-19T06:30:00Z'
+updated_date: '2026-11-19T07:24:00Z'
 labels:
   - release
 dependencies: []
@@ -31,4 +31,6 @@ The private repository igor53627/plinko-rs exists on GitHub since 2026-11-19 and
 2026-11-19: the owner selected the rewrite, with no copy of the old history. git filter-branch replaced the author email in 48 commits and the address in three Co-Authored-By lines with igor53627@users.noreply.github.com; a script compared each old commit with its new commit (tree, parents, author name and date, committer, message). Old main 906dcbc is now 7c1598d; the first 15 commits keep their hashes; 57 commits lost their signature. The 46 commits of release/0.2.0 were moved to the new main with jj rebase; the tree of the branch tip is the same. The local branches fix/binomial-beta-routing and archive/local-worktree-checkpoint-20260717 still point to the old history and were not changed.
 
 origin (local Git server): main is protected from force push, so main on origin is still the old 906dcbc. The owner must allow the force push or remove the protection before main on origin can follow GitHub. release/0.2.0 on origin was replaced by the rewritten branch.
+
+2026-11-19: pull request 1 is open (release/0.2.0 to main); the 7 checks passed on d45aa92. CodeRabbit gave 26 findings on the pull request. Each one was checked against the code: 23 led to a change (9 code fixes with tests that fail without the fix, the others are documents, doc comments, tests, a script and a workflow), 3 led to no code change (HintSet::new allocation: doc line only, the fix alone gives no guarantee because SharedParities allocates the same size; IprfTee::inverse_ct overflow flag: doc and a test only, HintInit uses the checked table path; scan of the backup flags: below 1 percent of the query cost). Also fixed from the same check: lambda * w with no overflow check, --output that is a directory. Open from the same check, not changed: cost_estimate takes w from derive_plinko_params (131072 for mainnet) and plinko_hints from default_block_size (65536); local_e2e_hint_pipeline.sh removes a caller-supplied WORK_DIR on exit. Local checks and the CodeRabbit CLI (0 findings) passed. Not pushed: a push needs a command of the owner.
 <!-- SECTION:NOTES:END -->

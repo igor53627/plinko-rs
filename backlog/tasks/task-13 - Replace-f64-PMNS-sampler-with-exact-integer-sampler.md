@@ -23,7 +23,7 @@ binomial_sample delegated to puruspe::betai for counts 1025 to about 12000 and r
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 Sampler output follows Binomial(count, 1/2) for counts 1 to 12000 (Kolmogorov-Smirnov test)
+- [x] #1 Sampler output follows Binomial(count, 1/2) at ten selected counts from 1 to 12000 (Kolmogorov-Smirnov test)
 - [x] #2 PMNS bin loads pass a chi-square test on domain 16384, range 64
 - [x] #3 Iprf and IprfTee give the same PMNS tree; IprfTee has no 65536-hint limit
 - [x] #4 plinko_hints and the protocol client derive the same default (w, c)
