@@ -1,10 +1,10 @@
 ---
 id: TASK-33
 title: Publish release 0.2.0 on GitHub through a pull request
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-19T03:25:00Z'
-updated_date: '2026-11-19T12:53:00Z'
+updated_date: '2026-11-19T14:45:00Z'
 labels:
   - release
 dependencies: []
@@ -21,8 +21,8 @@ The private repository igor53627/plinko-rs exists on GitHub since 2026-11-19 and
 <!-- AC:BEGIN -->
 - [x] #1 The owner selects a way: allow the push in the email settings of the account, or rewrite the author of the 48 old commits (this changes each commit hash of main)
 - [x] #2 main (the rewritten history before the release) and release/0.2.0 are on GitHub, and GitHub Actions are enabled before the pull request is opened
-- [ ] #3 A pull request release/0.2.0 to main is open and its workflows pass (CI, commit lint, formal with Rocq 9.0.0, e2e smoke); a failure from the release changes is fixed
-- [ ] #4 After the merge with no squash: main on origin is at the same commit, and the tag v0.2.0 is on the merge result
+- [x] #3 A pull request release/0.2.0 to main is open and its workflows pass (CI, commit lint, formal with Rocq 9.0.0, e2e smoke); a failure from the release changes is fixed
+- [x] #4 After the merge with no squash: main on origin is at the same commit, and the tag v0.2.0 is on the merge result
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -36,3 +36,9 @@ origin (local Git server): main is protected from force push, so main on origin 
 
 2026-11-19, later: the owner approved the push of the review fixes and asked for the two open items. Fixed: cost_estimate uses the geometry of plinko_hints (TASK-21 has the rest); the three e2e scripts keep a work directory of the caller. main on origin (Gitea 1.26.4) is now 7c1598d, the same commit as main on GitHub: the branch protection rule of main (push disabled, force push disabled) was deleted with the API, main was pushed with --force-with-lease against 906dcbc, and the rule was created again with the same 31 fields (only the timestamps differ).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Pull request 1 (release/0.2.0 to main, 63 commits) was merged on 2026-11-19 with a merge commit, no squash: 43465a6. The 7 checks passed on the last head a33dd0c. Two CodeRabbit reviews: 26 findings and 1 finding, each checked against the code; the fixes are commits 20ba9c0 to a33dd0c. The annotated tag v0.2.0 is on the merge commit. main and the tag are on GitHub and on origin at the same commits. Open after the release: the workflow 'Deploy to GitHub Pages' fails on main, because GitHub Pages is not enabled in the new private repository (a decision of the owner: a Pages site is public).
+<!-- SECTION:FINAL_SUMMARY:END -->
