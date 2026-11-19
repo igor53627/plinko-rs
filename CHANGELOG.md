@@ -6,8 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
+The target of the repository is now a PIR library for a database of fixed-size records
+(`docs/protocol_overview.md`). The public API of the `plinko` crate, the file formats and the
+hints for a seed differ from those of 0.1.0.
+
+Not in this release:
+
+- Lookup by key: a query takes an index (TASK-22, proposal in `docs/keyword_lookup.md`).
+- Integrity of an answer or of a delta: a decision, see `docs/integrity.md`.
+- A network transport, a program that writes delta files, and a hint refresh before the query limit.
+- Plinko hints from the GPU path: it is a throughput benchmark (TASK-21).
+
 ### Added
 
+- **Check on a second platform** (2026-11-19, AMD EPYC 9375F, x86-64 Linux, rustc 1.91.1): fmt, clippy, the tests of the default build and of the features `tee,gpu`, the ignored test above 65536 hints, the e2e script, the differential script and the hook tests pass. The hint files of the standard path and of the constant-time path (24 blocks of w = 1024) and the hint file of a run with the mainnet hint count (24 blocks of w = 65536, 1,073,741,968 bytes) are byte-identical to the files that an Apple M3 Ultra (arm64 macOS) writes from the same source. `docs/hint_generation.md` has the timing: 1.04 ms of thread time for each record
 - **CUDA GPU hint generation pipeline**: end-to-end GPU-accelerated hint generation on NVIDIA H200
   - ChaCha8 iPRF initially, upgraded to ChaCha12 for security margin
   - Warp-level parallelism across CUDA threads for throughput scaling
@@ -64,7 +78,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A hint with a tie at the cutoff boundary is invalid (cutoff 0): its parities stay zero and the client does not use it. `plinko_hints` logs `invalid_regular` and `invalid_backup` in place of `zero_regular_seeds` and `zero_backup_seeds`.
 - Removed `BlockBitset`, `compute_regular_blocks`, `compute_backup_blocks`, `block_in_subset`, `derive_subset_seed`, `SEED_LABEL_REGULAR`, `SEED_LABEL_BACKUP`, and the `memory_bench` benchmark. Subset state is 4 bytes per hint in the generator and in the client.
 - `cost_estimate` counts 36 bytes per regular hint and 68 bytes per backup hint (cutoff + parities).
-- **Agent rules**: `AGENTS.md` has a local-only phase section (no GitHub, `backlog/` tasks, `jj`, CodeRabbit CLI review) and no longer describes the Codex Cloud workflow, the remote Rocq checker, DeepWiki updates, or PR formatting. It states that the formal models are not checked against the Rust source. The module table in `docs/hint_generation.md` has no file-size column.
+- **Agent rules**: `AGENTS.md` has a local-only phase section (no GitHub, `backlog/` tasks, `jj`, CodeRabbit CLI review) and no longer describes the Codex Cloud workflow, the remote Rocq checker, DeepWiki updates, or PR formatting. It states that the formal models are not checked against the Rust source. The module table in `docs/hint_generation.md` has no file-size column. Since the release the section is "Workflow": changes go to `main` through a pull request on GitHub (`igor53627/plinko-rs`), work is tracked in `backlog/` and not in GitHub issues. The rules for the host `aya` are less strict: builds, tests and benchmarks in `/root/plinko-work` need no permission
 - **Batched inverse PRP**: `SwapOrNotSr::inverse_range` and `SwapOrNotSrTee::inverse_many_ct` invert all balls of one offset in one call. A round derives its round key once and computes the swap decisions as one batch of AES blocks. `Iprf::inverse`, `IprfTable::inverse`, `IprfTee::inverse_ct` and `IprfTeeTable::inverse_ct` use them; outputs are unchanged. Measured at w = 65536 and 16,777,216 hints, one thread, hardware AES: 7.04 ms to 0.52 ms per entry in the standard path, 68.3 ms to 16.7 ms in the constant-time path.
 - The constant-time path runs every Sometimes-Recurse stage for every slot. Before, the time of the inverse PRP depended on the position of the balls of an entry (15 us to 213 us per value for a domain of 65536).
 - **Online protocol (breaking)**: `Client::prepare_query` reserves the hint and one backup hint; the hint leaves the client in `reconstruct_and_replenish` (or `abandon_query`, new). A retry sends the same `Query` again. `prepare_query` returns `NoBackupHintsLeft` before it builds a message, and `QueryInFlight` for an index that has no answer yet. `PreparedQuery::consumed_hint_index` is now `hint_index`; `Client::queries_in_flight` is new. The rules and the open points are in `docs/online_protocol.md`.
@@ -106,6 +120,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`Client::reconstruct_and_replenish` takes references and leaves the client unchanged on an error (breaking)**: after `DatabaseVersionMismatch` or `RecordSizeMismatch` the query stays in flight, and the caller can apply a delta or send the query again. Before, a malformed answer ended the query as `abandon_query` does.
 - `plinko/docs/delta-format.md` (a proposal of 2025 that differed from the code) is removed; the delta format is in `docs/data_format.md`.
 - `docs/update_strategy.md`, `docs/online_protocol.md` and `docs/trust_model.md` state that the hint file holds no state of the online phase: a client that loads its hint file again after queries uses hints a second time. A stored client state is not implemented.
+- **iPRF cipher**: upgraded from ChaCha8 to ChaCha12 for GPU hint generation (security margin)
+- **Schema default**: v3 (40-byte) schema used by default in Modal benchmark scripts
 
 ### Fixed
 
@@ -120,13 +136,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Schema alignment**: corrected `ENTRY_SIZE` and alignment for 40-byte schema in CUDA kernel
 - **H200 misalignment crash**: reverted `ulong2` optimization that caused XID 13 crashes on H200 due to unaligned access
 - **48B expansion correctness**: ensured algorithmic correctness with chunked compaction for large datasets
-
 - The Sometimes-Recurse stage of size 2 swapped its two values with probability 1/4, not 1/2. It has the fixed round key 1 now (`test_sr_stage_of_size_2_is_uniform`). Only a PRP with a domain of exactly 2 was biased in a measurable way.
-
-### Changed
-
-- **iPRF cipher**: upgraded from ChaCha8 to ChaCha12 for GPU hint generation (security margin)
-- **Schema default**: v3 (40-byte) schema used by default in Modal benchmark scripts
 
 ### Removed
 
