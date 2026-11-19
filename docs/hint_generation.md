@@ -242,6 +242,16 @@ difference is inside the variation between runs.
 `hint_cutoffs` and of `compute_hints` come from scratch programs that are not
 in the repository.
 
+Second machine (2026-11-19, version 0.2.0). The same 24-block run on an AMD
+EPYC 9375F (32 cores, 64 hardware threads, AES-NI, x86-64 Linux; a shared host,
+48 worker threads under `nice`): 71.4 s of wall time and 1,630 s of CPU time,
+which is 1.04 ms of thread time for each record. The CPU time counts hardware
+threads: 48 workers ran on 32 cores, so the number is not a time per core. The
+hint file is byte-identical to the file of the Apple machine from the same
+source (1,073,741,968 bytes, equal SHA-256). The files of the standard path and
+of the constant-time path for 24 blocks of w = 1024 (262,144 hints) are also
+equal on the two machines and to each other.
+
 ### Mainnet Cost
 
 Mainnet v3 has 27,988 blocks of 65,536 entries (1,834,221,568 entries with
@@ -251,6 +261,9 @@ padding). No mainnet run was done; these numbers are extrapolations from the
 - About 300 core-hours (0.59 ms per entry), where the code before the batched
   PRP needed about 3,600 core-hours (7.04 ms per entry).
 - About 13 hours of wall time on 24 cores of this machine.
+- With the measurement of the second machine (1.04 ms of thread time per
+  entry): about 530 thread-hours, which is about 11 hours of wall time on its
+  48 threads if the host does no other work.
 - The cutoffs of the hints are computed before the streaming phase: about 11
   minutes of CPU time at c = 27,988 (40 us per hint), which is about 32 s on 24
   threads (extrapolated from 262,144 hints). They ran on one thread before.

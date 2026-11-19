@@ -8,18 +8,19 @@ These numbers are from the code of November 2026. All are from one machine
 (Apple M3 Ultra, 24 performance cores, hardware AES with
 `RUSTFLAGS="--cfg aes_armv8"`). No number is from a mainnet-size run.
 
-| Workload                                             | Result                                                    | Doc                                                                      |
-|------------------------------------------------------|-----------------------------------------------------------|--------------------------------------------------------------------------|
-| HintInit, 16,777,216 records of 40 bytes, 24 threads | 408 s wall, 9,596 s CPU, 0.57 ms for each record          | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
-| HintInit, mainnet hint count, 24 blocks              | 0.59 ms for each record                                   | [`hint_generation.md`](hint_generation.md#worker-threads)                |
-| HintInit, mainnet v3                                 | About 300 core-hours (extrapolated)                       | [`hint_generation.md`](hint_generation.md#mainnet-cost)                  |
-| Query, client CPU, 16,777,216 records                | 53.2 ms median                                            | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
-| Update, client CPU                                   | 0.52 to 0.54 ms for each changed record                   | [`update_strategy.md`](update_strategy.md#cost)                          |
-| Record sizes 32, 40 and 256 bytes                    | CPU times within 1%; hint file 54.5 MB, 67.1 MB, 406.8 MB | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
-| Cutoffs of 262,144 hints at c = 27,988               | 10.58 s on 1 thread, 0.51 s on 24 threads                 | [`hint_generation.md`](hint_generation.md#worker-threads)                |
-| `protocol::compute_hints`, 24 blocks of w = 4096     | 47.7 s on 1 thread, 2.36 s on 24 threads                  | [`hint_generation.md`](hint_generation.md#worker-threads)                |
-| Constant-time path, 24 blocks of w = 1024            | 291.3 s on 1 thread, 14.1 s on 24 threads                 | [`constant_time_mode.md`](constant_time_mode.md#worker-threads)          |
-| Constant-time path (feature `tee`), one thread       | 16.7 ms for each record                                   | [`trust_model.md`](trust_model.md#tee-mode)                              |
+| Workload                                                                     | Result                                                     | Doc                                                                      |
+|------------------------------------------------------------------------------|------------------------------------------------------------|--------------------------------------------------------------------------|
+| HintInit, 16,777,216 records of 40 bytes, 24 threads                         | 408 s wall, 9,596 s CPU, 0.57 ms for each record           | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
+| HintInit, mainnet hint count, 24 blocks                                      | 0.59 ms for each record                                    | [`hint_generation.md`](hint_generation.md#worker-threads)                |
+| HintInit, mainnet hint count, 24 blocks, AMD EPYC 9375F (x86-64, 48 threads) | 1.04 ms of thread time for each record; the same hint file | [`hint_generation.md`](hint_generation.md#worker-threads)                |
+| HintInit, mainnet v3                                                         | About 300 core-hours (extrapolated)                        | [`hint_generation.md`](hint_generation.md#mainnet-cost)                  |
+| Query, client CPU, 16,777,216 records                                        | 53.2 ms median                                             | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
+| Update, client CPU                                                           | 0.52 to 0.54 ms for each changed record                    | [`update_strategy.md`](update_strategy.md#cost)                          |
+| Record sizes 32, 40 and 256 bytes                                            | CPU times within 1%; hint file 54.5 MB, 67.1 MB, 406.8 MB  | [`protocol_overview.md`](protocol_overview.md#measured-16777216-records) |
+| Cutoffs of 262,144 hints at c = 27,988                                       | 10.58 s on 1 thread, 0.51 s on 24 threads                  | [`hint_generation.md`](hint_generation.md#worker-threads)                |
+| `protocol::compute_hints`, 24 blocks of w = 4096                             | 47.7 s on 1 thread, 2.36 s on 24 threads                   | [`hint_generation.md`](hint_generation.md#worker-threads)                |
+| Constant-time path, 24 blocks of w = 1024                                    | 291.3 s on 1 thread, 14.1 s on 24 threads                  | [`constant_time_mode.md`](constant_time_mode.md#worker-threads)          |
+| Constant-time path (feature `tee`), one thread                               | 16.7 ms for each record                                    | [`trust_model.md`](trust_model.md#tee-mode)                              |
 
 Synthetic database: `cargo run --release -p plinko --bin gen_synthetic -- --help`.
 
