@@ -9,7 +9,8 @@ HintInit, in an answer and in a delta.
 the server. It does not show the client that a record is correct. The client
 must trust the server for each answer, and the server and the publisher for
 each delta. An application that needs integrity puts an authenticator in each
-record ([What An Application Can Do](#what-an-application-can-do)).
+record ([What An Application Can Do](#what-an-application-can-do)). This is a
+decision of the owner of 2026-11-19 (`backlog/decisions/decision-2`).
 
 Reasons:
 
