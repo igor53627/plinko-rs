@@ -2,11 +2,14 @@
 
 use clap::Parser;
 use eyre::{bail, Result};
-use plinko::protocol::{Client, Entry, ProtocolParams, Server, ENTRY_SIZE};
+use plinko::protocol::{Client, ProtocolParams, Server};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+
+/// Record size of the scenario database; the Python reference uses 32-byte entries.
+const RECORD_SIZE: usize = 32;
 
 #[derive(Parser, Debug)]
 #[command(about = "Run deterministic in-memory Plinko protocol scenario")]
@@ -63,16 +66,14 @@ fn seed_from_label(label: &[u8]) -> [u8; 32] {
     seed
 }
 
-fn deterministic_entry(index: usize, salt: &str) -> Entry {
+fn deterministic_entry(index: usize, salt: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(format!("{salt}:{index}").as_bytes());
     let hash = hasher.finalize();
-    let mut entry = [0u8; ENTRY_SIZE];
-    entry.copy_from_slice(&hash[..ENTRY_SIZE]);
-    entry
+    hash[..RECORD_SIZE].to_vec()
 }
 
-fn sha256_hex(value: &Entry) -> String {
+fn sha256_hex(value: &[u8]) -> String {
     let hash = Sha256::digest(value);
     let mut out = String::with_capacity(64);
     for byte in hash {
@@ -84,7 +85,7 @@ fn sha256_hex(value: &Entry) -> String {
 fn run_query_round(
     client: &mut Client,
     server: &Server,
-    expected_db: &[Entry],
+    expected_db: &[u8],
     indices: &[usize],
 ) -> Result<RoundSummary> {
     let mut result_sha256 = Vec::with_capacity(indices.len());
@@ -92,8 +93,8 @@ fn run_query_round(
     for &index in indices {
         let prepared = client.prepare_query(index)?;
         let response = server.answer(&prepared.query)?;
-        let got = client.reconstruct_and_replenish(prepared, response)?;
-        let expected = expected_db[index];
+        let got = client.reconstruct_and_replenish(&prepared, &response)?;
+        let expected: &[u8] = &expected_db[index * RECORD_SIZE..(index + 1) * RECORD_SIZE];
         if got != expected {
             bail!("result mismatch at index={index}");
         }
@@ -115,20 +116,22 @@ fn main() -> Result<()> {
 
     let params = ProtocolParams::new(
         args.num_entries,
+        RECORD_SIZE,
         Some(args.block_size),
         args.lambda,
         Some(args.num_backup_hints),
     )?;
 
-    let mut expected_db: Vec<Entry> = (0..params.num_entries)
-        .map(|i| deterministic_entry(i, "db-v1"))
+    let mut expected_db: Vec<u8> = (0..params.num_entries)
+        .flat_map(|i| deterministic_entry(i, "db-v1"))
         .collect();
 
     let master_seed = seed_from_label(b"plinko_protocol_scenario_master_seed_v1");
     let query_seed = seed_from_label(b"plinko_protocol_scenario_query_seed_v1");
 
-    let mut server = Server::new(params.clone(), &expected_db)?;
-    let mut client = Client::offline_init(params.clone(), master_seed, query_seed, &expected_db)?;
+    let mut server = Server::new(params.clone(), 0, &expected_db)?;
+    let mut client =
+        Client::offline_init(params.clone(), master_seed, query_seed, 0, &expected_db)?;
 
     let round_one = run_query_round(&mut client, &server, &expected_db, &[0, 5, 17, 33, 63])?;
 
@@ -140,10 +143,10 @@ fn main() -> Result<()> {
         .iter()
         .map(|(idx, _)| *idx)
         .collect::<Vec<_>>();
-    let deltas = server.apply_updates(&updates_input)?;
-    client.apply_updates(&deltas)?;
+    let delta = server.apply_updates(&updates_input)?;
+    client.apply_delta(&delta)?;
     for (idx, value) in updates_input {
-        expected_db[idx] = value;
+        expected_db[idx * RECORD_SIZE..(idx + 1) * RECORD_SIZE].copy_from_slice(&value);
     }
 
     let round_two = run_query_round(&mut client, &server, &expected_db, &[5, 42, 1, 33])?;
@@ -152,7 +155,7 @@ fn main() -> Result<()> {
     let summary = ScenarioSummary {
         params: SummaryParams {
             num_entries: params.num_entries,
-            entry_size: ENTRY_SIZE,
+            entry_size: params.record_size,
             block_size: params.block_size,
             num_blocks: params.num_blocks,
             num_reg_hints: params.num_regular_hints,

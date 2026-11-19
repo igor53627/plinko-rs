@@ -1,23 +1,17 @@
 //! Plinko PIR hint generation coordinator.
 //!
-//! Orchestrates the offline phase of the Plinko PIR scheme: derives keys,
-//! computes block subsets, and accumulates XOR parities over the database to
-//! produce regular and backup hints that a client stores for online queries.
+//! Command-line side of the offline phase of the Plinko PIR scheme: options,
+//! database geometry, seed handling and the hint file. HintInit is
+//! `plinko::hint_init`: the cutoff of each block subset and the XOR parities
+//! over the database.
 
-pub mod bitset;
-pub mod ct_path;
 pub mod driver;
-pub mod fast_path;
-pub mod keys;
-pub mod subsets;
 pub mod types;
 
+#[cfg(feature = "tee")]
+pub use driver::validate_hint_params;
 pub use driver::{
-    compute_geometry, init_hints, parse_or_generate_seed, print_results, validate_args,
-    validate_hint_params, HintParams,
+    compute_geometry, parse_or_generate_seed, print_results, validate_args, worker_threads,
+    write_hint_file, HintParams,
 };
-pub use keys::{derive_block_keys, derive_subset_seed};
-pub use subsets::{compute_backup_blocks, compute_regular_blocks};
-pub use types::{
-    Args, BackupHint, RegularHint, DB_ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
-};
+pub use types::Args;

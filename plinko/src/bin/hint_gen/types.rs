@@ -1,20 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// On-disk v3 record size (`database.bin` stride).
-pub use plinko::schema40::ENTRY_SIZE as DB_ENTRY_SIZE;
-
-/// Bytes XOR'd into hint parity (first 32 bytes of each v3 entry).
-pub const PARITY_WORD_SIZE: usize = 32;
-
-/// Alias kept for older call sites; prefer `PARITY_WORD_SIZE` / `DB_ENTRY_SIZE`.
-#[allow(dead_code)]
-pub const WORD_SIZE: usize = PARITY_WORD_SIZE;
-
-/// Domain-separation label used when deriving seeds for regular hint subsets.
-pub const SEED_LABEL_REGULAR: &[u8] = b"plinko_regular_subset";
-/// Domain-separation label used when deriving seeds for backup hint subsets.
-pub const SEED_LABEL_BACKUP: &[u8] = b"plinko_backup_subset";
+/// Record size of a v3 `database.bin` (`plinko::schema40`), the default of `--record-size`.
+pub const DEFAULT_RECORD_SIZE: usize = plinko::schema40::ENTRY_SIZE;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Plinko PIR Hint Generator (Paper-compliant)", long_about = None)]
@@ -24,6 +12,17 @@ pub struct Args {
     #[arg(short, long, default_value = "/mnt/plinko/data/database.bin")]
     pub db_path: PathBuf,
 
+    /// Bytes of one database record. The file is an array of records of this
+    /// size, and a hint parity is the XOR of whole records.
+    #[arg(short, long, default_value_t = DEFAULT_RECORD_SIZE)]
+    pub record_size: usize,
+
+    /// Version of the database in `--db-path`, as its publisher numbers it.
+    /// The hint file stores it; the client applies the deltas that start
+    /// from this version.
+    #[arg(long, default_value_t = 0)]
+    pub database_version: u64,
+
     /// Security parameter (number of regular hints per block).
     #[arg(short, long, default_value = "128")]
     pub lambda: usize,
@@ -32,7 +31,7 @@ pub struct Args {
     #[arg(short, long)]
     pub backup_hints: Option<usize>,
 
-    /// Entries per block (`w`); defaults to `sqrt(N)` if omitted.
+    /// Entries per block (`w`), a power of two; defaults to the smallest power of two >= `sqrt(N)`.
     #[arg(short, long)]
     pub entries_per_block: Option<usize>,
 
@@ -41,43 +40,61 @@ pub struct Args {
     pub allow_truncation: bool,
 
     /// Deterministic master seed as a 64-char hex string; random if omitted.
+    /// The process list shows this value; prefer `--seed-file`.
     #[arg(long)]
     pub seed: Option<String>,
+
+    /// File that holds the master seed as 64 hex characters.
+    #[arg(long, conflicts_with = "seed")]
+    pub seed_file: Option<PathBuf>,
+
+    /// Write the hint set to this file (format: `plinko::hints`).
+    /// Requires `--seed` or `--seed-file`; the file does not contain the seed.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Print the master seed to stdout after generation/parsing.
     #[arg(long)]
     pub print_seed: bool,
 
-    /// Enable constant-time processing path (data-independent memory access).
+    /// Enable the constant-time path (experimental, `tee` feature). On one
+    /// thread, the sequence of operations depends only on public values. The
+    /// memory accesses at the secret hint index, and the time that follows
+    /// from them, are not hidden (docs/constant_time_mode.md).
+    #[cfg(feature = "tee")]
     #[arg(long)]
     pub constant_time: bool,
+
+    /// Worker threads of HintInit. The default is the number of available cores,
+    /// and 1 with `--constant-time`. The hints do not depend on this value.
+    #[arg(long)]
+    pub threads: Option<usize>,
 }
 
-/// Load the 32-byte parity word for logical entry `index` in a v3 `database.bin` mmap.
-#[inline]
-pub fn parity_word_at(db_bytes: &[u8], index: usize) -> [u8; PARITY_WORD_SIZE] {
-    let offset = index * DB_ENTRY_SIZE;
-    db_bytes[offset..offset + PARITY_WORD_SIZE]
-        .try_into()
-        .expect("v3 entry must be at least 32 bytes")
+impl Args {
+    /// `true` if the run uses the constant-time path. A build without the
+    /// `tee` feature has no such path.
+    pub fn constant_time(&self) -> bool {
+        #[cfg(feature = "tee")]
+        {
+            self.constant_time
+        }
+        #[cfg(not(feature = "tee"))]
+        {
+            false
+        }
+    }
 }
 
-/// A regular PIR hint: the XOR parity of database entries in a pseudorandom
-/// subset of blocks, keyed by `subset_seed`.
-pub struct RegularHint {
-    /// Seed that deterministically defines which blocks belong to this hint's subset.
-    pub subset_seed: [u8; 32],
-    /// XOR accumulator over all entries in the subset.
-    pub parity: [u8; 32],
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// A backup hint used for puncturing: splits blocks into an "in" subset and
-/// its complement "out", maintaining separate XOR parities for each half.
-pub struct BackupHint {
-    /// Seed that deterministically defines the in/out partition.
-    pub subset_seed: [u8; 32],
-    /// XOR parity over entries whose block is *in* the subset.
-    pub parity_in: [u8; 32],
-    /// XOR parity over entries whose block is *outside* the subset.
-    pub parity_out: [u8; 32],
+    #[test]
+    fn default_record_size_is_the_v3_record() {
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        assert_eq!(args.record_size, 40);
+        let args: Args = Args::parse_from(["plinko_hints", "--record-size", "256"]);
+        assert_eq!(args.record_size, 256);
+    }
 }

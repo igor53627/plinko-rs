@@ -1,57 +1,28 @@
-//! Kani formal verification proofs for iPRF security-critical functions.
+//! Kani and proptest harnesses for iPRF security-critical functions.
 //!
-//! These proofs verify key properties of the Plinko iPRF implementation:
-//! - binomial_sample bounds and correctness (Kani - fast, pure arithmetic)
-//! - SwapOrNot/Iprf properties (proptest - AES makes Kani infeasible)
+//! - Kani: the coin mask of the PMNS sampler (pure integer arithmetic).
+//! - proptest: sampler, SwapOrNot and Iprf properties (AES makes Kani infeasible).
 //!
-//! Run with: `cargo kani --tests`
-//!
-//! Reference: docs/Plinko.v (Coq formalization)
-//!
-//! NOTE: The true binomial sampler uses floating-point and the incomplete beta
-//! function, which are not tractable for Kani. The proptest harnesses below
-//! provide statistical verification of the distribution properties.
+//! Run with: `cargo kani --tests --features tee`
 
-#[cfg(kani)]
+#[cfg(all(kani, feature = "tee"))]
 mod kani_harnesses {
-    // =========================================================================
-    // binomial_sample proofs
-    // =========================================================================
-    //
-    // The new true binomial sampler (crate::binomial::binomial_sample) uses
-    // floating-point arithmetic and the incomplete beta function, which makes
-    // it infeasible for Kani symbolic execution.
-    //
-    // Key properties are verified via:
-    // 1. proptest harnesses (statistical properties)
-    // 2. Coq specification (TrueBinomialSpec.v)
-    // 3. Unit tests in binomial.rs
-    // =========================================================================
-
-    /// Proof: edge case - zero count returns 0
+    /// Proof: the mask keeps exactly the `kept` most significant bits.
     #[kani::proof]
-    fn proof_binomial_sample_zero_count() {
-        let num: u64 = kani::any();
-        let prf_output: u64 = kani::any();
+    fn proof_top_bits_mask_keeps_leading_bits() {
+        let kept: u64 = kani::any();
+        kani::assume(kept <= 64);
 
-        let result = crate::binomial::binomial_sample(0, num, 1, prf_output);
-        kani::assert(result == 0, "binomial_sample with count=0 must return 0");
+        let mask: u64 = crate::binomial::top_bits_mask(kept);
+        kani::assert(
+            u64::from(mask.leading_ones()) == kept,
+            "mask must have kept leading ones",
+        );
+        kani::assert(
+            u64::from(mask.count_ones()) == kept,
+            "mask must have no other bits",
+        );
     }
-
-    /// Proof: edge case - zero num returns 0
-    #[kani::proof]
-    fn proof_binomial_sample_zero_num() {
-        let count: u64 = kani::any();
-        let prf_output: u64 = kani::any();
-
-        let result = crate::binomial::binomial_sample(count, 0, 1, prf_output);
-        kani::assert(result == 0, "binomial_sample with num=0 must return 0");
-    }
-
-    // =========================================================================
-    // Note: SwapOrNot and Iprf proofs are infeasible with Kani due to AES
-    // symbolic execution explosion. These are tested via proptest instead.
-    // =========================================================================
 }
 
 #[cfg(test)]
@@ -60,15 +31,27 @@ mod proptest_harnesses {
 
     proptest! {
         #[test]
-        fn test_binomial_sample_bounded(
-            count in 0u64..10_000,
-            num in 0u64..10_000,
-            denom in 1u64..10_000,
-            prf_output in 0u64..u64::MAX,
+        fn test_coin_binomial_bounded(
+            key in proptest::array::uniform16(0u8..),
+            low in 0u32..1_000,
+            width in 0u32..1_000,
+            count in 0u64..5_000,
+            slack in 0u64..1_000,
         ) {
-            prop_assume!(num <= denom);
-            let result = crate::binomial::binomial_sample(count, num, denom, prf_output);
+            use aes::cipher::KeyInit;
+            use crate::binomial::{coin_binomial, PmnsNode};
+
+            let cipher = aes::Aes128::new(&key.into());
+            let node = PmnsNode { low, high: low + width };
+            let result = coin_binomial(&cipher, node, count);
             prop_assert!(result <= count, "result {} > count {}", result, count);
+            #[cfg(feature = "tee")]
+            prop_assert_eq!(
+                result,
+                crate::binomial::coin_binomial_ct(&cipher, node, count, count + slack)
+            );
+            #[cfg(not(feature = "tee"))]
+            let _ = slack;
         }
 
         #[test]
@@ -102,10 +85,11 @@ mod proptest_harnesses {
         fn test_iprf_forward_in_range(
             key in proptest::array::uniform16(0u8..),
             n in 10u64..500,
-            m in 2u64..100,
+            m_log in 1u32..8,
             x_ratio in 0.0f64..1.0,
         ) {
             use crate::iprf::Iprf;
+            let m = 1u64 << m_log;
             let x = (x_ratio * (n as f64)) as u64 % n;
             let iprf = Iprf::new(key, n, m);
             let y = iprf.forward(x);
@@ -116,10 +100,11 @@ mod proptest_harnesses {
         fn test_iprf_inverse_contains_original(
             key in proptest::array::uniform16(0u8..),
             n in 10u64..500,
-            m in 2u64..100,
+            m_log in 1u32..8,
             x_ratio in 0.0f64..1.0,
         ) {
             use crate::iprf::Iprf;
+            let m = 1u64 << m_log;
             let x = (x_ratio * (n as f64)) as u64 % n;
             let iprf = Iprf::new(key, n, m);
             let y = iprf.forward(x);
@@ -135,12 +120,11 @@ mod proptest_harnesses {
         fn test_iprf_inverse_all_valid(
             key in proptest::array::uniform16(0u8..),
             n in 10u64..200,
-            m in 2u64..50,
+            m_log in 1u32..7,
             y_ratio in 0.0f64..1.0,
         ) {
             use crate::iprf::Iprf;
-            // Ensure n >= m to avoid empty bins causing underflow
-            prop_assume!(n >= m);
+            let m = 1u64 << m_log;
             let y = (y_ratio * (m as f64)) as u64 % m;
             let iprf = Iprf::new(key, n, m);
             let preimages = iprf.inverse(y);

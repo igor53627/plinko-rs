@@ -1,6 +1,21 @@
 # Plinko PIR: GPU Optimization & Benchmark Report
 
-> **Canonical GPU benchmark summary.** Commands: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). Index: [`benchmarks.md`](benchmarks.md). Historical Modal run logs: [`archived/gpu_runs/`](archived/gpu_runs/).
+> **Historical (January 2026). The output of these runs is not a Plinko hint set.**
+>
+> - The benchmark (`bench_gpu_hints`, `plinko/cuda/hint_kernel.cu`) uses public
+>   block keys, two fixed block subsets and no backup hints, and it has no
+>   iPRF inverse. A client cannot use its output (TASK-21,
+>   [`trust_model.md`](trust_model.md#gpu-path)).
+> - The numbers are the throughput of that kernel. They are not the time or the
+>   cost of HintInit for a client.
+> - The kernels "Split", "Buffered Aggregation" and "Interleaved 4x" of the
+>   table below are not in `hint_kernel.cu` today. The revision of each run is
+>   not recorded; the kernel last changed in `6387c92` (2026-01-25), and this
+>   document was added in `68dfa95` (2026-01-29).
+> - Not measured again since then. No CUDA build was run in the review of
+>   November 2026.
+>
+> Commands: [`gpu_benchmark_commands.md`](gpu_benchmark_commands.md). Index: [`benchmarks.md`](benchmarks.md). Modal run logs: [`archived/gpu_runs/`](archived/gpu_runs/).
 
 **Date:** 2026-01-26
 **Hardware:** NVIDIA H200 (141GB VRAM, ~100+ INT32 TOPS)  

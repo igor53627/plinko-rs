@@ -27,8 +27,8 @@
 //!
 //! - `ct_lt_u64`: Compare loop index against preimage count
 //! - `ct_select_usize`: Clamp array indices without branching
-//! - `ct_xor_32_masked`: Conditionally XOR parity values
-//! - `ct_f64_le`, `ct_select_f64`: Constant-time binomial sampling in IprfTee
+//! - `ct_xor_masked`: Conditionally XOR parity values
+//! - `ct_min_u64`, `ct_saturating_sub_u64`: Coin masks in `binomial::coin_binomial_ct`
 
 /// Branchless select: returns a if choice is 1, b if choice is 0
 /// choice must be 0 or 1
@@ -105,12 +105,27 @@ pub fn ct_saturating_sub_u64(a: u64, b: u64) -> u64 {
 ///
 /// Caller must ensure `mask` is either 0 or 1. Other values produce incorrect results.
 /// In Plinko's CT HintInit, masks are derived from `ct_lt_u64` which guarantees this.
+///
+/// # Panics
+///
+/// Panics if `dst` and `src` have different lengths. The lengths are public
+/// (the record size of the database).
 #[inline]
-pub fn ct_xor_32_masked(dst: &mut [u8; 32], src: &[u8; 32], mask: u64) {
+pub fn ct_xor_masked(dst: &mut [u8], src: &[u8], mask: u64) {
+    assert_eq!(dst.len(), src.len(), "ct_xor_masked: length mismatch");
     let m = (mask.wrapping_neg()) as u8;
-    for i in 0..32 {
-        dst[i] ^= src[i] & m;
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d ^= s & m;
     }
+}
+
+/// Constant-time less-than for u32: returns 1 if `a < b`, else 0.
+///
+/// The result is the borrow of `a - b`, from bit operations on 32-bit words.
+/// A loop over a slice with this function can use vector instructions.
+#[inline]
+pub fn ct_lt_u32(a: u32, b: u32) -> u32 {
+    ((!a & b) | ((!a | b) & a.wrapping_sub(b))) >> 31
 }
 
 /// Constant-time select for u8: returns a if choice == 1, b if choice == 0
@@ -345,6 +360,25 @@ mod tests {
         #[test]
         fn prop_ct_saturating_sub_matches_std(a: u64, b: u64) {
             prop_assert_eq!(ct_saturating_sub_u64(a, b), a.saturating_sub(b));
+        }
+
+        #[test]
+        fn prop_ct_lt_u32_matches_less_than(a: u32, b: u32) {
+            prop_assert_eq!(ct_lt_u32(a, b), u32::from(a < b));
+            // Values that differ in the low bits only.
+            let near: u32 = a ^ (b & 3);
+            prop_assert_eq!(ct_lt_u32(a, near), u32::from(a < near));
+            prop_assert_eq!(ct_lt_u32(near, a), u32::from(near < a));
+        }
+    }
+
+    #[test]
+    fn test_ct_lt_u32_basic() {
+        let values: [u32; 7] = [0, 1, 2, 0x7FFF_FFFF, 0x8000_0000, u32::MAX - 1, u32::MAX];
+        for a in values {
+            for b in values {
+                assert_eq!(ct_lt_u32(a, b), u32::from(a < b), "a {a:#x}, b {b:#x}");
+            }
         }
     }
 }

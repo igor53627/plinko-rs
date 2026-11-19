@@ -1,5 +1,11 @@
 (** SwapOrNotSim.v - Simulation relations for SwapOrNot PRP
 
+    STATUS: model only. Each function with a Rust name in this file is a
+    hand-written Rocq definition. No tool compares it with the Rust source,
+    so a theorem of this file is a statement about the model, not about the
+    Rust code. See docs/TRUST_BASE.md for the assumptions and for the known
+    differences from the code.
+
     Connects the Rust SwapOrNot implementation (plinko/src/iprf.rs)
     to the Rocq specification (specs/SwapOrNotSpec.v).
     
@@ -188,7 +194,9 @@ Axiom prf_bit_refinement : forall s r c,
     Section 5: Single Round Operation Refinement
     ============================================================================ *)
 
-(** Rust partner computation (matches SwapOrNotSpec.partner) *)
+(** Rust partner computation (matches SwapOrNotSpec.partner).
+    The Rust code computes the same value as [sub_mod k_i (x mod domain) domain],
+    which does not overflow in 64 bits; over Z the two forms are equal. *)
 Definition rust_partner (domain k_i x : Z) : Z :=
   (k_i + domain - (x mod domain)) mod domain.
 
@@ -326,11 +334,13 @@ Proof.
 Qed.
 
 (** ============================================================================
-    Section 8: Lifted Properties (From Spec to Rust Implementation)
+    Section 8: Properties Of The Model (From Spec To Model)
     ============================================================================ *)
 
-(** These theorems lift the verified properties from SwapOrNotProofs.v
-    to the Rust implementation via the simulation relation. *)
+(** These theorems carry the properties that SwapOrNotProofs.v proves for
+    the spec over to the model functions of this file ([rust_forward],
+    [rust_inverse]) through the simulation relation. They are statements
+    about the Rocq model, not about the Rust code (see STATUS above). *)
 
 (** Rust forward preserves range *)
 Theorem rust_forward_in_range : forall s x,

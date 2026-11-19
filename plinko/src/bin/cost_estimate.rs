@@ -1,12 +1,14 @@
 //! Cost attribution estimator for Plinko PIR deployments.
 //!
-//! Estimates resource costs by component: storage, GPU compute, CPU compute,
-//! and memory requirements. Uses measured throughput constants from production
-//! benchmarks — no CUDA dependency required.
+//! Estimates resource costs by component: storage, CPU time of HintInit, the
+//! GPU throughput benchmark, and memory. The CPU numbers are extrapolations
+//! from the measurements in `docs/hint_generation.md` and
+//! `docs/constant_time_mode.md`. No CUDA dependency is necessary.
 
 use clap::{value_parser, Parser};
 use eyre::eyre;
 use plinko::db::derive_plinko_params;
+use plinko::protocol::ProtocolParams;
 use serde::Serialize;
 
 /// Mainnet v3 snapshot counts (docs/plinko_paper_index.json).
@@ -22,8 +24,14 @@ const ACCOUNT_SPLIT_DENOMINATOR: u128 = 1_000;
 const ENTRY_SIZE: u64 = 40;
 const ACCOUNT_MAP_ENTRY_SIZE: u64 = 24;
 const STORAGE_MAP_ENTRY_SIZE: u64 = 56;
-const HINT_SEED_SIZE: u64 = 32;
-const HINT_PARITY_SIZE: u64 = 32;
+/// Subset cutoff of a hint (see `plinko::subsets`).
+const HINT_CUTOFF_SIZE: u64 = 4;
+/// A parity is the XOR of whole records.
+const HINT_PARITY_SIZE: u64 = ENTRY_SIZE;
+/// A regular hint: cutoff and one parity (44 bytes).
+const REGULAR_HINT_SIZE: u64 = HINT_CUTOFF_SIZE + HINT_PARITY_SIZE;
+/// A backup hint: cutoff and two parities (84 bytes).
+const BACKUP_HINT_SIZE: u64 = HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE;
 
 // --- Measured throughput constants ---
 
@@ -31,13 +39,23 @@ const HINT_PARITY_SIZE: u64 = 32;
 /// Source: production benchmarks on Modal H200 instances
 const GPU_HINTS_PER_SEC: f64 = 3_012.0;
 
-/// CPU hint generation throughput: MB/s on bare metal (64-core)
-/// Source: production benchmarks
-const CPU_THROUGHPUT_MBPS: f64 = 55.8;
-const BASELINE_CPU_VCPUS: u64 = 64;
+/// CPU time of HintInit for one database record in the standard path, in
+/// milliseconds, at [`MEASURED_LAMBDA`].
+///
+/// Source: 24 blocks of w = 65536 with 16,777,216 hints on 24 threads, Apple
+/// M3 Ultra with hardware AES: 925.3 s of CPU time for 1,572,864 records
+/// (`docs/hint_generation.md`). An AMD EPYC 9375F gave 1.04 ms of thread time.
+const STANDARD_MS_PER_ENTRY: f64 = 0.59;
 
-/// TEE overhead multiplier (SGX/TDX constant-time mode)
-const TEE_OVERHEAD: f64 = 2.6;
+/// The same for the constant-time path (`plinko_hints --constant-time`,
+/// feature `tee`): one thread, same machine (`docs/constant_time_mode.md`).
+/// The path runs 512 slots for each record, for every lambda that it accepts.
+const CONSTANT_TIME_MS_PER_ENTRY: f64 = 16.7;
+
+/// Lambda of the two measurements: 256 hints for each offset of a block.
+const MEASURED_LAMBDA: u64 = 128;
+
+const DEFAULT_CPU_VCPUS: u64 = 64;
 
 /// Default GPU hourly rate (H200 on Modal/cloud)
 const DEFAULT_GPU_HOURLY_RATE: f64 = 3.50;
@@ -82,15 +100,16 @@ struct Args {
     )]
     gpu_hourly_rate: f64,
 
-    /// Number of CPU vCPUs for throughput scaling
+    /// Worker threads of HintInit; the wall time is the CPU time divided by this number
     #[arg(
         long,
-        default_value_t = BASELINE_CPU_VCPUS,
+        default_value_t = DEFAULT_CPU_VCPUS,
         value_parser = value_parser!(u64).range(1..)
     )]
     cpu_vcpus: u64,
 
-    /// Apply TEE (SGX/TDX) overhead to CPU estimates
+    /// Estimate the constant-time path (`plinko_hints --constant-time`, feature `tee`).
+    /// The estimate includes no overhead of a TEE
     #[arg(long, default_value_t = false)]
     tee: bool,
 
@@ -133,8 +152,14 @@ struct Storage {
     total_bytes: u64,
 }
 
+/// Estimate for the GPU throughput benchmark (`bench_gpu_hints`), which has
+/// its own geometry (`plinko::db::derive_plinko_params`) and does not
+/// compute Plinko hints.
 #[derive(Serialize)]
 struct GpuCompute {
+    chunk_size: u64,
+    set_size: u64,
+    total_hints: u64,
     gpus: u64,
     throughput_hints_per_sec: f64,
     time_secs: f64,
@@ -142,12 +167,17 @@ struct GpuCompute {
     hourly_rate_usd: f64,
 }
 
+/// Extrapolated CPU cost of HintInit (`plinko_hints`) with hardware AES.
 #[derive(Serialize)]
 struct CpuCompute {
+    /// The constant-time path, not the standard path.
     tee: bool,
     vcpus: u64,
-    throughput_mbps: f64,
+    ms_per_entry: f64,
+    core_secs: f64,
+    /// `core_secs / vcpus`: the wall time if the threads scale linearly.
     time_secs: f64,
+    throughput_mbps: f64,
 }
 
 #[derive(Serialize)]
@@ -172,11 +202,19 @@ fn main() -> eyre::Result<()> {
     };
 
     // --- Parameter derivation ---
-    let (w, c) = derive_plinko_params(entries);
+    let HintGeometry {
+        w,
+        c,
+        num_regular,
+        num_backup,
+    } = hint_geometry(entries, args.lambda)?;
     let capacity = checked_mul(w, c, "capacity")?;
-    let num_regular = checked_mul(args.lambda, w, "num_regular")?;
-    let num_backup = num_regular; // default: same as regular
     let total_hints = checked_add(num_regular, num_backup, "total_hints")?;
+
+    // The GPU benchmark has its own geometry and as many backup as regular hints.
+    let (gpu_w, gpu_c) = derive_plinko_params(entries);
+    let gpu_regular = checked_mul(args.lambda, gpu_w, "gpu_regular_hints")?;
+    let gpu_total_hints = checked_mul(gpu_regular, 2, "gpu_total_hints")?;
 
     if capacity < entries {
         return Err(eyre!(
@@ -200,18 +238,8 @@ fn main() -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE,
         "storage_mapping_bytes",
     )?;
-    // Regular hints: each is subset_seed(32B) + parity(32B) = 64 bytes
-    let regular_hint_bytes = checked_mul(
-        num_regular,
-        HINT_SEED_SIZE + HINT_PARITY_SIZE,
-        "regular_hint_bytes",
-    )?;
-    // Backup hints: each is subset_seed(32B) + parity_in(32B) + parity_out(32B) = 96 bytes
-    let backup_hint_bytes = checked_mul(
-        num_backup,
-        HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE,
-        "backup_hint_bytes",
-    )?;
+    let regular_hint_bytes = checked_mul(num_regular, REGULAR_HINT_SIZE, "regular_hint_bytes")?;
+    let backup_hint_bytes = checked_mul(num_backup, BACKUP_HINT_SIZE, "backup_hint_bytes")?;
     let hint_storage = checked_add(regular_hint_bytes, backup_hint_bytes, "hint_storage_bytes")?;
     let data_storage = checked_add(
         db_size,
@@ -223,37 +251,37 @@ fn main() -> eyre::Result<()> {
 
     // --- GPU compute estimates ---
     let gpu_throughput = GPU_HINTS_PER_SEC * args.gpus as f64;
-    let gpu_time_secs = total_hints as f64 / gpu_throughput;
+    let gpu_time_secs = gpu_total_hints as f64 / gpu_throughput;
     let gpu_time_hours = gpu_time_secs / 3600.0;
     let gpu_cost = gpu_time_hours * args.gpus as f64 * args.gpu_hourly_rate;
 
     // --- CPU compute estimates ---
     let db_size_mb = db_size as f64 / (1024.0 * 1024.0);
-    let scaled_cpu_throughput =
-        CPU_THROUGHPUT_MBPS * (args.cpu_vcpus as f64 / BASELINE_CPU_VCPUS as f64);
-    let cpu_throughput = if args.tee {
-        scaled_cpu_throughput / TEE_OVERHEAD
-    } else {
-        scaled_cpu_throughput
-    };
-    let cpu_time_secs = db_size_mb / cpu_throughput;
+    let cpu_ms_per_entry = hint_init_ms_per_entry(args.lambda, args.tee)?;
+    // The standard path does no iPRF inverse for a padding record. The
+    // constant-time path does the same work for it as for a real record.
+    let cpu_entries = if args.tee { capacity } else { entries };
+    let cpu_core_secs = cpu_entries as f64 * cpu_ms_per_entry / 1000.0;
+    let cpu_time_secs = cpu_core_secs / args.cpu_vcpus as f64;
+    let cpu_throughput = db_size_mb / cpu_time_secs;
 
     ensure_finite(&[
         ("gpu_time_secs", gpu_time_secs),
         ("gpu_cost", gpu_cost),
+        ("cpu_core_secs", cpu_core_secs),
         ("cpu_throughput", cpu_throughput),
         ("cpu_time_secs", cpu_time_secs),
     ])?;
 
     // --- Memory estimates ---
     let vram_packed_db = checked_mul(entries, GPU_ENTRY_SIZE, "vram_packed_db_bytes")?;
-    let subset_bytes_per_hint = c
+    let subset_bytes_per_hint = gpu_c
         .checked_add(7)
         .ok_or_else(|| eyre!("overflow while computing subset_bytes_per_hint"))?
         / 8;
-    let vram_block_keys = checked_mul(c, BLOCK_KEY_SIZE, "vram_block_keys_bytes")?;
-    let vram_subsets = checked_mul(total_hints, subset_bytes_per_hint, "vram_subsets_bytes")?;
-    let vram_output = checked_mul(total_hints, HINT_OUTPUT_SIZE, "vram_output_bytes")?;
+    let vram_block_keys = checked_mul(gpu_c, BLOCK_KEY_SIZE, "vram_block_keys_bytes")?;
+    let vram_subsets = checked_mul(gpu_total_hints, subset_bytes_per_hint, "vram_subsets_bytes")?;
+    let vram_output = checked_mul(gpu_total_hints, HINT_OUTPUT_SIZE, "vram_output_bytes")?;
     let vram_total = checked_add(vram_packed_db, vram_block_keys, "vram_total_with_keys")?;
     let vram_total = checked_add(vram_total, vram_subsets, "vram_total_with_subsets")?;
     let vram_total = checked_add(vram_total, vram_output, "vram_total_bytes")?;
@@ -283,6 +311,9 @@ fn main() -> eyre::Result<()> {
             total_bytes: total_storage,
         },
         gpu_compute: GpuCompute {
+            chunk_size: gpu_w,
+            set_size: gpu_c,
+            total_hints: gpu_total_hints,
             gpus: args.gpus,
             throughput_hints_per_sec: GPU_HINTS_PER_SEC,
             time_secs: gpu_time_secs,
@@ -292,8 +323,10 @@ fn main() -> eyre::Result<()> {
         cpu_compute: CpuCompute {
             tee: args.tee,
             vcpus: args.cpu_vcpus,
-            throughput_mbps: cpu_throughput,
+            ms_per_entry: cpu_ms_per_entry,
+            core_secs: cpu_core_secs,
             time_secs: cpu_time_secs,
+            throughput_mbps: cpu_throughput,
         },
         memory: Memory {
             vram_packed_db_bytes: vram_packed_db,
@@ -312,6 +345,51 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+/// Geometry and hint counts of a `plinko_hints` run with default options.
+struct HintGeometry {
+    w: u64,
+    c: u64,
+    num_regular: u64,
+    num_backup: u64,
+}
+
+/// Derives the geometry with the rule of the protocol client and of
+/// `plinko_hints` ([`ProtocolParams::new`]).
+fn hint_geometry(entries: u64, lambda: u64) -> eyre::Result<HintGeometry> {
+    let entries: usize =
+        usize::try_from(entries).map_err(|_| eyre!("entries ({entries}) do not fit in usize"))?;
+    let lambda: usize =
+        usize::try_from(lambda).map_err(|_| eyre!("lambda ({lambda}) does not fit in usize"))?;
+    let params: ProtocolParams =
+        ProtocolParams::new(entries, ENTRY_SIZE as usize, None, lambda, None)
+            .map_err(|error| eyre!("cannot derive the parameters: {error}"))?;
+    Ok(HintGeometry {
+        w: params.block_size as u64,
+        c: params.num_blocks as u64,
+        num_regular: params.num_regular_hints as u64,
+        num_backup: params.num_backup_hints as u64,
+    })
+}
+
+/// CPU time of HintInit for one record, in milliseconds.
+///
+/// The standard path inverts `2 * lambda` hints for each record, so its
+/// measured time is scaled with `lambda`; only lambda = 128 was measured. The
+/// constant-time path has a fixed number of slots and accepts lambda up to
+/// [`MEASURED_LAMBDA`] with the default number of backup hints.
+fn hint_init_ms_per_entry(lambda: u64, constant_time: bool) -> eyre::Result<f64> {
+    if !constant_time {
+        return Ok(STANDARD_MS_PER_ENTRY * lambda as f64 / MEASURED_LAMBDA as f64);
+    }
+    if lambda > MEASURED_LAMBDA {
+        return Err(eyre!(
+            "the constant-time path accepts lambda up to {MEASURED_LAMBDA} with the default \
+             number of backup hints, got {lambda}"
+        ));
+    }
+    Ok(CONSTANT_TIME_MS_PER_ENTRY)
 }
 
 fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
@@ -484,14 +562,16 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE
     );
     println!(
-        "  Regular hints:      {} ({} x 64B)",
+        "  Regular hints:      {} ({} x {}B)",
         fmt_bytes(estimate.storage.regular_hint_bytes),
-        fmt_count(estimate.parameters.regular_hints)
+        fmt_count(estimate.parameters.regular_hints),
+        REGULAR_HINT_SIZE
     );
     println!(
-        "  Backup hints:       {} ({} x 96B)",
+        "  Backup hints:       {} ({} x {}B)",
         fmt_bytes(estimate.storage.backup_hint_bytes),
-        fmt_count(estimate.parameters.backup_hints)
+        fmt_count(estimate.parameters.backup_hints),
+        BACKUP_HINT_SIZE
     );
     println!(
         "  Total hint storage: {}",
@@ -502,8 +582,12 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
         fmt_bytes(estimate.storage.total_bytes)
     );
     println!();
-    println!("GPU Compute (H200)");
-    println!("------------------");
+    println!("GPU Throughput Benchmark (H200, not Plinko hints)");
+    println!("-------------------------------------------------");
+    println!(
+        "  Benchmark geometry: w = {}, c = {}",
+        estimate.gpu_compute.chunk_size, estimate.gpu_compute.set_size
+    );
     println!("  GPUs:               {}", estimate.gpu_compute.gpus);
     println!(
         "  Throughput:         {:.0} hints/sec/GPU",
@@ -511,7 +595,7 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     );
     println!(
         "  Total hints:        {}",
-        fmt_count(estimate.parameters.total_hints)
+        fmt_count(estimate.gpu_compute.total_hints)
     );
     println!(
         "  Estimated time:     {}",
@@ -523,31 +607,44 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     );
     println!();
     println!(
-        "CPU Compute ({})",
+        "CPU HintInit ({}, extrapolated)",
         if estimate.cpu_compute.tee {
-            "TEE mode"
+            "constant-time path"
         } else {
-            "bare metal"
+            "standard path"
         }
     );
-    println!("------------------");
+    println!("------------------------------------------");
     println!(
-        "  Throughput:         {:.1} MB/s ({}-vCPU{})",
-        estimate.cpu_compute.throughput_mbps,
-        estimate.cpu_compute.vcpus,
-        if estimate.cpu_compute.tee {
-            ", TEE 2.6x overhead"
-        } else {
+        "  CPU per record:     {:.2} ms (hardware AES; measured at lambda = {}{})",
+        estimate.cpu_compute.ms_per_entry,
+        MEASURED_LAMBDA,
+        if estimate.parameters.lambda == MEASURED_LAMBDA || estimate.cpu_compute.tee {
             ""
+        } else {
+            ", scaled with lambda"
         }
     );
+    if estimate.cpu_compute.core_secs >= 3600.0 {
+        println!(
+            "  CPU time:           {:.0} core-hours",
+            estimate.cpu_compute.core_secs / 3600.0
+        );
+    } else {
+        println!(
+            "  CPU time:           {} on one core",
+            fmt_duration(estimate.cpu_compute.core_secs)
+        );
+    }
     println!(
         "  Database size:      {}",
         fmt_bytes(estimate.storage.database_bytes)
     );
     println!(
-        "  Estimated time:     {}",
-        fmt_duration(estimate.cpu_compute.time_secs)
+        "  Estimated time:     {} on {} threads ({:.2} MB/s, if the threads scale linearly)",
+        fmt_duration(estimate.cpu_compute.time_secs),
+        estimate.cpu_compute.vcpus,
+        estimate.cpu_compute.throughput_mbps
     );
     println!();
     println!("Memory");
@@ -560,15 +657,15 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     println!(
         "  VRAM block keys:    {} ({} x {}B)",
         fmt_bytes(estimate.memory.vram_block_keys_bytes),
-        fmt_count(estimate.parameters.set_size),
+        fmt_count(estimate.gpu_compute.set_size),
         BLOCK_KEY_SIZE
     );
     println!(
-        "  VRAM subsets:       {} (hints x ceil(c/8))",
+        "  VRAM subsets:       {} (benchmark hints x ceil(c/8))",
         fmt_bytes(estimate.memory.vram_subsets_bytes)
     );
     println!(
-        "  VRAM output:        {} (hints x {}B)",
+        "  VRAM output:        {} (benchmark hints x {}B)",
         fmt_bytes(estimate.memory.vram_output_bytes),
         HINT_OUTPUT_SIZE
     );
@@ -645,13 +742,13 @@ mod tests {
         .expect("storage");
         let regular_hint_bytes = checked_mul(
             num_regular,
-            HINT_SEED_SIZE + HINT_PARITY_SIZE,
+            HINT_CUTOFF_SIZE + HINT_PARITY_SIZE,
             "regular_hint_bytes",
         )
         .expect("regular_hint_bytes");
         let backup_hint_bytes = checked_mul(
             num_regular,
-            HINT_SEED_SIZE + 2 * HINT_PARITY_SIZE,
+            HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE,
             "backup_hint_bytes",
         )
         .expect("backup_hint_bytes");
@@ -696,6 +793,52 @@ mod tests {
             vram_total,
             vram_packed_db + vram_block_keys + vram_subsets + vram_output
         );
+    }
+
+    /// The mainnet numbers of `docs/data_format.md` (hint file) and of
+    /// `docs/hint_generation.md`: the estimator must use the geometry of
+    /// `plinko_hints`, not that of the GPU benchmark (w = 131072).
+    #[test]
+    fn mainnet_geometry_is_that_of_plinko_hints() {
+        let geometry: HintGeometry = hint_geometry(MAINNET_ENTRIES, 128).expect("geometry");
+        assert_eq!((geometry.w, geometry.c), (65_536, 27_988));
+        assert_eq!(
+            (geometry.num_regular, geometry.num_backup),
+            (8_388_608, 8_388_608)
+        );
+        // The hint file has a header and a checksum of 144 bytes in addition.
+        assert_eq!(
+            geometry.num_regular * REGULAR_HINT_SIZE + geometry.num_backup * BACKUP_HINT_SIZE,
+            1_073_741_968 - 144
+        );
+    }
+
+    /// The mainnet numbers of `docs/hint_generation.md` (about 300 core-hours)
+    /// and of `docs/trust_model.md` (about 8,500 core-hours in the
+    /// constant-time path). The estimator said 20.9 minutes on 64 vCPUs
+    /// before, which is 22 core-hours.
+    #[test]
+    fn mainnet_hint_init_cost_matches_the_documents() {
+        let core_hours = |constant_time: bool| -> f64 {
+            let ms: f64 = hint_init_ms_per_entry(128, constant_time).expect("ms per entry");
+            MAINNET_ENTRIES as f64 * ms / 1000.0 / 3600.0
+        };
+        assert!(
+            (295.0..=305.0).contains(&core_hours(false)),
+            "{}",
+            core_hours(false)
+        );
+        assert!(
+            (8_400.0..=8_600.0).contains(&core_hours(true)),
+            "{}",
+            core_hours(true)
+        );
+
+        // Half the hints for each offset: half the inverse PRP work.
+        let half: f64 = hint_init_ms_per_entry(64, false).expect("ms per entry");
+        assert_eq!(half, STANDARD_MS_PER_ENTRY / 2.0);
+        // 2 * lambda hints for each offset must stay at or below half of 512 slots.
+        assert!(hint_init_ms_per_entry(129, true).is_err());
     }
 
     #[test]
@@ -814,6 +957,9 @@ mod tests {
                 total_bytes: 0,
             },
             gpu_compute: GpuCompute {
+                chunk_size: 1,
+                set_size: 1,
+                total_hints: 0,
                 gpus: 1,
                 throughput_hints_per_sec: GPU_HINTS_PER_SEC,
                 time_secs: 0.0,
@@ -822,9 +968,11 @@ mod tests {
             },
             cpu_compute: CpuCompute {
                 tee: false,
-                vcpus: BASELINE_CPU_VCPUS,
-                throughput_mbps: 0.0,
+                vcpus: DEFAULT_CPU_VCPUS,
+                ms_per_entry: 0.0,
+                core_secs: 0.0,
                 time_secs: 0.0,
+                throughput_mbps: 0.0,
             },
             memory: Memory {
                 vram_packed_db_bytes: 0,

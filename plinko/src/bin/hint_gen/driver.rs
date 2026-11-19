@@ -1,12 +1,14 @@
 //! Driver helpers for plinko_hints binary - geometry, validation, and initialization.
 
-use crate::hint_gen::bitset::BlockBitset;
-use crate::hint_gen::{
-    compute_backup_blocks, compute_regular_blocks, derive_subset_seed, BackupHint, RegularHint,
-    DB_ENTRY_SIZE, SEED_LABEL_BACKUP, SEED_LABEL_REGULAR,
-};
+use plinko::hints::{HintSet, MAX_RECORD_SIZE};
+#[cfg(feature = "tee")]
 use plinko::iprf::MAX_PREIMAGES;
+use plinko::protocol::MAX_BLOCK_SIZE;
+use plinko::subsets::INVALID_CUTOFF;
 use rand::RngCore;
+use std::fs::{File, OpenOptions};
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -14,6 +16,8 @@ use super::Args;
 
 /// Database geometry parameters computed from args and DB size.
 pub struct Geometry {
+    /// Bytes of one database record (`--record-size`).
+    pub record_size: usize,
     /// Number of real entries in the database file.
     pub n_entries: usize,
     /// Effective entry count after padding (always a multiple of `w`).
@@ -36,24 +40,23 @@ pub struct HintParams {
     pub total_hints: usize,
 }
 
-/// Return type for [`init_hints`]: `(regular_hints, regular_hint_bitsets, backup_hints, backup_hint_bitsets)`.
-pub type HintInitOutput = (
-    Vec<RegularHint>,
-    Vec<BlockBitset>,
-    Vec<BackupHint>,
-    Vec<BlockBitset>,
-);
-
 impl HintParams {
-    pub fn from_args(args: &Args, w: usize) -> Self {
-        let num_regular = args.lambda * w;
-        let num_backup = args.backup_hints.unwrap_or(num_regular);
-        let total_hints = num_regular + num_backup;
-        Self {
+    /// # Errors
+    /// Returns an error if a hint count does not fit in `usize`.
+    pub fn from_args(args: &Args, w: usize) -> eyre::Result<Self> {
+        let num_regular: usize = args
+            .lambda
+            .checked_mul(w)
+            .ok_or_else(|| eyre::eyre!("lambda * w is too large: {} * {w}", args.lambda))?;
+        let num_backup: usize = args.backup_hints.unwrap_or(num_regular);
+        let total_hints: usize = num_regular.checked_add(num_backup).ok_or_else(|| {
+            eyre::eyre!("the hint count is too large: {num_regular} + {num_backup}")
+        })?;
+        Ok(Self {
             num_regular,
             num_backup,
             total_hints,
-        }
+        })
     }
 }
 
@@ -62,13 +65,76 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
     if args.lambda == 0 {
         eyre::bail!("lambda must be >= 1");
     }
-    if args.entries_per_block == Some(0) {
-        eyre::bail!("entries_per_block (w) must be > 0");
+    if !(1..=MAX_RECORD_SIZE).contains(&args.record_size) {
+        eyre::bail!(
+            "record_size must be in the range 1 to {MAX_RECORD_SIZE}, got {}",
+            args.record_size
+        );
+    }
+    if let Some(w) = args.entries_per_block {
+        if !w.is_power_of_two() || w as u64 > MAX_BLOCK_SIZE {
+            eyre::bail!(
+                "entries_per_block (w) must be a power of two of at most 2^32, got {w}. \
+                 The iPRF range is w, and the PMNS sampler requires a power of two."
+            );
+        }
     }
     if args.backup_hints == Some(0) {
         eyre::bail!("num_backup must be > 0 (backup hints are required for correctness)");
     }
+    if args.threads == Some(0) {
+        eyre::bail!("threads must be >= 1");
+    }
+    if let Some(output) = &args.output {
+        if args.seed.is_none() && args.seed_file.is_none() {
+            eyre::bail!(
+                "--output requires --seed or --seed-file: \
+                 a client cannot use a hint file without its master seed"
+            );
+        }
+        if args.allow_truncation {
+            eyre::bail!("--output cannot be used with --allow-truncation");
+        }
+        let parent: &Path = output.parent().unwrap_or(Path::new(""));
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            eyre::bail!("output directory {} does not exist", parent.display());
+        }
+        if output.is_dir() {
+            eyre::bail!("--output {} is a directory", output.display());
+        }
+        // The hint file takes the place of its path with a rename.
+        if let Ok(target) = output.canonicalize() {
+            let inputs: [(&str, Option<&PathBuf>); 2] = [
+                ("--db-path", Some(&args.db_path)),
+                ("--seed-file", args.seed_file.as_ref()),
+            ];
+            for (flag, input) in inputs {
+                let input: Option<PathBuf> = input.and_then(|path| path.canonicalize().ok());
+                if input.as_deref() == Some(target.as_path()) {
+                    eyre::bail!(
+                        "--output {} is the file of {flag}; the hint file would replace it",
+                        output.display()
+                    );
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+/// Worker threads of HintInit: `--threads` if it is given.
+///
+/// The default is the number of available cores for the standard path and 1
+/// for the constant-time path, where workers that update the same parity word
+/// delay each other (see `docs/constant_time_mode.md`).
+pub fn worker_threads(args: &Args) -> usize {
+    args.threads.unwrap_or_else(|| {
+        if args.constant_time() {
+            1
+        } else {
+            plinko::hint_init::available_threads()
+        }
+    })
 }
 
 /// Validate that hint parameters are within bounds for CT mode.
@@ -78,6 +144,7 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
 ///
 /// We require expected * 2 <= MAX_PREIMAGES to ensure truncation probability
 /// is negligible (< 2^{-100}) via Chernoff bounds.
+#[cfg(feature = "tee")]
 pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
     let expected_preimages = params.total_hints.div_ceil(w);
     if expected_preimages * 2 > MAX_PREIMAGES {
@@ -94,21 +161,23 @@ pub fn validate_hint_params(params: &HintParams, w: usize) -> eyre::Result<()> {
 
 /// Compute database geometry from file length and arguments.
 pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geometry> {
+    let record_size: usize = args.record_size;
     #[allow(clippy::manual_is_multiple_of)]
-    if db_len_bytes % DB_ENTRY_SIZE != 0 {
+    if record_size == 0 || db_len_bytes % record_size != 0 {
         eyre::bail!(
-            "DB size must be a multiple of {} bytes (v3 entry size)",
-            DB_ENTRY_SIZE
+            "DB size ({db_len_bytes} bytes) must be a multiple of the record size \
+             ({record_size} bytes, --record-size)"
         );
     }
 
-    let n_entries = db_len_bytes / DB_ENTRY_SIZE;
+    let n_entries = db_len_bytes / record_size;
     if n_entries == 0 {
         eyre::bail!("Database must contain at least one entry");
     }
 
-    let default_w = (n_entries as f64).sqrt().round() as usize;
-    let w = args.entries_per_block.unwrap_or(default_w);
+    let w = args
+        .entries_per_block
+        .unwrap_or_else(|| plinko::protocol::default_block_size(n_entries));
 
     let remainder = n_entries % w;
     let (logical_n_entries, pad_entries) = if remainder == 0 {
@@ -142,10 +211,6 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     };
     let mut c = n_effective / w;
 
-    if c < 2 {
-        eyre::bail!("Number of blocks (c = {}) must be at least 2.", c);
-    }
-
     let mut pad_entries = final_pad;
     #[allow(clippy::manual_is_multiple_of)]
     if !args.allow_truncation && c % 2 != 0 {
@@ -160,7 +225,12 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
         );
     }
 
+    if c < 2 {
+        eyre::bail!("Number of blocks (c = {}) must be at least 2.", c);
+    }
+
     Ok(Geometry {
+        record_size,
         n_entries,
         n_effective,
         w,
@@ -169,113 +239,361 @@ pub fn compute_geometry(db_len_bytes: usize, args: &Args) -> eyre::Result<Geomet
     })
 }
 
-/// Parse seed from hex string or generate random seed.
-pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
-    if let Some(ref hex_seed) = args.seed {
-        let hex_clean = hex_seed.strip_prefix("0x").unwrap_or(hex_seed);
-        if hex_clean.len() != 64 {
-            eyre::bail!("--seed must be exactly 32 bytes (64 hex chars)");
-        }
-        let mut seed = [0u8; 32];
-        for (i, chunk) in hex_clean.as_bytes().chunks(2).enumerate() {
-            let hex_str = std::str::from_utf8(chunk)?;
-            seed[i] = u8::from_str_radix(hex_str, 16)
-                .map_err(|_| eyre::eyre!("invalid hex in --seed at position {}", i * 2))?;
-        }
-        if args.print_seed {
-            eprintln!("Using provided seed: 0x{}", hex_clean);
-        }
-        Ok(seed)
-    } else {
-        let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
-        if args.print_seed {
-            let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
-            eprintln!("Generated seed: 0x{}", hex);
-        }
-        Ok(seed)
+/// Parses a master seed of 64 hex characters, with an optional `0x` prefix.
+fn parse_seed_hex(text: &str, source: &str) -> eyre::Result<[u8; 32]> {
+    let hex_clean: &str = text.strip_prefix("0x").unwrap_or(text);
+    if hex_clean.len() != 64 || !hex_clean.is_ascii() {
+        eyre::bail!("{source} must be exactly 32 bytes (64 hex chars)");
     }
+    let mut seed = [0u8; 32];
+    for (i, byte) in seed.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex_clean[2 * i..2 * i + 2], 16)
+            .map_err(|_| eyre::eyre!("invalid hex in {source} at position {}", i * 2))?;
+    }
+    Ok(seed)
 }
 
-/// Initialize hint structures and compute block memberships as bitsets.
-pub fn init_hints(master_seed: &[u8; 32], c: usize, params: &HintParams) -> HintInitOutput {
-    let mut regular_hints: Vec<RegularHint> = Vec::with_capacity(params.num_regular);
-    let mut regular_bitsets: Vec<BlockBitset> = Vec::with_capacity(params.num_regular);
+/// Takes the master seed from `--seed` or `--seed-file`, or generates a random seed.
+pub fn parse_or_generate_seed(args: &Args) -> eyre::Result<[u8; 32]> {
+    let provided: Option<[u8; 32]> = if let Some(hex_seed) = &args.seed {
+        Some(parse_seed_hex(hex_seed, "--seed")?)
+    } else if let Some(path) = &args.seed_file {
+        let text: String = std::fs::read_to_string(path)
+            .map_err(|error| eyre::eyre!("cannot read --seed-file {}: {error}", path.display()))?;
+        Some(parse_seed_hex(text.trim(), "--seed-file")?)
+    } else {
+        None
+    };
 
-    for j in 0..params.num_regular {
-        let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_REGULAR, j as u64);
-        let blocks = compute_regular_blocks(&subset_seed, c);
-        regular_hints.push(RegularHint {
-            subset_seed,
-            parity: [0u8; 32],
-        });
-        regular_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
+    let seed: [u8; 32] = match provided {
+        Some(seed) => seed,
+        None => {
+            let mut seed = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut seed);
+            seed
+        }
+    };
+    if args.print_seed {
+        let hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
+        let origin: &str = if provided.is_some() {
+            "Using provided seed"
+        } else {
+            "Generated seed"
+        };
+        eprintln!("{origin}: 0x{hex}");
     }
+    Ok(seed)
+}
 
-    let mut backup_hints: Vec<BackupHint> = Vec::with_capacity(params.num_backup);
-    let mut backup_bitsets: Vec<BlockBitset> = Vec::with_capacity(params.num_backup);
+/// Writes the hint set to `path` through a temporary file in the same directory.
+///
+/// The temporary file is `<path>.<pid>.tmp`. It is created exclusively, so a
+/// run never writes into a file that another run or another user made. The
+/// file is client-secret; on Unix it gets mode 0600.
+pub fn write_hint_file(path: &Path, hints: &HintSet) -> eyre::Result<()> {
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp_path: PathBuf = PathBuf::from(tmp_name);
 
-    for j in 0..params.num_backup {
-        let subset_seed = derive_subset_seed(master_seed, SEED_LABEL_BACKUP, j as u64);
-        let blocks = compute_backup_blocks(&subset_seed, c);
-        backup_hints.push(BackupHint {
-            subset_seed,
-            parity_in: [0u8; 32],
-            parity_out: [0u8; 32],
-        });
-        backup_bitsets.push(BlockBitset::from_sorted_blocks(&blocks, c));
+    let mut options: OpenOptions = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let file: File = options
+        .open(&tmp_path)
+        .map_err(|error| eyre::eyre!("cannot create {}: {error}", tmp_path.display()))?;
 
-    (regular_hints, regular_bitsets, backup_hints, backup_bitsets)
+    let written: eyre::Result<()> = write_and_publish(file, &tmp_path, path, hints);
+    if written.is_err() {
+        // Best effort: the temporary file is ours and is incomplete.
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    written
+}
+
+fn write_and_publish(
+    file: File,
+    tmp_path: &Path,
+    path: &Path,
+    hints: &HintSet,
+) -> eyre::Result<()> {
+    let mut writer = BufWriter::new(file);
+    hints.write_to(&mut writer)?;
+    let file: File = writer
+        .into_inner()
+        .map_err(|error| eyre::eyre!("cannot flush {}: {error}", tmp_path.display()))?;
+    file.sync_all()?;
+    drop(file);
+
+    std::fs::rename(tmp_path, path)
+        .map_err(|error| eyre::eyre!("cannot move hint file to {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn is_non_zero(parity: &[u8]) -> bool {
+    parity.iter().any(|&b| b != 0)
+}
+
+fn count_invalid(cutoffs: &[u32]) -> usize {
+    cutoffs
+        .iter()
+        .filter(|&&cutoff| cutoff == INVALID_CUTOFF)
+        .count()
 }
 
 /// Print final results summary.
-pub fn print_results(
-    duration: Duration,
-    file_len: usize,
-    regular_hints: &[RegularHint],
-    backup_hints: &[BackupHint],
-    params: &HintParams,
-) {
+pub fn print_results(duration: Duration, file_len: usize, hints: &HintSet, params: &HintParams) {
     let throughput_mb = (file_len as f64 / 1024.0 / 1024.0) / duration.as_secs_f64();
 
-    let non_zero_regular = regular_hints
-        .iter()
-        .filter(|h| h.parity.iter().any(|&b| b != 0))
+    let non_zero_regular = (0..hints.num_regular())
+        .filter(|&j| is_non_zero(hints.regular_parity(j)))
         .count();
-    let zero_regular_seeds = regular_hints
-        .iter()
-        .filter(|h| h.subset_seed.iter().all(|&b| b == 0))
-        .count();
+    let invalid_regular = count_invalid(hints.regular_cutoffs());
 
     info!(
         duration_secs = format_args!("{:.2}", duration.as_secs_f64()),
         throughput_mb_s = format_args!("{:.2}", throughput_mb),
         non_zero_regular,
         total_regular = params.num_regular,
-        zero_regular_seeds,
+        invalid_regular,
         "Results"
     );
 
     if params.num_backup > 0 {
-        let non_zero_backup_in = backup_hints
-            .iter()
-            .filter(|h| h.parity_in.iter().any(|&b| b != 0))
+        let non_zero_backup_in = (0..hints.num_backup())
+            .filter(|&b| is_non_zero(hints.backup_parity_in(b)))
             .count();
-        let non_zero_backup_out = backup_hints
-            .iter()
-            .filter(|h| h.parity_out.iter().any(|&b| b != 0))
+        let non_zero_backup_out = (0..hints.num_backup())
+            .filter(|&b| is_non_zero(hints.backup_parity_out(b)))
             .count();
-        let zero_backup_seeds = backup_hints
-            .iter()
-            .filter(|h| h.subset_seed.iter().all(|&b| b == 0))
-            .count();
+        let invalid_backup = count_invalid(hints.backup_cutoffs());
         info!(
             non_zero_parity_in = non_zero_backup_in,
             non_zero_parity_out = non_zero_backup_out,
             total_backup = params.num_backup,
-            zero_backup_seeds,
+            invalid_backup,
             "Backup hint results"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn rejects_entries_per_block_that_is_not_a_power_of_two() {
+        for w in ["0", "3", "42826"] {
+            let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", w]);
+            let error: String = validate_args(&args)
+                .expect_err("w must be rejected")
+                .to_string();
+            assert!(error.contains("must be a power of two"), "w={w}: {error}");
+        }
+
+        let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "65536"]);
+        assert!(validate_args(&args).is_ok());
+    }
+
+    /// The block size is the range of an iPRF, which is at most 2^32.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn rejects_entries_per_block_above_the_iprf_range() {
+        let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "8589934592"]);
+        let error: String = validate_args(&args)
+            .expect_err("w must be rejected")
+            .to_string();
+        assert!(error.contains("of at most 2^32"), "{error}");
+
+        let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "4294967296"]);
+        assert!(validate_args(&args).is_ok());
+    }
+
+    /// In a release build the product wrapped to a small hint count.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn hint_counts_that_do_not_fit_are_rejected() {
+        let args: Args = Args::parse_from(["plinko_hints", "--lambda", "4611686018427387905"]);
+        assert!(HintParams::from_args(&args, 4).is_err());
+
+        let max: String = usize::MAX.to_string();
+        let args: Args = Args::parse_from(["plinko_hints", "--lambda", "2", "-b", &max]);
+        assert!(HintParams::from_args(&args, 4).is_err());
+
+        let args: Args = Args::parse_from(["plinko_hints", "--lambda", "2", "-b", "5"]);
+        let params: HintParams = HintParams::from_args(&args, 4).expect("hint counts");
+        assert_eq!(
+            (params.num_regular, params.num_backup, params.total_hints),
+            (8, 5, 13)
+        );
+    }
+
+    #[test]
+    fn output_must_not_be_a_directory() {
+        let seed_hex: String = "ab".repeat(32);
+        let args: Args = Args::parse_from(["plinko_hints", "--output", ".", "--seed", &seed_hex]);
+        let error: String = validate_args(&args).expect_err("directory").to_string();
+        assert!(error.contains("is a directory"), "{error}");
+    }
+
+    #[test]
+    #[cfg(feature = "tee")]
+    fn constant_time_mode_uses_one_thread_by_default() {
+        let args: Args = Args::parse_from(["plinko_hints", "--constant-time"]);
+        assert!(validate_args(&args).is_ok());
+        assert!(args.constant_time());
+        assert_eq!(worker_threads(&args), 1);
+
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "4", "--constant-time"]);
+        assert!(validate_args(&args).is_ok());
+        assert_eq!(worker_threads(&args), 4);
+    }
+
+    #[test]
+    #[cfg(not(feature = "tee"))]
+    fn constant_time_option_needs_the_tee_feature() {
+        assert!(Args::try_parse_from(["plinko_hints", "--constant-time"]).is_err());
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        assert!(!args.constant_time());
+    }
+
+    #[test]
+    fn threads_must_be_positive() {
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "0"]);
+        let error: String = validate_args(&args).expect_err("zero threads").to_string();
+        assert!(error.contains("threads must be >= 1"), "{error}");
+
+        let args: Args = Args::parse_from(["plinko_hints", "--threads", "4"]);
+        assert!(validate_args(&args).is_ok());
+        assert_eq!(worker_threads(&args), 4);
+
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        assert!(worker_threads(&args) >= 1);
+    }
+
+    #[test]
+    fn output_requires_a_reproducible_seed() {
+        let seed_hex: String = "ab".repeat(32);
+
+        let args: Args = Args::parse_from(["plinko_hints", "--output", "hints.bin"]);
+        let error: String = validate_args(&args).expect_err("no seed").to_string();
+        assert!(error.contains("--seed or --seed-file"), "{error}");
+
+        let args: Args =
+            Args::parse_from(["plinko_hints", "--output", "hints.bin", "--seed", &seed_hex]);
+        assert!(validate_args(&args).is_ok());
+
+        let args: Args = Args::parse_from([
+            "plinko_hints",
+            "--output",
+            "hints.bin",
+            "--seed-file",
+            "seed.hex",
+        ]);
+        assert!(validate_args(&args).is_ok());
+
+        let args: Args = Args::parse_from([
+            "plinko_hints",
+            "--output",
+            "hints.bin",
+            "--seed",
+            &seed_hex,
+            "--allow-truncation",
+        ]);
+        assert!(validate_args(&args).is_err());
+
+        let conflict = Args::try_parse_from([
+            "plinko_hints",
+            "--seed",
+            &seed_hex,
+            "--seed-file",
+            "seed.hex",
+        ]);
+        assert!(conflict.is_err(), "--seed and --seed-file must conflict");
+    }
+
+    #[test]
+    fn seed_hex_is_parsed_strictly() {
+        let mut expected = [0u8; 32];
+        expected[0] = 0x01;
+        expected[31] = 0xFE;
+        let hex: String = format!("01{}fe", "00".repeat(30));
+
+        assert_eq!(parse_seed_hex(&hex, "--seed").expect("plain"), expected);
+        assert_eq!(
+            parse_seed_hex(&format!("0x{hex}"), "--seed").expect("prefixed"),
+            expected
+        );
+        assert!(parse_seed_hex(&hex[2..], "--seed").is_err(), "too short");
+        assert!(
+            parse_seed_hex(&format!("{hex}00"), "--seed").is_err(),
+            "too long"
+        );
+        assert!(
+            parse_seed_hex(&format!("zz{}", &hex[2..]), "--seed").is_err(),
+            "not hex"
+        );
+    }
+
+    #[test]
+    fn record_size_sets_the_entry_count() {
+        let args: Args = Args::parse_from(["plinko_hints", "--record-size", "7"]);
+        assert!(validate_args(&args).is_ok());
+        let geometry: Geometry = compute_geometry(7 * 100, &args).expect("geometry");
+        assert_eq!((geometry.record_size, geometry.n_entries), (7, 100));
+
+        let error: String = compute_geometry(7 * 100 + 3, &args)
+            .err()
+            .expect("the size is not a multiple of 7")
+            .to_string();
+        assert!(error.contains("multiple of the record size"), "{error}");
+
+        // 280 bytes are 7 v3 records, and 40 records of 7 bytes.
+        let v3: Args = Args::parse_from(["plinko_hints"]);
+        assert_eq!(compute_geometry(280, &v3).expect("geometry").n_entries, 7);
+        assert_eq!(
+            compute_geometry(280, &args).expect("geometry").n_entries,
+            40
+        );
+
+        for record_size in ["0", "1048577"] {
+            let args: Args = Args::parse_from(["plinko_hints", "--record-size", record_size]);
+            let error: String = validate_args(&args)
+                .expect_err("record size must be rejected")
+                .to_string();
+            assert!(
+                error.contains("record_size must be in the range"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_geometry_matches_the_protocol_client() {
+        let args: Args = Args::parse_from(["plinko_hints"]);
+        let geometry_of = |n_entries: usize| -> (usize, usize) {
+            let geometry: Geometry =
+                compute_geometry(n_entries * args.record_size, &args).expect("geometry");
+            assert_eq!(geometry.n_entries, n_entries);
+            (geometry.w, geometry.c)
+        };
+
+        assert_eq!(geometry_of(1_834_095_877), (65_536, 27_988));
+
+        // Includes databases that fill less than two blocks, and odd block counts.
+        for n_entries in (1..=70).chain([1_000, 65_537, 1_834_095_877]) {
+            let client =
+                plinko::protocol::ProtocolParams::new(n_entries, args.record_size, None, 128, None)
+                    .expect("client params");
+            assert_eq!(
+                geometry_of(n_entries),
+                (client.block_size, client.num_blocks),
+                "n_entries={n_entries}"
+            );
+        }
     }
 }

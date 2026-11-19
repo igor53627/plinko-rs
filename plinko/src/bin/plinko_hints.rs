@@ -5,7 +5,13 @@ mod hint_gen;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
-use plinko::iprf::{Iprf, IprfTee};
+use plinko::hint_init::{fill_parities, hint_cutoffs, HintCutoffs};
+use plinko::hints::{seed_check, DatabaseSnapshot, HintGeometry, HintSet};
+use plinko::iprf::Iprf;
+#[cfg(feature = "tee")]
+use plinko::iprf::IprfTee;
+use plinko::protocol::derive_block_keys;
+use plinko::subsets::SubsetPrf;
 use std::fs::File;
 use std::time::Instant;
 use tracing::{debug, info};
@@ -31,6 +37,7 @@ fn main() -> eyre::Result<()> {
 
     let geom = compute_geometry(db_bytes.len(), &args)?;
     info!(
+        record_size = geom.record_size,
         n_entries = geom.n_entries,
         n_effective = geom.n_effective,
         pad_entries = geom.pad_entries,
@@ -44,8 +51,9 @@ fn main() -> eyre::Result<()> {
         "Plinko parameters"
     );
 
-    let params = HintParams::from_args(&args, geom.w);
-    if args.constant_time {
+    let params = HintParams::from_args(&args, geom.w)?;
+    #[cfg(feature = "tee")]
+    if args.constant_time() {
         validate_hint_params(&params, geom.w)?;
     }
     debug!(
@@ -56,6 +64,17 @@ fn main() -> eyre::Result<()> {
 
     let master_seed = parse_or_generate_seed(&args)?;
     let start = Instant::now();
+
+    // One pass over the file before the parity pass. The mapping is not a
+    // snapshot: a file that changes during the run gives hints that do not
+    // belong to this hash.
+    let database: DatabaseSnapshot = DatabaseSnapshot::of(args.database_version, db_bytes);
+    info!(
+        database_version = database.version,
+        blake3 = %blake3::Hash::from_bytes(database.hash).to_hex(),
+        hash_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
+        "Database hash"
+    );
 
     info!(step = "1/4", count = geom.c, "Generating iPRF keys");
     let block_keys = derive_block_keys(&master_seed, geom.c);
@@ -70,13 +89,47 @@ fn main() -> eyre::Result<()> {
         count = params.num_backup,
         "Initializing backup hints"
     );
-    let (mut regular_hints, regular_bitsets, mut backup_hints, backup_bitsets) =
-        init_hints(&master_seed, geom.c, &params);
+    let threads: usize = worker_threads(&args);
+    info!(threads, "Worker threads");
+    let subset_prf: SubsetPrf = SubsetPrf::new(&master_seed);
+    type CutoffsFn = fn(&SubsetPrf, usize, usize, usize, usize) -> HintCutoffs;
+    #[cfg(feature = "tee")]
+    let cutoffs_of: CutoffsFn = if args.constant_time() {
+        plinko::hint_init::hint_cutoffs_ct
+    } else {
+        hint_cutoffs
+    };
+    #[cfg(not(feature = "tee"))]
+    let cutoffs_of: CutoffsFn = hint_cutoffs;
+    let (regular_cutoffs, backup_cutoffs) = cutoffs_of(
+        &subset_prf,
+        geom.c,
+        params.num_regular,
+        params.num_backup,
+        threads,
+    );
+    // With `--allow-truncation` the blocks end before the last records of the
+    // file. The hints then cover only the records that the blocks hold.
+    let covered_entries: usize = geom.n_entries.min(geom.n_effective);
+    let covered_bytes: &[u8] = &db_bytes[..covered_entries * geom.record_size];
+    let mut hints: HintSet = HintSet::new(
+        HintGeometry {
+            num_entries: covered_entries as u64,
+            // `validate_args` keeps the record size at or below `MAX_RECORD_SIZE`.
+            record_size: geom.record_size as u32,
+            block_size: geom.w as u64,
+            num_blocks: geom.c as u64,
+        },
+        seed_check(&master_seed),
+        database,
+        regular_cutoffs,
+        backup_cutoffs,
+    )?;
 
     info!(
         step = "4/4",
         n_effective = geom.n_effective,
-        constant_time = args.constant_time,
+        constant_time = args.constant_time(),
         "Streaming database"
     );
 
@@ -90,56 +143,47 @@ fn main() -> eyre::Result<()> {
             .progress_chars("#>-"),
     );
 
-    if args.constant_time {
-        let block_iprfs_ct: Vec<IprfTee> = block_keys
-            .iter()
-            .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
-            .collect();
+    if args.constant_time() {
+        #[cfg(feature = "tee")]
+        {
+            let block_iprfs_ct: Vec<IprfTee> = block_keys
+                .iter()
+                .map(|key| IprfTee::new(*key, params.total_hints as u64, geom.w as u64))
+                .collect();
 
-        hint_gen::ct_path::process_entries_ct(
-            hint_gen::ct_path::CtProcessInput {
-                db_bytes,
-                n_entries: geom.n_entries,
-                n_effective: geom.n_effective,
-                w: geom.w,
-                num_regular: params.num_regular,
-                num_backup: params.num_backup,
-                block_iprfs_ct: &block_iprfs_ct,
-                regular_bitsets: &regular_bitsets,
-                backup_bitsets: &backup_bitsets,
-            },
-            &mut regular_hints,
-            &mut backup_hints,
-            |i| pb.set_position(i as u64),
-        );
+            plinko::hint_init::fill_parities_ct(
+                &mut hints,
+                covered_bytes,
+                &block_iprfs_ct,
+                &subset_prf,
+                threads,
+                |done| pb.set_position(done as u64),
+            );
+        }
     } else {
         let block_iprfs: Vec<Iprf> = block_keys
             .iter()
             .map(|key| Iprf::new(*key, params.total_hints as u64, geom.w as u64))
             .collect();
-
-        hint_gen::fast_path::process_entries_fast(
-            hint_gen::fast_path::FastProcessInput {
-                db_bytes,
-                n_entries: geom.n_entries,
-                n_effective: geom.n_effective,
-                w: geom.w,
-                num_regular: params.num_regular,
-                num_backup: params.num_backup,
-                block_iprfs: &block_iprfs,
-                regular_hint_blocks: &regular_bitsets,
-                backup_hint_blocks: &backup_bitsets,
-            },
-            &mut regular_hints,
-            &mut backup_hints,
-            |i| pb.set_position(i as u64),
+        fill_parities(
+            &mut hints,
+            covered_bytes,
+            &block_iprfs,
+            &subset_prf,
+            threads,
+            |done| pb.set_position(done as u64),
         );
     }
 
     pb.finish_with_message("Done");
 
     let duration = start.elapsed();
-    print_results(duration, file_len, &regular_hints, &backup_hints, &params);
+    print_results(duration, file_len, &hints, &params);
+
+    if let Some(output) = &args.output {
+        write_hint_file(output, &hints)?;
+        info!(path = ?output, bytes = hints.serialized_len(), "Hint file written");
+    }
 
     Ok(())
 }

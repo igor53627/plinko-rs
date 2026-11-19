@@ -1,7 +1,17 @@
 (** * Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs
-    
-    This Coq implementation provides the hint generation and management
-    algorithms from the Plinko paper (2024-318).
+
+    STATUS: sketch. This file is a first model of HintInit, GetHint and
+    UpdateHint from the Plinko paper (2024-318). It is not a specification of
+    the Rust code, and no tool compares the two.
+
+    - It has no Query, Answer and Recon, and no statement of correctness or
+      privacy.
+    - The iPRF domain is fixed as [w * 10]; the paper uses [lambda * w + q].
+    - Four of its lemmas end with [Admitted].
+    - `make sketch` in plinko/formal compiles it; plinko/formal does not use it.
+
+    The maintained models are in plinko/formal. See
+    plinko/formal/docs/TRUST_BASE.md.
     
     Key components:
     - PMNS (Pseudorandom Multinomial Sampler) for random function simulation

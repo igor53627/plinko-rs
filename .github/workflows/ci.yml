@@ -27,6 +27,9 @@ jobs:
       - name: Run plinko tests
         run: cargo test --manifest-path plinko/Cargo.toml
 
+      - name: Run plinko tests with the experimental features
+        run: cargo test --manifest-path plinko/Cargo.toml --features tee,gpu
+
       - name: Smoke test cost estimator binary
         run: |
           cargo run --manifest-path plinko/Cargo.toml --bin cost_estimate -- --entries 1000 > /dev/null

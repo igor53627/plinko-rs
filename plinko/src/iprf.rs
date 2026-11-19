@@ -8,10 +8,19 @@
 //! The Swap-or-Not PRP is based on Morris-Rogaway (eprint 2013/560).
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
-use aes::Aes128;
+use aes::{Aes128, Block};
 use sha2::{Digest, Sha256};
+use std::ops::Range;
+use std::sync::OnceLock;
+
+use crate::binomial::PmnsNode;
 
 pub type PrfKey128 = [u8; 16];
+
+#[cfg(feature = "tee")]
+mod tee;
+#[cfg(feature = "tee")]
+pub use tee::{IprfTee, IprfTeeTable, SwapOrNotSrTee, SwapOrNotTee, MAX_PREIMAGES};
 
 /// Swap-or-Not small-domain PRP (Morris-Rogaway 2013)
 ///
@@ -94,7 +103,7 @@ impl SwapOrNot {
     fn round(&self, round_num: usize, x: u64) -> u64 {
         let k_i = self.derive_round_key(round_num);
         // Partner: K_i - X mod N
-        let partner = (k_i + self.domain - (x % self.domain)) % self.domain;
+        let partner = sub_mod(k_i, x % self.domain, self.domain);
         // Canonical representative: max(X, X')
         let canonical = x.max(partner);
 
@@ -187,6 +196,60 @@ fn sr_t_rounds_with_security(n: u64, n0: u64, lambda: u32) -> usize {
     sr_t_rounds_with_params(n, num_stages, lambda)
 }
 
+/// Stage sizes of the Sometimes-Recurse shuffle: `domain`, then its halves,
+/// while the size is above 1. Stage `l` permutes the values below `sizes[l]`.
+fn sr_level_sizes(domain: u64, max_levels: usize) -> Vec<u64> {
+    let mut sizes: Vec<u64> = Vec::with_capacity(max_levels);
+    let mut n: u64 = domain;
+    while n > 1 && sizes.len() < max_levels {
+        sizes.push(n);
+        n /= 2;
+    }
+    sizes
+}
+
+/// Maps a 128-bit value to `0..n`: `floor(r * n / 2^128)`.
+///
+/// For a uniform `r`, each result has `floor(2^128 / n)` or `ceil(2^128 / n)`
+/// preimages, so the statistical distance from uniform is at most `n / 2^128`.
+/// The function has two widening multiplications and no division, so its time
+/// does not depend on `r`.
+fn reduce_below(r: u128, n: u64) -> u64 {
+    let high: u128 = u128::from((r >> 64) as u64) * u128::from(n);
+    let low: u128 = u128::from(r as u64) * u128::from(n);
+    ((high + (low >> 64)) >> 64) as u64
+}
+
+/// Round key of round `round` of the Sometimes-Recurse stage `level`, which
+/// has size `n`: a value in `0..n`.
+///
+/// The key is one AES block, `AES(level || round || n)`, reduced with
+/// [`reduce_below`]. `level`, `round` and `n` are public.
+///
+/// The stage of size 2 has the fixed key 1. Its partner function is then
+/// `x -> 1 - x`, and the swap bit of its one round alone decides the order of
+/// the two values. With key 0 the round never swaps, so a random key gives a
+/// swap with probability 1/4 and not 1/2.
+fn sr_round_key(cipher: &Aes128, level: usize, round: usize, n: u64) -> u64 {
+    if n == 2 {
+        return 1;
+    }
+    let mut input = [0u8; 16];
+    let combined = ((level as u64) << 32) | (round as u64);
+    input[0..8].copy_from_slice(&combined.to_be_bytes());
+    input[8..16].copy_from_slice(&n.to_be_bytes());
+
+    let mut block = GenericArray::from(input);
+    cipher.encrypt_block(&mut block);
+
+    reduce_below(u128::from_be_bytes(block.into()), n)
+}
+
+/// AES input prefix of the swap decision of one round.
+fn sr_swap_prefix(level: usize, round: usize) -> [u8; 8] {
+    (((level as u64) << 32) | (round as u64) | 0x80000000).to_be_bytes()
+}
+
 /// Sometimes-Recurse PRP wrapper (Morris-Rogaway Fig. 1)
 ///
 /// Provides full-domain security: secure even when adversary queries all N elements.
@@ -194,6 +257,10 @@ fn sr_t_rounds_with_security(n: u64, n0: u64, lambda: u32) -> usize {
 ///
 /// Round counts are computed per Morris-Rogaway Section 5 "Strategy 1" (equal error split)
 /// with 128-bit security by default.
+///
+/// A round key is a 128-bit AES output reduced to the stage size without a division
+/// (statistical distance from uniform at most `n / 2^128`), and the stage of size 2
+/// has one round with the fixed key 1. See "Round Keys" in `docs/hint_generation.md`.
 pub struct SwapOrNotSr {
     cipher: Aes128,
     domain: u64,
@@ -224,15 +291,7 @@ impl SwapOrNotSr {
     }
 
     fn derive_round_key(&self, level: usize, round: usize, n: u64) -> u64 {
-        let mut input = [0u8; 16];
-        let combined = ((level as u64) << 32) | (round as u64);
-        input[0..8].copy_from_slice(&combined.to_be_bytes());
-        input[8..16].copy_from_slice(&n.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        u64::from_be_bytes(block[0..8].try_into().unwrap()) % n
+        sr_round_key(&self.cipher, level, round, n)
     }
 
     fn prf_bit(&self, level: usize, round: usize, canonical: u64, _n: u64) -> bool {
@@ -249,7 +308,7 @@ impl SwapOrNotSr {
 
     fn round(&self, level: usize, round_num: usize, n: u64, x: u64) -> u64 {
         let k_i = self.derive_round_key(level, round_num, n);
-        let partner = (k_i + n - (x % n)) % n;
+        let partner = sub_mod(k_i, x % n, n);
         let canonical = x.max(partner);
 
         if self.prf_bit(level, round_num, canonical, n) {
@@ -319,426 +378,63 @@ impl SwapOrNotSr {
         }
         val
     }
-}
 
-/// Constant-time Sometimes-Recurse PRP for TEE execution
-///
-/// Full-domain security variant using constant-time operations to prevent
-/// timing side-channels. Uses branchless logic throughout.
-///
-/// Round counts are computed per Morris-Rogaway Section 5 "Strategy 1" (equal error split)
-/// with 128-bit security by default.
-pub struct SwapOrNotSrTee {
-    cipher: Aes128,
-    domain: u64,
-    max_levels: usize,
-    security_bits: u32,
-}
-
-impl SwapOrNotSrTee {
-    pub fn new(key: PrfKey128, domain: u64) -> Self {
-        Self::with_security(key, domain, DEFAULT_SECURITY_BITS)
-    }
-
-    pub fn with_security(key: PrfKey128, domain: u64, security_bits: u32) -> Self {
-        assert!(domain > 0, "SwapOrNotSrTee domain must be positive");
-        let cipher = Aes128::new(&GenericArray::from(key));
-        let max_levels = if domain <= 1 {
-            0
-        } else {
-            (domain as f64).log2().ceil() as usize
-        };
-
-        Self {
-            cipher,
-            domain,
-            max_levels,
-            security_bits,
-        }
-    }
-
-    fn derive_round_key(&self, level: usize, round: usize, n: u64) -> u64 {
-        let mut input = [0u8; 16];
-        let combined = ((level as u64) << 32) | (round as u64);
-        input[0..8].copy_from_slice(&combined.to_be_bytes());
-        input[8..16].copy_from_slice(&n.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        u64::from_be_bytes(block[0..8].try_into().unwrap()) % n
-    }
-
-    fn prf_bit_ct(&self, level: usize, round: usize, canonical: u64) -> u64 {
-        let mut input = [0u8; 16];
-        let combined = ((level as u64) << 32) | (round as u64) | 0x80000000;
-        input[0..8].copy_from_slice(&combined.to_be_bytes());
-        input[8..16].copy_from_slice(&canonical.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        (block[0] & 1) as u64
-    }
-
-    fn round_ct(&self, level: usize, round_num: usize, n: u64, x: u64) -> u64 {
-        use crate::constant_time::{ct_lt_u64, ct_select_u64};
-
-        let k_i = self.derive_round_key(level, round_num, n);
-        let partner = (k_i + n - (x % n)) % n;
-
-        let x_lt_partner = ct_lt_u64(x, partner);
-        let canonical = ct_select_u64(x_lt_partner, partner, x);
-
-        let swap = self.prf_bit_ct(level, round_num, canonical);
-        ct_select_u64(swap, partner, x)
-    }
-
-    fn apply_rounds_forward(&self, level: usize, n: u64, x: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
-        let mut val = x;
-        for r in 0..t {
-            val = self.round_ct(level, r, n, val);
-        }
-        val
-    }
-
-    fn apply_rounds_inverse(&self, level: usize, n: u64, y: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
-        let mut val = y;
-        for r in (0..t).rev() {
-            val = self.round_ct(level, r, n, val);
-        }
-        val
-    }
-
-    pub fn forward(&self, x: u64) -> u64 {
-        use crate::constant_time::{ct_ge_u64, ct_select_u64};
-
-        debug_assert!(x < self.domain, "x must be < domain");
-        let mut val = x % self.domain;
-        let mut n = self.domain;
-        let mut result = 0u64;
-        let mut done = 0u64;
-
-        for level in 0..self.max_levels {
-            let should_skip = ct_ge_u64(1, n) | done;
-
-            val = ct_select_u64(should_skip, val, self.apply_rounds_forward(level, n, val));
-
-            let half = n / 2;
-            let exited = ct_ge_u64(val, half);
-            result = ct_select_u64(exited & (1 - done), val, result);
-            done |= exited;
-
-            n = ct_select_u64(should_skip, n, half);
-        }
-
-        ct_select_u64(done, result, val)
-    }
-
-    pub fn inverse(&self, y: u64) -> u64 {
-        use crate::constant_time::{ct_eq_u64, ct_ge_u64, ct_gt_u64, ct_lt_u64, ct_select_u64};
-
-        debug_assert!(y < self.domain, "y must be < domain");
-        let y = y % self.domain;
-
-        let mut sizes = [0u64; 64];
-        let max_levels = self.max_levels.min(sizes.len());
-        let mut n = self.domain;
-        let mut stopped: u64 = 0;
-
-        for size in sizes.iter_mut().take(max_levels) {
-            let should_record = ct_gt_u64(n, 1) & ct_eq_u64(stopped, 0);
-            *size = ct_select_u64(should_record, n, 0);
-
-            let half = n / 2;
-            let y_in_right = ct_ge_u64(y, half);
-            let stopping_now = should_record & y_in_right;
-            stopped = ct_select_u64(stopping_now, 1, stopped);
-
-            n = ct_select_u64(should_record & ct_eq_u64(stopped, 0), half, n);
-        }
-
-        let mut val = y;
-        for (level, &n_lvl) in sizes.iter().take(max_levels).enumerate().rev() {
-            let skip = ct_lt_u64(n_lvl, 2);
-            val = ct_select_u64(skip, val, self.apply_rounds_inverse(level, n_lvl, val));
-        }
-        val
-    }
-}
-
-/// Constant-time SwapOrNot PRP for TEE execution
-///
-/// Functionally equivalent to SwapOrNot but uses branchless operations
-/// to prevent timing side-channels.
-pub struct SwapOrNotTee {
-    cipher: Aes128,
-    domain: u64,
-    num_rounds: usize,
-}
-
-impl SwapOrNotTee {
-    pub fn new(key: PrfKey128, domain: u64) -> Self {
-        assert!(domain > 0, "SwapOrNot domain must be positive");
-        let cipher = Aes128::new(&GenericArray::from(key));
-        let num_rounds = ((domain as f64).log2().ceil() as usize) * 6 + 6;
-        Self {
-            cipher,
-            domain,
-            num_rounds,
-        }
-    }
-
-    fn derive_round_key(&self, round: usize) -> u64 {
-        let mut input = [0u8; 16];
-        input[0..8].copy_from_slice(&(round as u64).to_be_bytes());
-        input[8..16].copy_from_slice(&self.domain.to_be_bytes());
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-        u64::from_be_bytes(block[0..8].try_into().unwrap()) % self.domain
-    }
-
-    /// Returns 1 if should swap, 0 otherwise (constant-time)
-    fn prf_bit_ct(&self, round: usize, canonical: u64) -> u64 {
-        let mut input = [0u8; 16];
-        input[0..8].copy_from_slice(&(round as u64 | 0x8000000000000000).to_be_bytes());
-        input[8..16].copy_from_slice(&canonical.to_be_bytes());
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-        (block[0] & 1) as u64
-    }
-
-    /// Constant-time round - no secret-dependent branches
-    fn round_ct(&self, round_num: usize, x: u64) -> u64 {
-        use crate::constant_time::{ct_lt_u64, ct_select_u64};
-
-        let k_i = self.derive_round_key(round_num);
-        let partner = (k_i + self.domain - (x % self.domain)) % self.domain;
-
-        // Constant-time max: canonical = max(x, partner)
-        let x_lt_partner = ct_lt_u64(x, partner);
-        let canonical = ct_select_u64(x_lt_partner, partner, x);
-
-        // Constant-time swap decision
-        let swap = self.prf_bit_ct(round_num, canonical);
-        ct_select_u64(swap, partner, x)
-    }
-
-    pub fn forward(&self, x: u64) -> u64 {
-        let mut val = x;
-        for round in 0..self.num_rounds {
-            val = self.round_ct(round, val);
-        }
-        val
-    }
-
-    pub fn inverse(&self, y: u64) -> u64 {
-        let mut val = y;
-        for round in (0..self.num_rounds).rev() {
-            val = self.round_ct(round, val);
-        }
-        val
-    }
-}
-
-/// Maximum preimages for fixed-size array return
-pub const MAX_PREIMAGES: usize = 512;
-
-/// Constant-time iPRF for TEE execution
-///
-/// Functionally equivalent to Iprf but uses branchless operations and
-/// fixed iteration counts to prevent timing side-channels.
-/// Uses SwapOrNotSrTee for full-domain PRP security.
-pub struct IprfTee {
-    cipher: Aes128,
-    prp: SwapOrNotSrTee,
-    domain: u64,
-    range: u64,
-    tree_depth: usize,
-}
-
-impl IprfTee {
-    /// Creates a new TEE-safe iPRF instance.
+    /// Inverts every value of `balls`. Element `i` of the result equals
+    /// `inverse(balls.start + i)`.
+    ///
+    /// A value passes stage `l` if it is below the stage size, so the values
+    /// of a range that pass a stage are a prefix of the range. All of them
+    /// share the round key of a round, and their swap decisions are one batch
+    /// of AES blocks. A single `inverse` call derives the round key again for
+    /// each value and waits for each AES block before the next round.
     ///
     /// # Panics
-    /// Panics if `n > CT_BINOMIAL_MAX_COUNT` (65536). TEE constant-time binomial
-    /// sampling requires O(n) iterations; larger domains would either leak timing
-    /// or fall back to a non-Binomial approximation.
-    pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
-        assert!(
-            n <= crate::binomial::CT_BINOMIAL_MAX_COUNT,
-            "IprfTee requires n <= {} for constant-time binomial sampling, got n={}",
-            crate::binomial::CT_BINOMIAL_MAX_COUNT,
-            n
-        );
-
-        let tree_depth = (m as f64).log2().ceil() as usize;
-        let cipher = Aes128::new(&GenericArray::from(key));
-
-        let mut prp_key = [0u8; 16];
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        hasher.update(b"prp");
-        let hash = hasher.finalize();
-        prp_key.copy_from_slice(&hash[0..16]);
-
-        let prp = SwapOrNotSrTee::new(prp_key, n);
-
-        Self {
-            cipher,
-            prp,
-            domain: n,
-            range: m,
-            tree_depth,
-        }
-    }
-
-    /// Forward evaluation.
+    /// Panics if `balls.end` is above the domain.
     ///
-    /// # Security Note
-    /// This method is NOT constant-time: the internal `trace_ball` loop branches
-    /// on `ball_index < left_count`. For PIR query privacy, only `inverse_ct` needs
-    /// to be constant-time (the server computes inverse, not forward).
+    /// # Examples
     ///
-    /// # Precondition
-    /// `x` must be in range `[0, domain)`. This is a precondition, not runtime-checked
-    /// in release builds, to avoid timing side-channels.
-    pub fn forward(&self, x: u64) -> u64 {
-        debug_assert!(x < self.domain, "IprfTee::forward: x must be < domain");
-        let permuted = self.prp.forward(x);
-        self.trace_ball(permuted, self.domain, self.range)
-    }
-
-    /// Constant-time inverse returning fixed-size array with validity mask.
+    /// ```
+    /// use plinko::iprf::SwapOrNotSr;
     ///
-    /// # Precondition
-    /// `y` must be in range `[0, range)`. This is a precondition, not runtime-checked
-    /// in release builds, to avoid timing side-channels.
-    pub fn inverse_ct(&self, y: u64) -> ([u64; MAX_PREIMAGES], usize) {
-        use crate::constant_time::{ct_lt_u64, ct_select_u64};
+    /// let prp: SwapOrNotSr = SwapOrNotSr::with_security([3u8; 16], 1000, 16);
+    /// let batch: Vec<u64> = prp.inverse_range(490..510);
+    /// let single: Vec<u64> = (490..510).map(|y| prp.inverse(y)).collect();
+    /// assert_eq!(batch, single);
+    /// ```
+    pub fn inverse_range(&self, balls: Range<u64>) -> Vec<u64> {
+        assert!(balls.end <= self.domain, "balls must be < domain");
+        let mut vals: Vec<u64> = balls.clone().collect();
+        let mut partners: Vec<u64> = vec![0u64; vals.len()];
+        let mut blocks: Vec<Block> = vec![Block::default(); vals.len()];
 
-        debug_assert!(y < self.range, "IprfTee::inverse_ct: y must be < range");
+        let sizes: Vec<u64> = sr_level_sizes(self.domain, self.max_levels);
+        for (level, &n) in sizes.iter().enumerate().rev() {
+            let active: usize = n.saturating_sub(balls.start).min(vals.len() as u64) as usize;
+            if active == 0 {
+                continue;
+            }
+            let t: usize = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+            for round in (0..t).rev() {
+                let k_i: u64 = self.derive_round_key(level, round, n);
+                let prefix: [u8; 8] = sr_swap_prefix(level, round);
 
-        let (ball_start, ball_count) = self.trace_ball_inverse_ct(y);
-
-        // Constant-time min(ball_count, MAX_PREIMAGES) to avoid data-dependent branch
-        let max_preimages = MAX_PREIMAGES as u64;
-        let exceeds_max = ct_lt_u64(max_preimages, ball_count);
-        let count_u64 = ct_select_u64(exceeds_max, max_preimages, ball_count);
-        let count = count_u64 as usize;
-        let mut result = [0u64; MAX_PREIMAGES];
-
-        for (i, slot) in result.iter_mut().enumerate() {
-            let i_u64 = i as u64;
-            let in_range = ct_lt_u64(i_u64, count as u64);
-            let z = ball_start + i_u64;
-            // Only call inverse for valid z values; use 0 for out-of-range
-            let z_valid = ct_lt_u64(z, self.domain);
-            let z_safe = ct_select_u64(z_valid, z, 0);
-            let x = self.prp.inverse(z_safe);
-            *slot = ct_select_u64(in_range & z_valid, x, 0);
-        }
-
-        (result, count)
-    }
-
-    /// Constant-time trace_ball_inverse with fixed iteration count
-    fn trace_ball_inverse_ct(&self, y: u64) -> (u64, u64) {
-        use crate::constant_time::{ct_le_u64, ct_lt_u64, ct_select_u64};
-
-        if self.range == 1 {
-            return (0, self.domain);
-        }
-
-        let mut low = 0u64;
-        let mut high = self.range - 1;
-        let mut ball_count = self.domain;
-        let mut ball_start = 0u64;
-
-        for _level in 0..self.tree_depth {
-            let should_continue = ct_lt_u64(low, high);
-
-            let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-
-            let node_id = encode_node(low, high, self.domain);
-            let prf_output = self.prf_eval(node_id);
-            // Use TEE-safe constant-time binomial sampler (matches BinomialSpec.v)
-            let left_count =
-                crate::binomial::binomial_sample_tee(ball_count, left_bins, total_bins, prf_output);
-
-            let go_left = ct_le_u64(y, mid);
-
-            let new_low_left = low;
-            let new_high_left = mid;
-            let new_count_left = left_count;
-            let new_start_left = ball_start;
-
-            let new_low_right = mid + 1;
-            let new_high_right = high;
-            let new_count_right = ball_count.wrapping_sub(left_count);
-            let new_start_right = ball_start + left_count;
-
-            let new_low = ct_select_u64(go_left, new_low_left, new_low_right);
-            let new_high = ct_select_u64(go_left, new_high_left, new_high_right);
-            let new_count = ct_select_u64(go_left, new_count_left, new_count_right);
-            let new_start = ct_select_u64(go_left, new_start_left, new_start_right);
-
-            low = ct_select_u64(should_continue, new_low, low);
-            high = ct_select_u64(should_continue, new_high, high);
-            ball_count = ct_select_u64(should_continue, new_count, ball_count);
-            ball_start = ct_select_u64(should_continue, new_start, ball_start);
-        }
-
-        (ball_start, ball_count)
-    }
-
-    fn trace_ball(&self, x_prime: u64, n: u64, m: u64) -> u64 {
-        if m == 1 {
-            return 0;
-        }
-        let mut low = 0u64;
-        let mut high = m - 1;
-        let mut ball_count = n;
-        let mut ball_index = x_prime;
-
-        while low < high {
-            let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-            let node_id = encode_node(low, high, n);
-            let prf_output = self.prf_eval(node_id);
-            // Use TEE-safe constant-time binomial sampler (matches BinomialSpec.v)
-            let left_count =
-                crate::binomial::binomial_sample_tee(ball_count, left_bins, total_bins, prf_output);
-
-            if ball_index < left_count {
-                high = mid;
-                ball_count = left_count;
-            } else {
-                low = mid + 1;
-                ball_index -= left_count;
-                ball_count -= left_count;
+                // The swap bits are random, so both loops use masks, not branches.
+                for i in 0..active {
+                    // vals[i] < n and k_i < n, so this is (k_i - vals[i]) mod n.
+                    let wrap: u64 = n & u64::from(k_i < vals[i]).wrapping_neg();
+                    let partner: u64 = k_i.wrapping_sub(vals[i]).wrapping_add(wrap);
+                    partners[i] = partner;
+                    blocks[i][0..8].copy_from_slice(&prefix);
+                    blocks[i][8..16].copy_from_slice(&vals[i].max(partner).to_be_bytes());
+                }
+                self.cipher.encrypt_blocks(&mut blocks[..active]);
+                for i in 0..active {
+                    let swap: u64 = u64::from(blocks[i][0] & 1).wrapping_neg();
+                    vals[i] ^= swap & (vals[i] ^ partners[i]);
+                }
             }
         }
-        low
-    }
-
-    fn prf_eval(&self, x: u64) -> u64 {
-        let mut input = [0u8; 16];
-        input[8..16].copy_from_slice(&x.to_be_bytes());
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-        u64::from_be_bytes(block[0..8].try_into().unwrap())
-    }
-
-    /// Helper to get Vec<u64> like standard inverse (for testing)
-    pub fn inverse(&self, y: u64) -> Vec<u64> {
-        let (arr, count) = self.inverse_ct(y);
-        arr[..count].to_vec()
+        vals
     }
 }
 
@@ -750,18 +446,62 @@ pub struct Iprf {
     prp: SwapOrNotSr,
     domain: u64,
     range: u64,
-    _tree_depth: usize,
+    /// Number of top tree levels whose left counts are kept after the first use.
+    cached_levels: u32,
+    /// Left counts of the nodes in the first `cached_levels` levels, in
+    /// breadth-first order. Derived from the key and as secret as the key.
+    top_left_counts: OnceLock<Box<[u32]>>,
 }
 
 impl Iprf {
     /// Creates a new iPRF instance for input domain `n` and output range `m`.
     ///
-    /// The constructor derives an internal AES-128 cipher from `key`, computes the PMNS
-    /// tree depth as ceil(log2(m)), and derives a separate 128-bit key (SHA-256(key || "prp"))
-    /// to initialize the internal Sometimes-Recurse PRP over the input domain `n`.
+    /// The constructor derives the PMNS keystream key (SHA-256(key || "pmns" || n || m)),
+    /// computes the PMNS tree depth as log2(m), and derives a separate 128-bit key
+    /// (SHA-256(key || "prp")) to initialize the internal Sometimes-Recurse PRP over the
+    /// input domain `n`.
+    ///
+    /// # Panics
+    /// Panics if `m` is not a power of two of at most 2^32. Every PMNS split then has
+    /// probability 1/2, which the exact sampler in [`crate::binomial`] requires.
     pub fn new(key: PrfKey128, n: u64, m: u64) -> Self {
-        let tree_depth = (m as f64).log2().ceil() as usize;
-        let cipher = Aes128::new(&GenericArray::from(key));
+        Self::with_cached_levels(key, n, m, 0)
+    }
+
+    /// Creates an iPRF that keeps the left counts of the first `levels` PMNS
+    /// tree levels in memory. All outputs equal those of [`Iprf::new`].
+    ///
+    /// The first `forward` or `inverse` call computes the cache; it costs
+    /// `levels * n / 128` AES blocks. Later calls sample only the lower levels,
+    /// whose nodes hold few balls. The cache takes `4 * (2^levels - 1)` bytes.
+    /// It is derived from the key and must stay with the owner of the key.
+    ///
+    /// `levels` is limited to the tree depth. The cache stores counts as
+    /// `u32`; for a domain above `u32::MAX` nothing is cached.
+    ///
+    /// # Panics
+    /// Panics if `m` is not a power of two of at most 2^32.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::Iprf;
+    ///
+    /// let plain: Iprf = Iprf::new([7u8; 16], 4096, 64);
+    /// let cached: Iprf = Iprf::with_cached_levels([7u8; 16], 4096, 64, 4);
+    /// assert_eq!(cached.forward(1234), plain.forward(1234));
+    /// assert_eq!(cached.inverse(17), plain.inverse(17));
+    /// ```
+    pub fn with_cached_levels(key: PrfKey128, n: u64, m: u64, levels: u32) -> Self {
+        assert_pmns_range(m);
+
+        let tree_depth: u32 = m.trailing_zeros();
+        let cached_levels: u32 = if n <= u64::from(u32::MAX) {
+            levels.min(tree_depth)
+        } else {
+            0
+        };
+        let cipher = pmns_cipher(&key, n, m);
 
         // Derive a separate key for PRP from main key
         let mut prp_key = [0u8; 16];
@@ -778,15 +518,22 @@ impl Iprf {
             prp,
             domain: n,
             range: m,
-            _tree_depth: tree_depth,
+            cached_levels,
+            top_left_counts: OnceLock::new(),
         }
     }
 
     /// Forward evaluation: P(x) then S(P(x))
+    ///
+    /// # Panics
+    /// Panics if `x` is not in `[0, domain)`. The function has no value there,
+    /// and bin 0 is a valid output.
     pub fn forward(&self, x: u64) -> u64 {
-        if x >= self.domain {
-            return 0;
-        }
+        assert!(
+            x < self.domain,
+            "Iprf::forward: x={x} is outside the domain [0, {})",
+            self.domain
+        );
         // Apply PRP first, then PMNS
         let permuted = self.prp.forward(x);
         self.trace_ball(permuted, self.domain, self.range)
@@ -803,11 +550,77 @@ impl Iprf {
             return vec![];
         }
         // First find all PMNS preimages, then apply inverse PRP to each
-        let pmns_preimages = self.trace_ball_inverse(y, self.domain, self.range);
-        pmns_preimages
-            .into_iter()
-            .map(|z| self.prp.inverse(z))
-            .collect()
+        let balls: Range<u64> = self.trace_ball_inverse(y, self.domain, self.range);
+        self.prp.inverse_range(balls)
+    }
+
+    /// Computes all bin boundaries of the PMNS tree once.
+    ///
+    /// Use the table to invert many outputs of this instance, as HintInit does
+    /// for the offsets of one database block. A full tree costs about
+    /// `log2(m) * n / 128` AES blocks and `8 * (m + 1)` bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::{Iprf, IprfTable};
+    ///
+    /// let iprf: Iprf = Iprf::new([7u8; 16], 4096, 64);
+    /// let table: IprfTable<'_> = iprf.table();
+    /// for y in 0..64 {
+    ///     assert_eq!(table.inverse(y), iprf.inverse(y));
+    /// }
+    /// ```
+    pub fn table(&self) -> IprfTable<'_> {
+        let loads: Vec<u64> = pmns_level_counts(
+            self.domain,
+            self.range,
+            self.range.trailing_zeros(),
+            |node, count| crate::binomial::coin_binomial(&self.cipher, node, count),
+        );
+        IprfTable {
+            iprf: self,
+            starts: bin_starts(&loads),
+        }
+    }
+
+    /// Left counts of the cached top levels, computed on the first call.
+    fn top_left_counts(&self) -> &[u32] {
+        if self.cached_levels == 0 {
+            return &[];
+        }
+        self.top_left_counts.get_or_init(|| {
+            let mut left_counts: Vec<u32> = Vec::with_capacity((1usize << self.cached_levels) - 1);
+            pmns_level_counts(
+                self.domain,
+                self.range,
+                self.cached_levels,
+                |node, count| {
+                    let left: u64 = crate::binomial::coin_binomial(&self.cipher, node, count);
+                    // The domain fits in u32 when cached_levels > 0.
+                    left_counts.push(left as u32);
+                    left
+                },
+            );
+            left_counts.into_boxed_slice()
+        })
+    }
+
+    /// Left count of the node at `depth` with breadth-first index `node_index`.
+    #[inline]
+    fn left_count(
+        &self,
+        top: &[u32],
+        depth: u32,
+        node_index: u64,
+        node: PmnsNode,
+        ball_count: u64,
+    ) -> u64 {
+        if depth < self.cached_levels {
+            u64::from(top[node_index as usize])
+        } else {
+            crate::binomial::coin_binomial(&self.cipher, node, ball_count)
+        }
     }
 
     /// Determines which PMNS bin a ball falls into for a given ball index.
@@ -820,30 +633,31 @@ impl Iprf {
             return 0;
         }
 
+        let top: &[u32] = self.top_left_counts();
         let mut low = 0u64;
         let mut high = m - 1;
         let mut ball_count = n;
         let mut ball_index = x_prime;
+        let mut depth: u32 = 0;
+        let mut node_index: u64 = 0;
 
         while low < high {
             let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-
-            let node_id = encode_node(low, high, n);
-            let prf_output = self.prf_eval(node_id);
 
             let left_count =
-                crate::binomial::binomial_sample(ball_count, left_bins, total_bins, prf_output);
+                self.left_count(top, depth, node_index, pmns_node(low, high), ball_count);
 
             if ball_index < left_count {
                 high = mid;
                 ball_count = left_count;
+                node_index = 2 * node_index + 1;
             } else {
                 low = mid + 1;
                 ball_index -= left_count;
                 ball_count -= left_count;
+                node_index = 2 * node_index + 2;
             }
+            depth += 1;
         }
         low
     }
@@ -851,7 +665,7 @@ impl Iprf {
     /// Returns the contiguous range of ball indices that fall into PMNS bin `y`.
     ///
     /// For `m == 1` this is all balls `[0..n)`. Otherwise the method walks the PMNS
-    /// binary partitioning tree deterministically (using `binomial_sample`) to
+    /// binary partitioning tree deterministically (using `coin_binomial`) to
     /// compute the starting index and count of balls assigned to bin `y`, and
     /// returns the range `[start, start + count)` as a `Vec<u64>`.
     ///
@@ -863,71 +677,150 @@ impl Iprf {
     ///
     /// # Returns
     ///
-    /// A `Vec<u64>` containing the ball indices that map to bin `y` (the closed-open
-    /// range `start..start+count`).
-    fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Vec<u64> {
+    /// The ball indices that map to bin `y` (the closed-open range
+    /// `start..start+count`).
+    fn trace_ball_inverse(&self, y: u64, n: u64, m: u64) -> Range<u64> {
         if m == 1 {
-            return (0..n).collect();
+            return 0..n;
         }
 
+        let top: &[u32] = self.top_left_counts();
         let mut low = 0u64;
         let mut high = m - 1;
         let mut ball_count = n;
         let mut ball_start = 0u64;
+        let mut depth: u32 = 0;
+        let mut node_index: u64 = 0;
 
         while low < high {
             let mid = (low + high) / 2;
-            let left_bins = mid - low + 1;
-            let total_bins = high - low + 1;
-
-            let node_id = encode_node(low, high, n);
-            let prf_output = self.prf_eval(node_id);
 
             let left_count =
-                crate::binomial::binomial_sample(ball_count, left_bins, total_bins, prf_output);
+                self.left_count(top, depth, node_index, pmns_node(low, high), ball_count);
 
             if y <= mid {
                 high = mid;
                 ball_count = left_count;
+                node_index = 2 * node_index + 1;
             } else {
                 low = mid + 1;
                 ball_start += left_count;
                 ball_count -= left_count;
+                node_index = 2 * node_index + 2;
             }
+            depth += 1;
         }
 
-        (ball_start..ball_start + ball_count).collect()
-    }
-
-    /// Produces a 64-bit pseudorandom value by AES-encrypting a 16-byte block containing `x`.
-    ///
-    /// The input block places `x` in the last 8 bytes (big-endian), encrypts the block with the
-    /// instance's AES-128 cipher, and returns the first 8 bytes of the ciphertext interpreted as a
-    /// big-endian `u64`.
-    fn prf_eval(&self, x: u64) -> u64 {
-        let mut input = [0u8; 16];
-        input[8..16].copy_from_slice(&x.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        u64::from_be_bytes(block[0..8].try_into().unwrap())
+        ball_start..ball_start + ball_count
     }
 }
 
-/// Encodes a PMNS tree node as a unique 64-bit identifier for PRF evaluation.
+/// All bin boundaries of one [`Iprf`], from [`Iprf::table`].
 ///
-/// Note: The third argument is the global domain `n`, not the dynamic `ball_count`.
-/// This differs from the Rocq spec (IprfSpec.v) which uses `ball_count`, but both are
-/// valid as long as forward and inverse use the same encoding. The Rocq spec's
-/// `encode_node` is a parameter that can be instantiated to match this behavior.
-fn encode_node(low: u64, high: u64, n: u64) -> u64 {
+/// The table is derived from the key and is as secret as the key.
+pub struct IprfTable<'a> {
+    iprf: &'a Iprf,
+    /// `starts[y]` is the first ball of bin `y`; `starts[range]` is the domain.
+    starts: Vec<u64>,
+}
+
+impl IprfTable<'_> {
+    /// Returns the same preimages as [`Iprf::inverse`], in the same order.
+    pub fn inverse(&self, y: u64) -> Vec<u64> {
+        if y >= self.iprf.range {
+            return vec![];
+        }
+        let balls: Range<u64> = self.starts[y as usize]..self.starts[y as usize + 1];
+        self.iprf.prp.inverse_range(balls)
+    }
+}
+
+/// Walks the first `levels` levels of the PMNS tree with `n` balls and `m`
+/// bins in breadth-first order.
+///
+/// `split(node, count)` returns the number of balls that go to the left child.
+/// Returns the ball counts of the nodes at depth `levels`, from left to right.
+/// With `levels = log2(m)` these are the bin loads.
+fn pmns_level_counts(
+    n: u64,
+    m: u64,
+    levels: u32,
+    mut split: impl FnMut(PmnsNode, u64) -> u64,
+) -> Vec<u64> {
+    debug_assert!(levels <= m.trailing_zeros());
+
+    let mut counts: Vec<u64> = vec![n];
+    for depth in 0..levels {
+        let bins: u64 = m >> depth;
+        let mut next: Vec<u64> = Vec::with_capacity(counts.len() * 2);
+        for (i, &count) in counts.iter().enumerate() {
+            let low: u64 = i as u64 * bins;
+            let left: u64 = split(pmns_node(low, low + bins - 1), count);
+            next.push(left);
+            next.push(count - left);
+        }
+        counts = next;
+    }
+    counts
+}
+
+/// Prefix sums of the bin loads: entry `y` is the first ball of bin `y`, and
+/// the last entry is the number of balls.
+fn bin_starts(loads: &[u64]) -> Vec<u64> {
+    let mut starts: Vec<u64> = Vec::with_capacity(loads.len() + 1);
+    let mut next_start: u64 = 0;
+    starts.push(next_start);
+    for &load in loads {
+        next_start += load;
+        starts.push(next_start);
+    }
+    starts
+}
+
+/// Returns `(k - x) mod n` for `k < n` and `x < n`.
+///
+/// `k + n - x` overflows for `n` above 2^63; this form does not.
+#[inline]
+fn sub_mod(k: u64, x: u64, n: u64) -> u64 {
+    let wrap: u64 = n & u64::from(k < x).wrapping_neg();
+    k.wrapping_sub(x).wrapping_add(wrap)
+}
+
+/// Checks that a PMNS tree with `m` bins has only splits with probability 1/2
+/// and that its bin indices fit the node encoding.
+fn assert_pmns_range(m: u64) {
+    assert!(
+        m.is_power_of_two() && m <= 1 << 32,
+        "iPRF range must be a power of two of at most 2^32, got {m}"
+    );
+}
+
+/// Derives the PMNS keystream cipher for a tree with `n` balls and `m` bins.
+///
+/// The key depends on `n` and `m`, so two trees with different shapes never
+/// share a keystream, even when they use the same iPRF key.
+fn pmns_cipher(key: &PrfKey128, n: u64, m: u64) -> Aes128 {
     let mut hasher = Sha256::new();
-    hasher.update(low.to_be_bytes());
-    hasher.update(high.to_be_bytes());
+    hasher.update(key);
+    hasher.update(b"pmns");
     hasher.update(n.to_be_bytes());
-    let result = hasher.finalize();
-    u64::from_be_bytes(result[0..8].try_into().unwrap())
+    hasher.update(m.to_be_bytes());
+    let hash = hasher.finalize();
+
+    let mut pmns_key: PrfKey128 = [0u8; 16];
+    pmns_key.copy_from_slice(&hash[0..16]);
+    Aes128::new(&GenericArray::from(pmns_key))
+}
+
+/// Names the PMNS node that covers bins `low..=high`.
+///
+/// Both bounds are below the range, which [`assert_pmns_range`] limits to 2^32.
+fn pmns_node(low: u64, high: u64) -> PmnsNode {
+    debug_assert!(low <= high && high <= u64::from(u32::MAX));
+    PmnsNode {
+        low: low as u32,
+        high: high as u32,
+    }
 }
 
 #[cfg(test)]
@@ -964,7 +857,7 @@ mod tests {
     fn test_iprf_inverse_contains_preimage() {
         let key = [2u8; 16];
         let domain = 1000u64;
-        let range = 100u64;
+        let range = 128u64;
         let iprf = Iprf::new(key, domain, range);
 
         for x in 0..50 {
@@ -1033,14 +926,10 @@ mod tests {
         fn iprf_inverse_contains_preimage_and_is_consistent(
             key in any::<[u8; 16]>(),
             n in 1u64..1_000,
-            m_raw in 1u64..1_000,
+            m_log in 0u32..11,
             x_raw in any::<u64>(),
         ) {
-            let mut m = m_raw;
-            if m > n {
-                m = n;
-            }
-
+            let m = 1u64 << m_log;
             let x = x_raw % n;
 
             let iprf = Iprf::new(key, n, m);
@@ -1067,14 +956,10 @@ mod tests {
         #[test]
         fn iprf_inverse_partitions_domain(
             key in any::<[u8; 16]>(),
-            n_raw in 1u64..64,
-            m_raw in 1u64..64,
+            n in 1u64..64,
+            m_log in 0u32..8,
         ) {
-            let n = n_raw;
-            let mut m = m_raw;
-            if m > n {
-                m = n;
-            }
+            let m = 1u64 << m_log;
 
             let iprf = Iprf::new(key, n, m);
             let mut seen = vec![false; n as usize];
@@ -1094,49 +979,194 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_swap_or_not_tee_matches_standard() {
-        let key = [3u8; 16];
-        let domain = 1000u64;
-        let prp = SwapOrNot::new(key, domain);
-        let prp_tee = SwapOrNotTee::new(key, domain);
+    pub(super) fn pmns_test_key(index: u8) -> PrfKey128 {
+        let mut key: PrfKey128 = [0x5Au8; 16];
+        key[0] = index;
+        key
+    }
 
-        for x in 0..100 {
-            assert_eq!(
-                prp.forward(x),
-                prp_tee.forward(x),
-                "forward mismatch at x={}",
-                x
-            );
-            assert_eq!(
-                prp.inverse(x),
-                prp_tee.inverse(x),
-                "inverse mismatch at x={}",
-                x
+    /// PMNS bin loads must look like 16384 balls thrown into 64 bins.
+    ///
+    /// Pearson's statistic has 63 degrees of freedom: mean 63, standard
+    /// deviation about 11.2.
+    #[test]
+    fn test_pmns_bin_loads_are_multinomial() {
+        let domain: u64 = 16_384;
+        let range: u64 = 64;
+        let expected_load: f64 = domain as f64 / range as f64;
+
+        for index in 0..8u8 {
+            let iprf: Iprf = Iprf::new(pmns_test_key(index), domain, range);
+            let loads: Vec<u64> = (0..range)
+                .map(|y| iprf.trace_ball_inverse(y, domain, range).count() as u64)
+                .collect();
+
+            assert_eq!(loads.iter().sum::<u64>(), domain, "key {index}");
+
+            let chi_square: f64 = loads
+                .iter()
+                .map(|&load| (load as f64 - expected_load).powi(2) / expected_load)
+                .sum();
+            assert!(
+                chi_square < 155.0,
+                "key {index}: chi-square {chi_square} for loads {loads:?}"
             );
         }
     }
 
-    #[test]
-    #[ignore = "slow with 128-bit security; run with --ignored"]
-    fn test_iprf_tee_matches_standard() {
-        let key = [4u8; 16];
-        let domain = 500u64;
-        let range = 50u64;
-        let iprf = Iprf::new(key, domain, range);
-        let iprf_tee = IprfTee::new(key, domain, range);
-
-        for x in 0..100 {
-            let y = iprf.forward(x);
-            let y_tee = iprf_tee.forward(x);
-            assert_eq!(y, y_tee, "forward mismatch at x={}", x);
-        }
-
+    /// Ball range `(start, count)` of each bin, from the per-call tree walk.
+    pub(super) fn walked_ball_ranges(iprf: &Iprf, domain: u64, range: u64) -> Vec<(u64, u64)> {
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        let mut next_start: u64 = 0;
         for y in 0..range {
-            let preimages = iprf.inverse(y);
-            let preimages_tee = iprf_tee.inverse(y);
-            assert_eq!(preimages, preimages_tee, "inverse mismatch at y={}", y);
+            let balls: Vec<u64> = iprf.trace_ball_inverse(y, domain, range).collect();
+            if let Some(&first) = balls.first() {
+                assert_eq!(
+                    first,
+                    next_start,
+                    "bin {y} does not start after bin {}",
+                    y.max(1) - 1
+                );
+            }
+            ranges.push((next_start, balls.len() as u64));
+            next_start += balls.len() as u64;
         }
+        assert_eq!(next_start, domain, "the bins must hold every ball");
+        ranges
+    }
+
+    pub(super) fn table_ball_ranges(starts: &[u64]) -> Vec<(u64, u64)> {
+        starts
+            .windows(2)
+            .map(|pair| (pair[0], pair[1] - pair[0]))
+            .collect()
+    }
+
+    /// The table of all bin boundaries must equal the per-call tree walk.
+    ///
+    /// The domains are not multiples of the keystream block size, and one
+    /// range has a single bin.
+    #[test]
+    fn test_pmns_table_matches_tree_walk() {
+        for (domain, range) in [(100_003u64, 64u64), (5_000, 1_024), (777, 2), (300, 1)] {
+            for index in 0..2u8 {
+                let iprf: Iprf = Iprf::new(pmns_test_key(index), domain, range);
+                let walked: Vec<(u64, u64)> = walked_ball_ranges(&iprf, domain, range);
+                assert_eq!(
+                    table_ball_ranges(&iprf.table().starts),
+                    walked,
+                    "domain {domain}, range {range}, key {index}"
+                );
+            }
+        }
+    }
+
+    /// Cached top levels must not change the tree, for every number of levels
+    /// from none to more than the tree depth.
+    #[test]
+    fn test_pmns_cached_levels_match_uncached_tree() {
+        let domain: u64 = 100_003;
+        let range: u64 = 64;
+        let key: PrfKey128 = pmns_test_key(3);
+
+        let plain: Iprf = Iprf::new(key, domain, range);
+        let walked: Vec<(u64, u64)> = walked_ball_ranges(&plain, domain, range);
+        let ball_indices = || (0..domain).step_by(97).chain([domain - 1]);
+        let bins: Vec<u64> = ball_indices()
+            .map(|ball| plain.trace_ball(ball, domain, range))
+            .collect();
+        assert!(
+            bins.iter().any(|&bin| bin != bins[0]),
+            "balls must reach several bins"
+        );
+
+        for levels in [1u32, 2, 3, 5, 6, 9] {
+            let cached: Iprf = Iprf::with_cached_levels(key, domain, range, levels);
+            assert_eq!(cached.cached_levels, levels.min(6));
+            assert_eq!(
+                walked_ball_ranges(&cached, domain, range),
+                walked,
+                "levels {levels}"
+            );
+            let cached_bins: Vec<u64> = ball_indices()
+                .map(|ball| cached.trace_ball(ball, domain, range))
+                .collect();
+            assert_eq!(cached_bins, bins, "levels {levels}");
+            assert_eq!(
+                cached.top_left_counts().len(),
+                (1usize << levels.min(6)) - 1,
+                "levels {levels}"
+            );
+        }
+    }
+
+    /// A domain above `u32::MAX` disables the cache instead of truncating counts.
+    #[test]
+    fn test_pmns_cache_is_off_for_a_domain_above_u32() {
+        let iprf: Iprf = Iprf::with_cached_levels(pmns_test_key(0), 1 << 33, 4, 2);
+        assert_eq!(iprf.cached_levels, 0);
+        assert!(iprf.top_left_counts().is_empty());
+    }
+
+    /// `forward` and `inverse` with the cache and with the table must equal
+    /// the plain instance, PRP included.
+    #[test]
+    fn test_iprf_table_and_cache_match_plain_iprf() {
+        let key: PrfKey128 = pmns_test_key(5);
+        let domain: u64 = 700;
+        let range: u64 = 16;
+
+        let plain: Iprf = Iprf::new(key, domain, range);
+        let cached: Iprf = Iprf::with_cached_levels(key, domain, range, 3);
+        let table: IprfTable<'_> = plain.table();
+
+        let mut seen: u64 = 0;
+        for y in 0..range {
+            let expected: Vec<u64> = plain.inverse(y);
+            assert_eq!(table.inverse(y), expected, "table, y={y}");
+            assert_eq!(cached.inverse(y), expected, "cache, y={y}");
+            seen += expected.len() as u64;
+        }
+        assert_eq!(seen, domain);
+        assert!(table.inverse(range).is_empty());
+
+        for x in (0..domain).step_by(7) {
+            assert_eq!(cached.forward(x), plain.forward(x), "x={x}");
+        }
+    }
+
+    /// Two trees with the same key and different shapes must not share coins.
+    #[test]
+    fn test_pmns_keystream_depends_on_tree_shape() {
+        let key: PrfKey128 = pmns_test_key(0);
+        let range: u64 = 64;
+        let loads = |domain: u64| -> Vec<u64> {
+            let iprf: Iprf = Iprf::new(key, domain, range);
+            (0..range)
+                .map(|y| iprf.trace_ball_inverse(y, domain, range).count() as u64)
+                .collect()
+        };
+
+        let small: Vec<u64> = loads(16_384);
+        let large: Vec<u64> = loads(16_385);
+        let equal_bins: usize = small.iter().zip(&large).filter(|(a, b)| a == b).count();
+        assert!(
+            equal_bins < 16,
+            "{equal_bins} of 64 bins have equal loads for domains 16384 and 16385"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the domain")]
+    fn test_iprf_forward_rejects_input_outside_the_domain() {
+        let iprf = Iprf::new([7u8; 16], 100, 16);
+        let _ = iprf.forward(100);
+    }
+
+    #[test]
+    #[should_panic(expected = "iPRF range must be a power of two")]
+    fn test_iprf_rejects_range_that_is_not_a_power_of_two() {
+        let _ = Iprf::new([0u8; 16], 1000, 100);
     }
 
     #[test]
@@ -1170,48 +1200,108 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "slow with 128-bit security; run with --ignored"]
-    fn test_swap_or_not_sr_tee_matches_standard() {
-        let key = [7u8; 16];
-        let domain = 64u64;
-        let prp = SwapOrNotSr::new(key, domain);
-        let prp_tee = SwapOrNotSrTee::new(key, domain);
-
-        for x in 0..domain {
-            assert_eq!(
-                prp.forward(x),
-                prp_tee.forward(x),
-                "SR TEE forward mismatch at x={}",
-                x
-            );
+    /// Ranges of at most `width` values around the stage boundaries of `domain`.
+    pub(super) fn boundary_ranges(domain: u64, width: u64) -> Vec<Range<u64>> {
+        let mut ranges: Vec<Range<u64>> =
+            vec![0..width.min(domain), domain.saturating_sub(width)..domain];
+        let mut size: u64 = domain / 2;
+        for _ in 0..3 {
+            let low: u64 = size.saturating_sub(width / 2);
+            ranges.push(low..(low + width).min(domain));
+            size /= 2;
         }
+        ranges
+    }
 
-        for y in 0..domain {
-            assert_eq!(
-                prp.inverse(y),
-                prp_tee.inverse(y),
-                "SR TEE inverse mismatch at y={}",
-                y
-            );
+    /// `inverse_range` must equal `inverse` for every range of a small domain,
+    /// including the domains with one and two values.
+    #[test]
+    fn test_sr_inverse_range_matches_inverse_on_small_domains() {
+        for domain in 1..=33u64 {
+            let prp: SwapOrNotSr = SwapOrNotSr::with_security([domain as u8; 16], domain, 16);
+            let single: Vec<u64> = (0..domain).map(|y| prp.inverse(y)).collect();
+            for start in 0..=domain {
+                for end in start..=domain {
+                    assert_eq!(
+                        prp.inverse_range(start..end),
+                        single[start as usize..end as usize],
+                        "domain {domain}, range {start}..{end}"
+                    );
+                }
+            }
         }
     }
 
+    /// Full round counts, domains above 65536: a range that crosses a stage
+    /// boundary holds values with different stage counts.
     #[test]
-    #[ignore = "slow with 128-bit security; run with --ignored"]
-    fn test_swap_or_not_sr_tee_inverse_roundtrip() {
-        let key = [8u8; 16];
-        let domain = 100u64;
-        let prp_tee = SwapOrNotSrTee::new(key, domain);
+    fn test_sr_inverse_range_matches_inverse_at_stage_boundaries() {
+        for domain in [100_003u64, 131_072] {
+            let prp: SwapOrNotSr = SwapOrNotSr::new([0x5a; 16], domain);
+            for balls in boundary_ranges(domain, 40) {
+                let single: Vec<u64> = balls.clone().map(|y| prp.inverse(y)).collect();
+                assert_eq!(
+                    prp.inverse_range(balls.clone()),
+                    single,
+                    "domain {domain}, range {balls:?}"
+                );
+                for (&x, y) in single.iter().zip(balls) {
+                    assert_eq!(prp.forward(x), y, "domain {domain}");
+                }
+            }
+        }
+    }
 
-        for x in 0..domain {
-            let y = prp_tee.forward(x);
-            let x_recovered = prp_tee.inverse(y);
-            assert_eq!(
-                x, x_recovered,
-                "SR TEE inverse roundtrip failed for x={}",
-                x
-            );
+    /// A stage above 2^63: `k_i + n` does not fit in 64 bits there.
+    #[test]
+    fn test_prp_partner_does_not_overflow_on_the_largest_domain() {
+        let prp: SwapOrNotSr = SwapOrNotSr::with_security([3u8; 16], u64::MAX, 16);
+        for y in [0, 1, u64::MAX / 2, u64::MAX - 1] {
+            let batch: u64 = prp.inverse_range(y..y + 1)[0];
+            assert_eq!(prp.inverse(y), batch, "y={y}");
+            assert_eq!(prp.forward(batch), y, "y={y}");
+        }
+
+        let one_level: SwapOrNot = SwapOrNot::new([3u8; 16], u64::MAX);
+        for x in [0, 1, u64::MAX / 2, u64::MAX - 1] {
+            let y: u64 = one_level.forward(x);
+            assert!(y < u64::MAX, "x={x}");
+            assert_eq!(one_level.inverse(y), x, "x={x}");
+        }
+
+        assert_eq!(sub_mod(0, u64::MAX - 1, u64::MAX), 1);
+        assert_eq!(sub_mod(u64::MAX - 1, 0, u64::MAX), u64::MAX - 1);
+        assert_eq!(sub_mod(5, 7, 10), 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "balls must be < domain")]
+    fn test_sr_inverse_range_rejects_a_ball_outside_the_domain() {
+        let prp: SwapOrNotSr = SwapOrNotSr::with_security([1u8; 16], 100, 16);
+        prp.inverse_range(90..101);
+    }
+
+    /// The batched iPRF inverses must return the single-value PRP inverse of
+    /// each ball of the bin, in ball order, on a domain above 65536.
+    #[test]
+    fn test_iprf_inverse_matches_single_value_prp() {
+        let key: PrfKey128 = pmns_test_key(7);
+        let domain: u64 = 100_003;
+        let range: u64 = 512;
+
+        let iprf: Iprf = Iprf::new(key, domain, range);
+        let table: IprfTable<'_> = iprf.table();
+
+        for y in [0u64, 255, 511] {
+            let balls: Range<u64> = iprf.trace_ball_inverse(y, domain, range);
+            let expected: Vec<u64> = balls.map(|z| iprf.prp.inverse(z)).collect();
+            assert!(expected.len() > 100, "y={y}");
+
+            assert_eq!(iprf.inverse(y), expected, "Iprf::inverse, y={y}");
+            assert_eq!(table.inverse(y), expected, "IprfTable::inverse, y={y}");
+            for &x in expected.iter().step_by(37) {
+                assert_eq!(iprf.forward(x), y);
+            }
         }
     }
 
@@ -1308,31 +1398,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sr_tee_with_low_security() {
-        let key = [10u8; 16];
-        let domain = 32u64;
-
-        let prp = SwapOrNotSr::with_security(key, domain, 32);
-        let prp_tee = SwapOrNotSrTee::with_security(key, domain, 32);
-
-        for x in 0..domain {
-            assert_eq!(
-                prp.forward(x),
-                prp_tee.forward(x),
-                "SR/TEE forward mismatch at x={}",
-                x
-            );
-            let y = prp.forward(x);
-            assert_eq!(
-                prp.inverse(y),
-                prp_tee.inverse(y),
-                "SR/TEE inverse mismatch at y={}",
-                y
-            );
-        }
-    }
-
-    #[test]
     fn test_sr_is_permutation_low_security() {
         let key = [11u8; 16];
         let domain = 64u64;
@@ -1346,5 +1411,100 @@ mod tests {
             domain as usize,
             "SR PRP is not a permutation"
         );
+    }
+
+    /// `reduce_below(r, n)` must be `floor(r * n / 2^128)`.
+    #[test]
+    fn test_reduce_below_is_the_scaled_floor() {
+        // For a power of two the result is the top bits of `r`.
+        let values: [u128; 5] = [
+            0,
+            1,
+            u128::MAX,
+            0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210,
+            (1u128 << 127) + 5,
+        ];
+        for bits in [1u32, 7, 32, 63] {
+            for r in values {
+                assert_eq!(
+                    u128::from(reduce_below(r, 1u64 << bits)),
+                    r >> (128 - bits),
+                    "bits {bits}, r {r:#x}"
+                );
+            }
+        }
+
+        // For r = q * 2^64 the result is floor(q * n / 2^64), one 128-bit product.
+        for n in [1u64, 3, 10, 1000, 100_003, u64::MAX] {
+            for q in [0u64, 1, 12_345, u64::MAX / 3, u64::MAX] {
+                let expected: u64 = ((u128::from(q) * u128::from(n)) >> 64) as u64;
+                assert_eq!(
+                    reduce_below(u128::from(q) << 64, n),
+                    expected,
+                    "n {n}, q {q}"
+                );
+            }
+            assert_eq!(reduce_below(0, n), 0);
+            assert_eq!(reduce_below(u128::MAX, n), n - 1);
+        }
+
+        // The low half of `r` counts. For n = 3 the results change above
+        // (2^128 - 1) / 3 and above two times that value.
+        let third: u128 = u128::MAX / 3;
+        assert_eq!(reduce_below(third, 3), 0);
+        assert_eq!(reduce_below(third + 1, 3), 1);
+        assert_eq!(reduce_below(2 * third, 3), 1);
+        assert_eq!(reduce_below(2 * third + 1, 3), 2);
+    }
+
+    #[test]
+    fn test_sr_round_key_is_below_the_stage_size() {
+        let cipher = Aes128::new(&GenericArray::from([0x21u8; 16]));
+        for n in [2u64, 3, 5, 1000, 65_536, 100_003, u64::MAX] {
+            for round in 0..200 {
+                let key: u64 = sr_round_key(&cipher, 3, round, n);
+                assert!(key < n, "n {n}, round {round}");
+                if n == 2 {
+                    assert_eq!(key, 1, "the stage of size 2 has the fixed key 1");
+                }
+            }
+        }
+
+        // 600 keys of a stage of size 3: mean 200 for each value, sd 11.5.
+        let mut counts: [u32; 3] = [0; 3];
+        for round in 0..600 {
+            counts[sr_round_key(&cipher, 1, round, 3) as usize] += 1;
+        }
+        assert!(
+            counts.iter().all(|&count| (130..=270).contains(&count)),
+            "{counts:?}"
+        );
+        // The key depends on the level and on the stage size.
+        assert_ne!(
+            (0..8)
+                .map(|round| sr_round_key(&cipher, 1, round, 1000))
+                .collect::<Vec<u64>>(),
+            (0..8)
+                .map(|round| sr_round_key(&cipher, 2, round, 1000))
+                .collect::<Vec<u64>>()
+        );
+    }
+
+    /// The stage of size 2 must swap its values with probability 1/2. With a
+    /// random round key it was 1/4: 4000 keys give a mean of 2000 with a
+    /// standard deviation of 32, where the old code gave about 1000.
+    #[test]
+    fn test_sr_stage_of_size_2_is_uniform() {
+        let mut swaps: u32 = 0;
+        for index in 0..4000u32 {
+            let mut key: PrfKey128 = [0x6Bu8; 16];
+            key[0..4].copy_from_slice(&index.to_be_bytes());
+            let prp: SwapOrNotSr = SwapOrNotSr::new(key, 2);
+            let image: u64 = prp.forward(0);
+            assert_eq!(prp.forward(1), 1 - image);
+            assert_eq!(prp.inverse(image), 0);
+            swaps += image as u32;
+        }
+        assert!((1800..=2200).contains(&swaps), "swaps: {swaps}");
     }
 }

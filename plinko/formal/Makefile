@@ -26,7 +26,7 @@ COQFLAGS_LINKING := -R $(ROCQOFRUST_PATH) RocqOfRust -Q specs Plinko.Specs -Q si
 COQFLAGS_TRANS := -R $(ROCQOFRUST_PATH) RocqOfRust -Q src src
 
 # Source files
-SPEC_FILES := specs/CommonTypes.v specs/DbSpec.v specs/BinomialSpec.v specs/TrueBinomialSpec.v specs/SwapOrNotSpec.v specs/SwapOrNotSrSpec.v specs/IprfSpec.v
+SPEC_FILES := specs/CommonTypes.v specs/DbSpec.v specs/BinomialSpec.v specs/SwapOrNotSpec.v specs/SwapOrNotSrSpec.v specs/IprfSpec.v
 SIM_FILES := $(wildcard sims/*.v)
 PROOF_FILES := $(wildcard proofs/*.v)
 TRANS_FILES := $(wildcard src/*.v)
@@ -37,7 +37,7 @@ ALL_VO := $(ALL_V:.v=.vo)
 TRANS_VO := $(TRANS_FILES:.v=.vo)
 LINKING_VO := $(LINKING_FILES:.v=.vo)
 
-.PHONY: all clean specs sims proofs linking translate check-deps help ci ci-quick ci-full audit check-admits admit-count verify-axioms
+.PHONY: all clean specs sims proofs linking translate check-deps help ci ci-quick ci-full audit check-admits admit-count verify-axioms trust-base sketch
 
 all: specs sims proofs
 
@@ -93,8 +93,6 @@ linking/%.vo: linking/%.v
 
 # Explicit dependencies for specs
 specs/DbSpec.vo: specs/CommonTypes.vo
-specs/BinomialSpec.vo: specs/CommonTypes.vo
-specs/TrueBinomialSpec.vo: specs/CommonTypes.vo
 specs/SwapOrNotSpec.vo: specs/CommonTypes.vo
 specs/IprfSpec.vo: specs/CommonTypes.vo specs/BinomialSpec.vo
 
@@ -104,6 +102,7 @@ proofs/SwapOrNotProofs.vo: specs/SwapOrNotSpec.vo
 proofs/IprfProofs.vo: specs/IprfSpec.vo specs/SwapOrNotSpec.vo specs/BinomialSpec.vo
 proofs/PrpBridge.vo: proofs/SwapOrNotProofs.vo specs/SwapOrNotSpec.vo
 proofs/IprfConcrete.vo: proofs/PrpBridge.vo proofs/IprfProofs.vo specs/IprfSpec.vo
+proofs/Assumptions.vo: specs/SwapOrNotSrSpec.vo specs/IprfSpec.vo proofs/SwapOrNotProofs.vo proofs/IprfProofs.vo sims/HintInitSim.vo sims/SwapOrNotSim.vo
 
 # Explicit dependencies for sims
 sims/SimTypes.vo: specs/CommonTypes.vo
@@ -156,7 +155,7 @@ ci: ci-full
 ci-quick: clean all
 	@echo "Quick CI build complete (specs + sims + proofs)!"
 
-# Full CI for main branch (includes linking)
+# Build with the linking files (needs RocqOfRust; the files hold placeholders, no Rust code)
 ci-full: clean all linking
 	@echo "Full CI build complete (including linking)!"
 
@@ -194,26 +193,22 @@ check-admits:
 admit-count:
 	@grep -RnhE '^[[:space:]]*Admitted\.' specs/ sims/ proofs/ linking/ 2>/dev/null | wc -l | tr -d ' '
 
-# Verify no unexpected axioms/parameters
-AXIOM_ALLOWLIST ?= axioms_allowlist.txt
+# Write docs/TRUST_BASE.md from the .v files and docs/trust_base_notes.toml
+PYTHON ?= python3
+trust-base:
+	$(PYTHON) scripts/trust_base.py
+
+# Fail when an Axiom, Parameter or Admitted has no note in
+# docs/trust_base_notes.toml, or when docs/TRUST_BASE.md is out of date
 verify-axioms:
-	@echo "Verifying axioms/parameters..."
-	@AXIOMS=$$(grep -RnhE '^(Axiom|Parameter)' specs/ sims/ proofs/ linking/ 2>/dev/null || true); \
-	if [ -z "$$AXIOMS" ]; then \
-		echo "OK: no axioms/parameters found."; \
-	else \
-		if [ -f "$(AXIOM_ALLOWLIST)" ]; then \
-			BAD=$$(echo "$$AXIOMS" | grep -v -F -f "$(AXIOM_ALLOWLIST)" || true); \
-		else \
-			BAD="$$AXIOMS"; \
-		fi; \
-		if [ -n "$$BAD" ]; then \
-			echo "WARNING: non-allowlisted axioms/parameters:"; \
-			echo "$$BAD"; \
-		else \
-			echo "OK: all axioms/parameters are allowlisted."; \
-		fi; \
-	fi
+	$(PYTHON) scripts/trust_base.py --check
+
+# Compile the sketch docs/Plinko.v in a scratch directory
+SKETCH_DIR ?= $(ARTIFACTS_DIR)/sketch
+sketch:
+	@mkdir -p $(SKETCH_DIR)
+	cp ../../docs/Plinko.v $(SKETCH_DIR)/Plinko.v
+	cd $(SKETCH_DIR) && $(COQC) Plinko.v
 
 # Help
 help:
@@ -235,7 +230,9 @@ help:
 	@echo "  audit         - List axioms, parameters, and admits"
 	@echo "  check-admits  - Fail if admits exceed threshold"
 	@echo "  admit-count   - Print admit count (for CI summary)"
-	@echo "  verify-axioms - Check for unexpected axioms/parameters"
+	@echo "  verify-axioms - Fail if docs/TRUST_BASE.md does not list every axiom, parameter and admit"
+	@echo "  trust-base    - Write docs/TRUST_BASE.md"
+	@echo "  sketch        - Compile the sketch docs/Plinko.v"
 	@echo "  help          - Show this message"
 	@echo ""
 	@echo "Prerequisites:"

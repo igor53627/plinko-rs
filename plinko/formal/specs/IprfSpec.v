@@ -23,11 +23,24 @@ Open Scope Z_scope.
 
 Section IprfParams.
 
-(** PRF for node evaluation in PMNS tree *)
-Parameter prf_eval : Z -> Z.
+(** Coin [i] of the PMNS node that covers bins [low .. high].
+    In the Rust code this is bit [i] of the AES-128 counter-mode keystream of
+    the node (plinko/src/binomial.rs). Here it is an arbitrary function. *)
+Parameter node_coin : Z -> Z -> nat -> bool.
 
-(** Node ID encoding: (low, high, n) -> node_id *)
-Parameter encode_node : Z -> Z -> Z -> Z.
+(** Balls of a node that go to its left child: the number of set coins among
+    the first [ball_count] coins of the node ([coin_binomial] in Rust). *)
+Definition left_count_spec (low high ball_count : Z) : Z :=
+  coin_sample_spec (node_coin low high) ball_count.
+
+Lemma left_count_range : forall low high ball_count,
+  0 <= ball_count ->
+  0 <= left_count_spec low high ball_count <= ball_count.
+Proof.
+  intros low high ball_count Hcount.
+  unfold left_count_spec.
+  apply coin_sample_range; assumption.
+Qed.
 
 (** PRP forward permutation - instantiated via SwapOrNot SR *)
 Definition prp_forward (n x : Z) : Z := sr_forward n x.
@@ -89,11 +102,7 @@ Definition trace_ball_step (st : trace_state) : trace_state :=
   let ball_count := ts_ball_count st in
   let ball_index := ts_ball_index st in
   let mid := (low + high) / 2 in
-  let left_bins := mid - low + 1 in
-  let total_bins := high - low + 1 in
-  let node_id := encode_node low high ball_count in
-  let prf_output := prf_eval node_id in
-  let left_count := binomial_sample_spec ball_count left_bins total_bins prf_output in
+  let left_count := left_count_spec low high ball_count in
   if ball_index <? left_count then
     mkTraceState low mid left_count ball_index
   else
@@ -136,11 +145,7 @@ Definition trace_ball_inverse_step (y : Z) (st : trace_inv_state) : trace_inv_st
   let ball_count := tis_ball_count st in
   let ball_start := tis_ball_start st in
   let mid := (low + high) / 2 in
-  let left_bins := mid - low + 1 in
-  let total_bins := high - low + 1 in
-  let node_id := encode_node low high ball_count in
-  let prf_output := prf_eval node_id in
-  let left_count := binomial_sample_spec ball_count left_bins total_bins prf_output in
+  let left_count := left_count_spec low high ball_count in
   if y <=? mid then
     mkTraceInvState low mid left_count ball_start
   else
@@ -248,20 +253,13 @@ Proof.
   set (ball_count := ts_ball_count st).
   set (ball_index := ts_ball_index st).
   set (mid := (low + high) / 2).
-  set (left_bins := mid - low + 1).
-  set (total_bins := high - low + 1).
-  set (node_id := encode_node low high ball_count).
-  set (prf_output := prf_eval node_id).
-  set (left_count := binomial_sample_spec ball_count left_bins total_bins prf_output).
+  set (left_count := left_count_spec low high ball_count).
   assert (Hmid_range : low <= mid < high).
   { split.
     - apply Z.div_le_lower_bound; lia.
     - apply Z.div_lt_upper_bound; lia. }
-  assert (Hleft_bins_pos : 0 < left_bins) by (unfold left_bins; lia).
-  assert (Htotal_bins_pos : 0 < total_bins) by (unfold total_bins; lia).
-  assert (Hleft_lt_total : left_bins < total_bins) by (unfold left_bins, total_bins; lia).
   assert (Hleft_count_range : 0 <= left_count <= ball_count).
-  { apply binomial_sample_range; lia. }
+  { apply left_count_range; lia. }
   destruct Hleft_count_range as [Hlc_lo Hlc_hi].
   pose proof (left_branch_shrinks low high Hrange) as Hleft_shrink.
   pose proof (right_branch_shrinks low high Hrange) as Hright_shrink.
@@ -365,22 +363,11 @@ Qed.
 
 (** ** Lemmas for trace_ball_inverse *)
 
-Lemma binomial_sample_range_aux :
-  forall count num denom prf_output,
-    0 <= count ->
-    0 <= num ->
-    num < denom ->
-    0 < denom ->
-    0 <= binomial_sample_spec count num denom prf_output <= count.
-Proof.
-  intros count num denom prf_output Hcount Hnum Hnum_lt Hdenom.
-  apply binomial_sample_range_full; assumption.
-Qed.
 
 
 
 (** Invariant for trace_ball_inverse_fuel: the (start, count) returned satisfy bounds.
-    Note: relies on binomial_sample_range_aux for count >= 0. *)
+    Note: relies on left_count_range for count >= 0. *)
 Lemma trace_ball_inverse_fuel_bounds : forall fuel y st n,
   0 <= tis_ball_start st ->
   0 <= tis_ball_count st ->
@@ -399,20 +386,13 @@ Proof.
       set (ball_count := tis_ball_count st).
       set (ball_start := tis_ball_start st).
       set (mid := (low + high) / 2).
-      set (left_bins := mid - low + 1).
-      set (total_bins := high - low + 1).
-      set (node_id := encode_node low high ball_count).
-      set (prf_output := prf_eval node_id).
-      set (left_count := binomial_sample_spec ball_count left_bins total_bins prf_output).
+      set (left_count := left_count_spec low high ball_count).
       assert (Hmid_range : low <= mid < high).
       { split.
         - apply Z.div_le_lower_bound; lia.
         - apply Z.div_lt_upper_bound; lia. }
-      assert (Hleft_bins_pos : 0 < left_bins) by (unfold left_bins; lia).
-      assert (Htotal_bins_pos : 0 < total_bins) by (unfold total_bins; lia).
-      assert (Hleft_lt_total : left_bins < total_bins) by (unfold left_bins, total_bins; lia).
       assert (Hleft_count_range : 0 <= left_count <= ball_count).
-      { unfold left_count. apply binomial_sample_range_aux; unfold ball_count; lia. }
+      { unfold left_count. apply left_count_range; unfold ball_count; lia. }
       destruct (y <=? mid) eqn:Hbranch.
       * simpl. apply IH; simpl; lia.
       * simpl. apply IH; simpl; lia.
@@ -435,28 +415,21 @@ Proof.
       set (ball_count := tis_ball_count st).
       set (ball_start := tis_ball_start st).
       set (mid := (low + high) / 2).
-      set (left_bins := mid - low + 1).
-      set (total_bins := high - low + 1).
-      set (node_id := encode_node low high ball_count).
-      set (prf_output := prf_eval node_id).
-      set (left_count := binomial_sample_spec ball_count left_bins total_bins prf_output).
+      set (left_count := left_count_spec low high ball_count).
       assert (Hmid_range : low <= mid < high).
       { subst mid low high. split.
         - apply Z.div_le_lower_bound; lia.
         - apply Z.div_lt_upper_bound; lia. }
-      assert (Hleft_bins_pos : 0 < left_bins) by (subst left_bins mid low high; lia).
-      assert (Htotal_bins_pos : 0 < total_bins) by (subst total_bins low high; lia).
-      assert (Hleft_lt_total : left_bins < total_bins) by (subst left_bins total_bins mid low high; lia).
       assert (Hlc_range : 0 <= left_count <= ball_count).
-      { subst left_count ball_count. apply binomial_sample_range_aux; lia. }
+      { subst left_count ball_count. apply left_count_range; lia. }
       set (st' := trace_ball_inverse_step y st).
       assert (Hstart' : ball_start <= tis_ball_start st').
       { unfold st', trace_ball_inverse_step.
-        fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+        fold low high ball_count ball_start mid left_count.
         destruct (y <=? mid); simpl; lia. }
       assert (Hcount' : 0 <= tis_ball_count st').
       { unfold st', trace_ball_inverse_step.
-        fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+        fold low high ball_count ball_start mid left_count.
         destruct (y <=? mid); simpl; lia. }
       specialize (IH y st' Hcount').
       destruct (trace_ball_inverse_fuel fuel' y st') as [start count].
@@ -524,20 +497,13 @@ Proof.
       set (ball_index := ts_ball_index st).
       set (ball_start := tis_ball_start ist).
       set (mid := (low + high) / 2).
-      set (left_bins := mid - low + 1).
-      set (total_bins := high - low + 1).
-      set (node_id := encode_node low high ball_count).
-      set (prf_output := prf_eval node_id).
-      set (left_count := binomial_sample_spec ball_count left_bins total_bins prf_output).
+      set (left_count := left_count_spec low high ball_count).
       assert (Hmid_range : low <= mid < high).
       { subst mid low high. split.
         - apply Z.div_le_lower_bound; lia.
         - apply Z.div_lt_upper_bound; lia. }
-      assert (Hleft_bins_pos : 0 < left_bins) by (subst left_bins mid low high; lia).
-      assert (Htotal_bins_pos : 0 < total_bins) by (subst total_bins low high; lia).
-      assert (Hleft_lt_total : left_bins < total_bins) by (subst left_bins total_bins mid low high; lia).
       assert (Hlc_range : 0 <= left_count <= ball_count).
-      { subst left_count ball_count. apply binomial_sample_range_aux; lia. }
+      { subst left_count ball_count. apply left_count_range; lia. }
       destruct Hlc_range as [Hlc_lo Hlc_hi].
       assert (Htis_low_eq : tis_low ist = low).
       { subst low. exact (eq_sym Hlow). }
@@ -550,7 +516,7 @@ Proof.
       { intros y0 Hy0.
         unfold trace_ball_inverse_step.
         rewrite Htis_low_eq, Htis_high_eq, Htis_ball_count_eq.
-        subst mid left_bins total_bins node_id prf_output left_count ball_start.
+        subst mid left_count ball_start.
         destruct (y0 <=? _) eqn:Htest.
         - reflexivity.
         - apply Z.leb_gt in Htest. lia. }
@@ -560,7 +526,7 @@ Proof.
       { intros y0 Hy0.
         unfold trace_ball_inverse_step.
         rewrite Htis_low_eq, Htis_high_eq, Htis_ball_count_eq.
-        subst mid left_bins total_bins node_id prf_output left_count ball_start ball_count.
+        subst mid left_count ball_start ball_count.
         destruct (y0 <=? _) eqn:Htest.
         - apply Z.leb_le in Htest. lia.
         - reflexivity. }
@@ -576,14 +542,13 @@ Proof.
         assert (Hy_le_mid : trace_ball_fuel fuel st' <= mid).
         { subst st'. simpl in Hy_bounds. lia. }
         assert (Hst'_eq : trace_ball_step st = st').
-        { unfold trace_ball_step. subst st' low high ball_count ball_index mid 
-            left_bins total_bins node_id prf_output left_count.
+        { unfold trace_ball_step. subst st' low high ball_count ball_index mid left_count.
           rewrite Hbranch_fwd. reflexivity. }
         assert (Hist'_eq : trace_ball_inverse_step (trace_ball_fuel fuel st') ist = ist').
         { subst ist'. apply Hinv_step_left. exact Hy_le_mid. }
         rewrite Hst'_eq, Hist'_eq.
         apply IH; subst st' ist' low high ball_count ball_index ball_start 
-            mid left_bins total_bins node_id prf_output left_count; simpl; 
+            mid left_count; simpl; 
           [reflexivity | reflexivity | reflexivity | exact Hidx | | lia]; lia.
       * set (st' := mkTraceState (mid + 1) high (ball_count - left_count) (ball_index - left_count)).
         set (ist' := mkTraceInvState (mid + 1) high (ball_count - left_count) (ball_start + left_count)).
@@ -596,14 +561,13 @@ Proof.
         assert (Hy_gt_mid : mid < trace_ball_fuel fuel st').
         { subst st'. simpl in Hy_bounds. lia. }
         assert (Hst'_eq : trace_ball_step st = st').
-        { unfold trace_ball_step. subst st' low high ball_count ball_index mid
-            left_bins total_bins node_id prf_output left_count.
+        { unfold trace_ball_step. subst st' low high ball_count ball_index mid left_count.
           rewrite Hbranch_fwd. reflexivity. }
         assert (Hist'_eq : trace_ball_inverse_step (trace_ball_fuel fuel st') ist = ist').
         { subst ist'. apply Hinv_step_right. lia. }
         rewrite Hst'_eq, Hist'_eq.
         apply IH; subst st' ist' low high ball_count ball_index ball_start 
-            mid left_bins total_bins node_id prf_output left_count; simpl; 
+            mid left_count; simpl; 
           try reflexivity; try lia.
     + apply Z.ltb_ge in Hlt.
       assert (Hlt_inv : (tis_low ist <? tis_high ist) = false).
@@ -666,20 +630,13 @@ Proof.
       set (ball_count := tis_ball_count ist).
       set (ball_start := tis_ball_start ist).
       set (mid := (low + high) / 2).
-      set (left_bins := mid - low + 1).
-      set (total_bins := high - low + 1).
-      set (node_id := encode_node low high ball_count).
-      set (prf_output := prf_eval node_id).
-      set (left_count := binomial_sample_spec ball_count left_bins total_bins prf_output).
+      set (left_count := left_count_spec low high ball_count).
       assert (Hmid_range : low <= mid < high).
       { subst mid low high. split.
         - apply Z.div_le_lower_bound; lia.
         - apply Z.div_lt_upper_bound; lia. }
-      assert (Hleft_bins_pos : 0 < left_bins) by (subst left_bins mid low high; lia).
-      assert (Htotal_bins_pos : 0 < total_bins) by (subst total_bins low high; lia).
-      assert (Hleft_lt_total : left_bins < total_bins) by (subst left_bins total_bins mid low high; lia).
       assert (Hlc_range : 0 <= left_count <= ball_count).
-      { subst left_count ball_count. apply binomial_sample_range_aux; lia. }
+      { subst left_count ball_count. apply left_count_range; lia. }
       destruct Hlc_range as [Hlc_lo Hlc_hi].
       destruct (y1 <=? mid) eqn:Hy1_branch; destruct (y2 <=? mid) eqn:Hy2_branch.
       * apply Z.leb_le in Hy1_branch.
@@ -687,11 +644,11 @@ Proof.
         set (ist' := mkTraceInvState low mid left_count ball_start).
         assert (Hist1 : trace_ball_inverse_step y1 ist = ist').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y1 <=? mid) eqn:Htest; [reflexivity | apply Z.leb_gt in Htest; lia]. }
         assert (Hist2 : trace_ball_inverse_step y2 ist = ist').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y2 <=? mid) eqn:Htest; [reflexivity | apply Z.leb_gt in Htest; lia]. }
         rewrite Hist1, Hist2.
         destruct (low <? mid) eqn:Hlt'.
@@ -708,11 +665,11 @@ Proof.
         set (ist2' := mkTraceInvState (mid + 1) high (ball_count - left_count) (ball_start + left_count)).
         assert (Hist1 : trace_ball_inverse_step y1 ist = ist1').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y1 <=? mid) eqn:Htest; [reflexivity | apply Z.leb_gt in Htest; lia]. }
         assert (Hist2 : trace_ball_inverse_step y2 ist = ist2').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y2 <=? mid) eqn:Htest; [apply Z.leb_le in Htest; lia | reflexivity]. }
         rewrite Hist1, Hist2.
         destruct (trace_ball_inverse_fuel fuel' y1 ist1') as [s1 c1] eqn:Hres1.
@@ -730,11 +687,11 @@ Proof.
         set (ist2' := mkTraceInvState low mid left_count ball_start).
         assert (Hist1 : trace_ball_inverse_step y1 ist = ist1').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y1 <=? mid) eqn:Htest; [apply Z.leb_le in Htest; lia | reflexivity]. }
         assert (Hist2 : trace_ball_inverse_step y2 ist = ist2').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y2 <=? mid) eqn:Htest; [reflexivity | apply Z.leb_gt in Htest; lia]. }
         rewrite Hist1, Hist2.
         destruct (trace_ball_inverse_fuel fuel' y1 ist1') as [s1 c1] eqn:Hres1.
@@ -751,11 +708,11 @@ Proof.
         set (ist' := mkTraceInvState (mid + 1) high (ball_count - left_count) (ball_start + left_count)).
         assert (Hist1 : trace_ball_inverse_step y1 ist = ist').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y1 <=? mid) eqn:Htest; [apply Z.leb_le in Htest; lia | reflexivity]. }
         assert (Hist2 : trace_ball_inverse_step y2 ist = ist').
         { unfold trace_ball_inverse_step.
-          fold low high ball_count ball_start mid left_bins total_bins node_id prf_output left_count.
+          fold low high ball_count ball_start mid left_count.
           destruct (y2 <=? mid) eqn:Htest; [apply Z.leb_le in Htest; lia | reflexivity]. }
         rewrite Hist1, Hist2.
         destruct (mid + 1 <? high) eqn:Hlt'.
@@ -798,18 +755,11 @@ Proof.
       set (ball_index := ts_ball_index st).
       set (ball_start := tis_ball_start ist).
       set (mid := (low + high) / 2).
-      set (left_bins := mid - low + 1).
-      set (total_bins := high - low + 1).
-      set (node_id := encode_node low high ball_count).
-      set (prf_output := prf_eval node_id).
-      set (left_count := binomial_sample_spec ball_count left_bins total_bins prf_output).
+      set (left_count := left_count_spec low high ball_count).
       assert (Hmid_range : low <= mid < high).
       { subst mid low high. split.
         - apply Z.div_le_lower_bound; lia.
         - apply Z.div_lt_upper_bound; lia. }
-      assert (Hleft_bins_pos : 0 < left_bins) by (subst left_bins mid low high; lia).
-      assert (Htotal_bins_pos : 0 < total_bins) by (subst total_bins low high; lia).
-      assert (Hleft_lt_total : left_bins < total_bins) by (subst left_bins total_bins mid low high; lia).
       assert (Htis_low_eq : tis_low ist = low).
       { subst low. exact (eq_sym Hlow). }
       assert (Htis_high_eq : tis_high ist = high).
@@ -821,7 +771,7 @@ Proof.
       { intros Hy0.
         unfold trace_ball_inverse_step.
         rewrite Htis_low_eq, Htis_high_eq, Htis_ball_count_eq.
-        subst mid left_bins total_bins node_id prf_output left_count ball_start.
+        subst mid left_count ball_start.
         destruct (y <=? _) eqn:Htest.
         - reflexivity.
         - apply Z.leb_gt in Htest. lia. }
@@ -831,7 +781,7 @@ Proof.
       { intros Hy0.
         unfold trace_ball_inverse_step.
         rewrite Htis_low_eq, Htis_high_eq, Htis_ball_count_eq.
-        subst mid left_bins total_bins node_id prf_output left_count ball_start ball_count.
+        subst mid left_count ball_start ball_count.
         destruct (y <=? _) eqn:Htest.
         - apply Z.leb_le in Htest. lia.
         - reflexivity. }
@@ -845,7 +795,7 @@ Proof.
         assert (Hball_count_pos : 0 < ball_count).
         { subst ball_count ball_index. lia. }
         assert (Hlc_range : 0 <= left_count <= ball_count).
-        { subst left_count ball_count. apply binomial_sample_range_aux; lia. }
+        { subst left_count ball_count. apply left_count_range; lia. }
         destruct Hlc_range as [Hlc_lo Hlc_hi].
         assert (Hball_index_lt : ball_index < left_count).
         { pose proof (trace_ball_inverse_fuel_start_lower_bound fuel' y ist') as Hlb.
@@ -859,8 +809,7 @@ Proof.
         assert (Hbranch_fwd : (ball_index <? left_count) = true).
         { apply Z.ltb_lt. exact Hball_index_lt. }
         assert (Hst'_eq : trace_ball_step st = st').
-        { unfold trace_ball_step. subst st' low high ball_count ball_index mid 
-            left_bins total_bins node_id prf_output left_count.
+        { unfold trace_ball_step. subst st' low high ball_count ball_index mid left_count.
           rewrite Hbranch_fwd. reflexivity. }
         rewrite Hst'_eq.
         pose proof (IH y x st' ist') as IH'.
@@ -888,7 +837,7 @@ Proof.
         assert (Hball_count_pos : 0 < ball_count).
         { subst ball_count ball_index. lia. }
         assert (Hlc_range : 0 <= left_count <= ball_count).
-        { subst left_count ball_count. apply binomial_sample_range_aux; lia. }
+        { subst left_count ball_count. apply left_count_range; lia. }
         destruct Hlc_range as [Hlc_lo Hlc_hi].
         assert (Hball_index_ge : left_count <= ball_index).
         { pose proof (trace_ball_inverse_fuel_start_lower_bound fuel' y ist') as Hlb.
@@ -898,8 +847,7 @@ Proof.
         assert (Hbranch_fwd : (ball_index <? left_count) = false).
         { apply Z.ltb_ge. exact Hball_index_ge. }
         assert (Hst'_eq : trace_ball_step st = st').
-        { unfold trace_ball_step. subst st' low high ball_count ball_index mid 
-            left_bins total_bins node_id prf_output left_count.
+        { unfold trace_ball_step. subst st' low high ball_count ball_index mid left_count.
           rewrite Hbranch_fwd. reflexivity. }
         rewrite Hst'_eq.
         pose proof (IH y x st' ist') as IH'.

@@ -1,4 +1,10 @@
 (** * HintInitSim: Simulation Relation for Plinko HintInit
+
+    STATUS: model only. Each function with a Rust name in this file is a
+    hand-written Rocq definition. No tool compares it with the Rust source,
+    so a theorem of this file is a statement about the model, not about the
+    Rust code. See docs/TRUST_BASE.md for the assumptions and for the known
+    differences from the code.
     
     Connects the Rust plinko_hints.rs implementation to the Plinko paper
     specification (Fig. 7 HintInit) and Plinko.v Coq spec.
@@ -1869,7 +1875,7 @@ Proof.
      which follows from the above correspondence and XOR pair algebra.
      
      PROOF DEBT: Pure list/arithmetic reasoning, no crypto assumptions.
-     See docs/TRUST_BASE.md section 7 for details. *)
+     See docs/TRUST_BASE.md (hint_init_backup_streaming_eq_batch). *)
 Admitted.
 
 End HintInitCorrectness.

@@ -1,12 +1,22 @@
 #!/bin/bash
 # Run Plinko hint generation benchmark inside the SEV-SNP VM
 # This script should be run INSIDE the VM after SSH-ing in
+#
+# Benchmark only: the hints are not written to a file. A TEE is not part of
+# the trust model (docs/trust_model.md).
+#
+# Environment (optional):
+#   PLINKO_DIR  directory with database.bin and plinko_hints (default /mnt/plinko)
+#   DB_PATH     database file (default $PLINKO_DIR/database.bin)
+#   HINTS_BIN   plinko_hints binary (default $PLINKO_DIR/plinko_hints)
+#   THREADS     worker threads (default: nproc)
+#   LAMBDA      security parameter (default 128)
 
 set -e
 
-PLINKO_DIR="/mnt/plinko"
-DB_PATH="$PLINKO_DIR/database.bin"
-HINTS_BIN="$PLINKO_DIR/plinko_hints"
+PLINKO_DIR="${PLINKO_DIR:-/mnt/plinko}"
+DB_PATH="${DB_PATH:-$PLINKO_DIR/database.bin}"
+HINTS_BIN="${HINTS_BIN:-$PLINKO_DIR/plinko_hints}"
 
 echo "=== Plinko PIR Hint Generation Benchmark (SEV-SNP) ==="
 echo
@@ -27,7 +37,7 @@ echo
 # Check attestation capability
 echo "2. Checking attestation device..."
 if [[ -c /dev/sev-guest ]]; then
-    echo "   ✓ /dev/sev-guest available for attestation"
+    echo "   [OK] /dev/sev-guest available for attestation"
 else
     echo "   ! /dev/sev-guest not found (attestation not available)"
 fi
@@ -36,8 +46,8 @@ echo
 # Check resources
 echo "3. System resources:"
 echo "   CPUs: $(nproc)"
-echo "   RAM: $(free -h | awk '/Mem:/ {print $2}')"
-echo "   Database: $(ls -lh $DB_PATH 2>/dev/null | awk '{print $5}' || echo 'NOT FOUND')"
+echo "   RAM: $(free -h 2>/dev/null | awk '/Mem:/ {print $2}')"
+echo "   Database: $(ls -lh "$DB_PATH" 2>/dev/null | awk '{print $5}' || echo 'NOT FOUND')"
 echo
 
 if [[ ! -f "$DB_PATH" ]]; then
@@ -57,13 +67,13 @@ fi
 chmod +x "$HINTS_BIN"
 
 # Run benchmark
-THREADS=$(nproc)
-LAMBDA=128
+THREADS="${THREADS:-$(nproc)}"
+LAMBDA="${LAMBDA:-128}"
 
 echo "4. Running benchmark..."
 echo "   Lambda: $LAMBDA"
 echo "   Threads: $THREADS"
-echo "   Mode: Standard (per-hint BLAKE3)"
+echo "   Mode: standard path (iPRF, regular and backup hints; no output file)"
 echo
 
 time "$HINTS_BIN" \

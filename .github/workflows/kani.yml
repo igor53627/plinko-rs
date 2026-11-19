@@ -31,10 +31,9 @@ jobs:
         working-directory: plinko
         run: |
           source "$HOME/.cargo/env"
-          # Run only binomial_sample harnesses (pure arithmetic, no crypto deps)
-          cargo kani --harness proof_binomial_sample_bounded --output-format terse
-          cargo kani --harness proof_binomial_sample_zero_denom --output-format terse
-          cargo kani --harness proof_binomial_sample_matches_coq --output-format terse
+          # Pure integer arithmetic only; AES makes the other functions infeasible.
+          # The harness covers the coin mask of the constant-time sampler (`tee` feature).
+          cargo kani --features tee --harness proof_top_bits_mask_keeps_leading_bits --output-format terse
 
   proptest:
     runs-on: ubuntu-latest
@@ -47,4 +46,4 @@ jobs:
       - name: Run proptest harnesses
         working-directory: plinko
         run: |
-          cargo test --lib kani_proofs -- --nocapture
+          cargo test --lib --features tee kani_proofs -- --nocapture
