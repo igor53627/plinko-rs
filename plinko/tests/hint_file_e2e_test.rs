@@ -71,10 +71,18 @@ struct Generated {
     hint_path: PathBuf,
 }
 
+/// Directory of one scenario. The process number is in the name, because
+/// two test runs with one target directory can run at the same time.
 fn work_dir(name: &str) -> PathBuf {
-    let dir: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("hint_file_e2e_{name}"));
+    let dir: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("hint_file_e2e_{name}_{}", std::process::id()));
     fs::create_dir_all(&dir).expect("create work dir");
     dir
+}
+
+/// Removes the directory of a scenario at the end of a test that passed.
+fn remove_work_dir(name: &str) {
+    fs::remove_dir_all(work_dir(name)).expect("remove work dir");
 }
 
 /// Writes the database and the seed file, then runs `plinko_hints --output`.
@@ -405,6 +413,7 @@ fn generator_file_equals_the_client_hint_set_and_answers_queries() {
             "the hint file must not be group or world readable"
         );
     }
+    remove_work_dir(scenario.name);
 }
 
 /// Record sizes that are not 40: one byte, a partial last word, a size that
@@ -432,6 +441,7 @@ fn generator_file_answers_queries_for_other_record_sizes() {
             144 + 128 * (4 + record_size) + 128 * (4 + 2 * record_size),
             "hint file size for record size {record_size}"
         );
+        remove_work_dir(name);
     }
 }
 
@@ -467,6 +477,7 @@ fn constant_time_path_writes_the_same_file_for_each_record_size() {
             constant_time_bytes == standard_bytes,
             "record size {record_size}: the constant-time file differs"
         );
+        remove_work_dir(name);
     }
 }
 
@@ -503,6 +514,7 @@ fn generator_rejects_a_database_that_is_not_whole_records() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!hint_path.exists(), "no hint file must be written");
+    fs::remove_dir_all(&dir).expect("remove work dir");
 }
 
 /// The hint file must not depend on the number of worker threads.
@@ -522,7 +534,9 @@ fn generator_file_is_the_same_for_every_thread_count() {
                 constant_time: false,
                 database_version: None,
             });
-            fs::read(&generated.hint_path).expect("read hint file")
+            let bytes: Vec<u8> = fs::read(&generated.hint_path).expect("read hint file");
+            remove_work_dir(name);
+            bytes
         })
         .collect();
 
@@ -559,6 +573,7 @@ fn generator_file_answers_queries_above_65536_hints() {
     let hints: HintSet = load(&generated.hint_path);
     assert_eq!(hints.num_regular() + hints.num_backup(), 66_560);
     run_online_phase(&scenario, &generated, hints);
+    remove_work_dir(scenario.name);
 }
 
 /// A client that stops and starts again must know which deltas its hints
@@ -676,6 +691,7 @@ fn a_restarted_client_applies_the_deltas_after_its_hint_file() {
         .iter()
         .any(|index| index % 4 != 0 && !batches[0].contains(index) && !batches[2].contains(index)));
     assert!(second_run.unused_hints().is_none());
+    remove_work_dir(scenario.name);
 }
 
 #[test]
@@ -796,6 +812,75 @@ fn generator_refuses_output_without_a_seed() {
         .expect("run plinko_hints");
     assert!(!output.status.success(), "a run without a seed must fail");
     assert!(!hint_path.exists(), "no hint file must be written");
+    fs::remove_dir_all(&dir).expect("remove work dir");
+}
+
+/// The hint file takes the place of its path with a rename. A run with the
+/// database or the seed file as `--output` must fail and leave both files.
+#[test]
+fn generator_refuses_an_output_that_is_an_input_file() {
+    let dir: PathBuf = work_dir("output_is_input");
+    let db_path: PathBuf = dir.join("database.bin");
+    let seed_path: PathBuf = dir.join("seed.hex");
+    let database: Vec<u8> = make_db(8, V3_RECORD_SIZE);
+    let seed_hex: String = MASTER_SEED.iter().map(|b| format!("{b:02x}")).collect();
+    fs::write(&db_path, &database).expect("write database");
+    fs::write(&seed_path, &seed_hex).expect("write seed file");
+
+    for (output_path, flag) in [(&db_path, "--db-path"), (&seed_path, "--seed-file")] {
+        let output: Output = Command::new(env!("CARGO_BIN_EXE_plinko_hints"))
+            .arg("--db-path")
+            .arg(&db_path)
+            .arg("--entries-per-block=4")
+            .arg("--lambda=2")
+            .arg("--seed-file")
+            .arg(&seed_path)
+            .arg("--output")
+            .arg(output_path)
+            .output()
+            .expect("run plinko_hints");
+        let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(!output.status.success(), "{flag}: the run must fail");
+        assert!(
+            stderr.contains(&format!("is the file of {flag}")),
+            "{flag}: stderr: {stderr}"
+        );
+        assert!(
+            fs::read(&db_path).expect("read database") == database,
+            "{flag}: the database changed"
+        );
+        assert_eq!(
+            fs::read_to_string(&seed_path).expect("read seed file"),
+            seed_hex,
+            "{flag}: the seed file changed"
+        );
+    }
+    fs::remove_dir_all(&dir).expect("remove work dir");
+}
+
+/// `--allow-truncation` (a hidden debug option) drops the records after the
+/// last whole block: 10 records in 2 blocks of 4.
+#[test]
+fn generator_runs_with_allow_truncation() {
+    let dir: PathBuf = work_dir("truncation");
+    let db_path: PathBuf = dir.join("database.bin");
+    fs::write(&db_path, make_db(10, V3_RECORD_SIZE)).expect("write database");
+
+    let output: Output = Command::new(env!("CARGO_BIN_EXE_plinko_hints"))
+        .arg("--db-path")
+        .arg(&db_path)
+        .arg("--entries-per-block=4")
+        .arg("--lambda=2")
+        .arg("--allow-truncation")
+        .output()
+        .expect("run plinko_hints");
+    assert!(
+        output.status.success(),
+        "plinko_hints failed: {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(&dir).expect("remove work dir");
 }
 
 #[test]

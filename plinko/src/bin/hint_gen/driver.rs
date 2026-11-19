@@ -3,6 +3,7 @@
 use plinko::hints::{HintSet, MAX_RECORD_SIZE};
 #[cfg(feature = "tee")]
 use plinko::iprf::MAX_PREIMAGES;
+use plinko::protocol::MAX_BLOCK_SIZE;
 use plinko::subsets::INVALID_CUTOFF;
 use rand::RngCore;
 use std::fs::{File, OpenOptions};
@@ -40,15 +41,22 @@ pub struct HintParams {
 }
 
 impl HintParams {
-    pub fn from_args(args: &Args, w: usize) -> Self {
-        let num_regular = args.lambda * w;
-        let num_backup = args.backup_hints.unwrap_or(num_regular);
-        let total_hints = num_regular + num_backup;
-        Self {
+    /// # Errors
+    /// Returns an error if a hint count does not fit in `usize`.
+    pub fn from_args(args: &Args, w: usize) -> eyre::Result<Self> {
+        let num_regular: usize = args
+            .lambda
+            .checked_mul(w)
+            .ok_or_else(|| eyre::eyre!("lambda * w is too large: {} * {w}", args.lambda))?;
+        let num_backup: usize = args.backup_hints.unwrap_or(num_regular);
+        let total_hints: usize = num_regular.checked_add(num_backup).ok_or_else(|| {
+            eyre::eyre!("the hint count is too large: {num_regular} + {num_backup}")
+        })?;
+        Ok(Self {
             num_regular,
             num_backup,
             total_hints,
-        }
+        })
     }
 }
 
@@ -64,9 +72,9 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
         );
     }
     if let Some(w) = args.entries_per_block {
-        if !w.is_power_of_two() {
+        if !w.is_power_of_two() || w as u64 > MAX_BLOCK_SIZE {
             eyre::bail!(
-                "entries_per_block (w) must be a power of two, got {w}. \
+                "entries_per_block (w) must be a power of two of at most 2^32, got {w}. \
                  The iPRF range is w, and the PMNS sampler requires a power of two."
             );
         }
@@ -90,6 +98,25 @@ pub fn validate_args(args: &Args) -> eyre::Result<()> {
         let parent: &Path = output.parent().unwrap_or(Path::new(""));
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
             eyre::bail!("output directory {} does not exist", parent.display());
+        }
+        if output.is_dir() {
+            eyre::bail!("--output {} is a directory", output.display());
+        }
+        // The hint file takes the place of its path with a rename.
+        if let Ok(target) = output.canonicalize() {
+            let inputs: [(&str, Option<&PathBuf>); 2] = [
+                ("--db-path", Some(&args.db_path)),
+                ("--seed-file", args.seed_file.as_ref()),
+            ];
+            for (flag, input) in inputs {
+                let input: Option<PathBuf> = input.and_then(|path| path.canonicalize().ok());
+                if input.as_deref() == Some(target.as_path()) {
+                    eyre::bail!(
+                        "--output {} is the file of {flag}; the hint file would replace it",
+                        output.display()
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -370,6 +397,47 @@ mod tests {
 
         let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "65536"]);
         assert!(validate_args(&args).is_ok());
+    }
+
+    /// The block size is the range of an iPRF, which is at most 2^32.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn rejects_entries_per_block_above_the_iprf_range() {
+        let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "8589934592"]);
+        let error: String = validate_args(&args)
+            .expect_err("w must be rejected")
+            .to_string();
+        assert!(error.contains("of at most 2^32"), "{error}");
+
+        let args: Args = Args::parse_from(["plinko_hints", "--entries-per-block", "4294967296"]);
+        assert!(validate_args(&args).is_ok());
+    }
+
+    /// In a release build the product wrapped to a small hint count.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn hint_counts_that_do_not_fit_are_rejected() {
+        let args: Args = Args::parse_from(["plinko_hints", "--lambda", "4611686018427387905"]);
+        assert!(HintParams::from_args(&args, 4).is_err());
+
+        let max: String = usize::MAX.to_string();
+        let args: Args = Args::parse_from(["plinko_hints", "--lambda", "2", "-b", &max]);
+        assert!(HintParams::from_args(&args, 4).is_err());
+
+        let args: Args = Args::parse_from(["plinko_hints", "--lambda", "2", "-b", "5"]);
+        let params: HintParams = HintParams::from_args(&args, 4).expect("hint counts");
+        assert_eq!(
+            (params.num_regular, params.num_backup, params.total_hints),
+            (8, 5, 13)
+        );
+    }
+
+    #[test]
+    fn output_must_not_be_a_directory() {
+        let seed_hex: String = "ab".repeat(32);
+        let args: Args = Args::parse_from(["plinko_hints", "--output", ".", "--seed", &seed_hex]);
+        let error: String = validate_args(&args).expect_err("directory").to_string();
+        assert!(error.contains("is a directory"), "{error}");
     }
 
     #[test]

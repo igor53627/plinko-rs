@@ -127,8 +127,14 @@ Not in this release:
 ### Fixed
 
 - **Findings of the review of the 0.2.0 pull request** (TASK-33):
+  - `plinko_hints` refuses an `--output` that is the database file or the seed file. The hint file takes the place of its path with a rename, so the run replaced the input and ended with exit code 0. It also refuses an `--output` that is a directory before HintInit, not after it.
+  - `ProtocolParams::new` and `plinko_hints --entries-per-block` reject a block size above 2^32 (`protocol::MAX_BLOCK_SIZE`). Such a value passed validation and the iPRF constructor then stopped with a panic.
+  - `plinko_hints` rejects a `--lambda` or `--backup-hints` whose hint count does not fit in 64 bits. In a release build the product wrapped, and the run wrote hints for a small count.
+  - `Server::new`, `compute_hints`, `Client::offline_init` and `Client::from_hints` reject `ProtocolParams` with a changed public field (`InvalidParams`): a block size or a block count that does not hold `num_entries` records gave a server and hints that ignored the last records. `hint_init::fill_parities` and `fill_parities_ct` stop with a panic for such a geometry.
+  - The parity accessors of `HintSet` check the hint index before they compute the byte offset. In a release build an index such as 2^63 with a record of 2 bytes wrapped to the parity of hint 0.
   - `Client::retire_hints` keeps `Client::unused_hints` when the list removes no hint (a hint with no valid cutoff). The client refused to export an unchanged hint set, and a state round trip gave another value.
   - The scalar `SwapOrNotSr` and `SwapOrNot` compute the partner of a round without `k_i + n`, which overflowed for a domain above 2^63 (a panic in a debug build, a wrong value in a release build). No hint set has such a domain; the values for all other domains do not change.
+  - The tests of `hint_file_e2e_test.rs` use a directory with the process number and remove it when they pass: two test runs with one target directory failed on the temporary files of each other. Two test loops over `prepare_query` have a bound.
 - **Inconsistent axiom in the formal model**: `sr_base_case_no_recurse` (`SwapOrNotSrSpec.v`) contradicted the proven bijection of Sometimes-Recurse, so `False` was derivable. The axiom is removed; `sr_base_case_equiv` now has the condition as a hypothesis.
 - **Decoy index was sequential**: a query for a cached index went to the smallest index that was not cached. It now goes to a uniform index among those that are not cached and not in flight (Fig. 7).
 - **A lost answer lost the hint, and an update during a query gave a wrong answer**: `prepare_query` took the hint out of the client and kept a copy of its parity.

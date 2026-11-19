@@ -57,8 +57,14 @@ pub enum ProtocolError {
     NoHintForIndex {
         index: usize,
     },
-    /// Every backup hint is promoted or reserved by a query in flight.
-    /// The client must run HintInit again.
+    /// No backup hint is free: each one is promoted, retired, or reserved by a
+    /// query in flight.
+    ///
+    /// From [`Client::prepare_query`]: the queries in flight can still get
+    /// their answers, so complete them before you replace the client. When no
+    /// query is in flight, the client must run HintInit again with a new
+    /// master seed. From [`Client::reconstruct_and_replenish`]: see that
+    /// function.
     NoBackupHintsLeft,
     /// A query for this index was sent and has no answer yet.
     QueryInFlight {
@@ -194,11 +200,14 @@ pub fn default_block_size(num_entries: usize) -> usize {
 
 const PADDED_DATABASE_TOO_LARGE: &str = "the padded database does not fit in memory";
 
+/// Largest block size: the largest range of an iPRF (see [`Iprf::new`]).
+pub const MAX_BLOCK_SIZE: u64 = 1 << 32;
+
 impl ProtocolParams {
     /// Create parameters with defaults similar to the Python runnable spec:
     /// - `record_size`: bytes of one database record, 1 to [`MAX_RECORD_SIZE`]
-    /// - `block_size`: [`default_block_size`] if omitted; must be a power of two,
-    ///   because the iPRF range is the block size
+    /// - `block_size`: [`default_block_size`] if omitted; must be a power of two
+    ///   of at most 2^32, because the iPRF range is the block size
     /// - `num_backup_hints`: `lambda * block_size` if omitted
     ///
     /// # Errors
@@ -240,9 +249,9 @@ impl ProtocolParams {
         }
 
         let block_size = block_size.unwrap_or_else(|| default_block_size(num_entries));
-        if !block_size.is_power_of_two() {
+        if !block_size.is_power_of_two() || block_size as u64 > MAX_BLOCK_SIZE {
             return Err(ProtocolError::InvalidParams(
-                "block_size must be a power of two",
+                "block_size must be a power of two of at most 2^32",
             ));
         }
 
@@ -335,6 +344,32 @@ impl ProtocolParams {
         }
     }
 
+    /// Checks that the fields are values that [`ProtocolParams::new`] derives.
+    ///
+    /// The fields are public, so a caller can change one of them. A block
+    /// count or a block size that does not hold `num_entries` records gives
+    /// hints and a server that ignore records.
+    fn check_derived(&self) -> Result<(), ProtocolError> {
+        const CHANGED: ProtocolError =
+            ProtocolError::InvalidParams("the parameters are not those of ProtocolParams::new");
+        #[allow(clippy::manual_is_multiple_of)]
+        if self.block_size == 0 || self.num_regular_hints % self.block_size != 0 {
+            return Err(CHANGED);
+        }
+        let derived: Self = Self::new(
+            self.num_entries,
+            self.record_size,
+            Some(self.block_size),
+            self.num_regular_hints / self.block_size,
+            Some(self.num_backup_hints),
+        )?;
+        if derived.num_blocks != self.num_blocks || derived.num_total_hints != self.num_total_hints
+        {
+            return Err(CHANGED);
+        }
+        Ok(())
+    }
+
     #[inline]
     pub fn n_effective_entries(&self) -> usize {
         self.num_blocks * self.block_size
@@ -387,18 +422,15 @@ impl Server {
     ///
     /// # Errors
     /// Returns [`ProtocolError::InvalidParams`] if `database` does not have
-    /// `num_entries * record_size` bytes, or if `params.record_size` is not
-    /// in the range 1 to [`MAX_RECORD_SIZE`] (the fields of `params` are public).
+    /// `num_entries * record_size` bytes, or if a field of `params` is not a
+    /// value that [`ProtocolParams::new`] derives (the fields are public): a
+    /// record size outside the range 1 to [`MAX_RECORD_SIZE`], or blocks
+    /// that do not hold `num_entries` records.
     pub fn new(
         params: ProtocolParams,
         database_version: u64,
         database: &[u8],
     ) -> Result<Self, ProtocolError> {
-        if !(1..=MAX_RECORD_SIZE).contains(&params.record_size) {
-            return Err(ProtocolError::InvalidParams(
-                "record_size must be in the range 1 to MAX_RECORD_SIZE",
-            ));
-        }
         check_database_len(&params, database)?;
 
         let mut database: Vec<u8> = database.to_vec();
@@ -642,6 +674,7 @@ impl Client {
         query_rng_seed: [u8; 32],
         hints: HintSet,
     ) -> Result<Self, ProtocolError> {
+        params.check_derived()?;
         if hints.record_size() != params.record_size {
             return Err(ProtocolError::HintSetMismatch("record size"));
         }
@@ -949,7 +982,8 @@ impl Client {
         }
     }
 
-    /// Returns the number of backup hints that are not promoted.
+    /// Returns the number of backup hints that an answer can still promote:
+    /// those that are not promoted, not retired, and have a valid cutoff.
     pub fn remaining_backup_hints(&self) -> usize {
         self.backup_available
             .iter()
@@ -1218,7 +1252,9 @@ pub fn compute_hints_with_threads(
     Ok(hint_set)
 }
 
+/// Checks the parameters, then the length of the database.
 fn check_database_len(params: &ProtocolParams, database: &[u8]) -> Result<(), ProtocolError> {
+    params.check_derived()?;
     if database.len() != params.num_entries * params.record_size {
         return Err(ProtocolError::InvalidParams(
             "database length must equal num_entries * record_size",

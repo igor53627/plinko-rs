@@ -51,7 +51,7 @@ fn main() -> eyre::Result<()> {
         "Plinko parameters"
     );
 
-    let params = HintParams::from_args(&args, geom.w);
+    let params = HintParams::from_args(&args, geom.w)?;
     #[cfg(feature = "tee")]
     if args.constant_time() {
         validate_hint_params(&params, geom.w)?;
@@ -108,9 +108,13 @@ fn main() -> eyre::Result<()> {
         params.num_backup,
         threads,
     );
+    // With `--allow-truncation` the blocks end before the last records of the
+    // file. The hints then cover only the records that the blocks hold.
+    let covered_entries: usize = geom.n_entries.min(geom.n_effective);
+    let covered_bytes: &[u8] = &db_bytes[..covered_entries * geom.record_size];
     let mut hints: HintSet = HintSet::new(
         HintGeometry {
-            num_entries: geom.n_entries as u64,
+            num_entries: covered_entries as u64,
             // `validate_args` keeps the record size at or below `MAX_RECORD_SIZE`.
             record_size: geom.record_size as u32,
             block_size: geom.w as u64,
@@ -149,7 +153,7 @@ fn main() -> eyre::Result<()> {
 
             plinko::hint_init::fill_parities_ct(
                 &mut hints,
-                db_bytes,
+                covered_bytes,
                 &block_iprfs_ct,
                 &subset_prf,
                 threads,
@@ -163,7 +167,7 @@ fn main() -> eyre::Result<()> {
             .collect();
         fill_parities(
             &mut hints,
-            db_bytes,
+            covered_bytes,
             &block_iprfs,
             &subset_prf,
             threads,

@@ -285,7 +285,9 @@ impl HintSet {
     /// # Errors
     /// Returns [`HintFileError::InvalidRecordSize`] if `geometry.record_size`
     /// is zero or above [`MAX_RECORD_SIZE`], and [`HintFileError::TooManyHints`]
-    /// if the parities do not fit in memory.
+    /// if the size of the parities is above `isize::MAX` bytes. The function
+    /// does not detect an allocation that the system refuses; the process
+    /// then aborts.
     ///
     /// # Examples
     ///
@@ -384,38 +386,45 @@ impl HintSet {
     ///
     /// # Panics
     /// Panics if `j >= num_regular()`. The other parity accessors panic in the
-    /// same way for an index that is out of range.
+    /// same way for an index that is out of range. The check comes before the
+    /// byte offset, so an index cannot wrap to the parity of another hint.
     pub fn regular_parity(&self, j: usize) -> &[u8] {
+        assert!(j < self.num_regular(), "regular hint {j} is out of range");
         let size: usize = self.record_size();
         &self.regular_parities[j * size..(j + 1) * size]
     }
 
     /// Mutable parity of regular hint `j`.
     pub fn regular_parity_mut(&mut self, j: usize) -> &mut [u8] {
+        assert!(j < self.num_regular(), "regular hint {j} is out of range");
         let size: usize = self.record_size();
         &mut self.regular_parities[j * size..(j + 1) * size]
     }
 
     /// Parity of backup hint `b` over the records whose block is in its subset.
     pub fn backup_parity_in(&self, b: usize) -> &[u8] {
+        assert!(b < self.num_backup(), "backup hint {b} is out of range");
         let size: usize = self.record_size();
         &self.backup_parities[2 * b * size..(2 * b + 1) * size]
     }
 
     /// Mutable "in" parity of backup hint `b`.
     pub fn backup_parity_in_mut(&mut self, b: usize) -> &mut [u8] {
+        assert!(b < self.num_backup(), "backup hint {b} is out of range");
         let size: usize = self.record_size();
         &mut self.backup_parities[2 * b * size..(2 * b + 1) * size]
     }
 
     /// Parity of backup hint `b` over the records whose block is outside its subset.
     pub fn backup_parity_out(&self, b: usize) -> &[u8] {
+        assert!(b < self.num_backup(), "backup hint {b} is out of range");
         let size: usize = self.record_size();
         &self.backup_parities[(2 * b + 1) * size..(2 * b + 2) * size]
     }
 
     /// Mutable "out" parity of backup hint `b`.
     pub fn backup_parity_out_mut(&mut self, b: usize) -> &mut [u8] {
+        assert!(b < self.num_backup(), "backup hint {b} is out of range");
         let size: usize = self.record_size();
         &mut self.backup_parities[(2 * b + 1) * size..(2 * b + 2) * size]
     }
@@ -612,6 +621,17 @@ mod tests {
         hints
     }
 
+    /// One regular and one backup hint for records of 2 bytes.
+    fn two_byte_hints() -> HintSet {
+        let geometry = HintGeometry {
+            num_entries: 8,
+            record_size: 2,
+            block_size: 4,
+            num_blocks: 2,
+        };
+        HintSet::new(geometry, [0u8; 8], INIT, vec![1], vec![2]).expect("hint set")
+    }
+
     fn serialized(hints: &HintSet) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::new();
         hints.write_to(&mut bytes).expect("write to a Vec");
@@ -677,6 +697,22 @@ mod tests {
         assert_eq!(hints.backup_parity_out(0), [7, 8, 9]);
         assert_eq!(hints.backup_parity_in(1), [4, 5, 6]);
         assert_eq!(hints.backup_parity_out(1), [0, 0, 0]);
+    }
+
+    /// Without the range check, `2^63 * 2` wraps to byte 0 in a release build.
+    #[test]
+    #[should_panic(expected = "regular hint")]
+    fn a_regular_index_that_wraps_is_rejected() {
+        let mut hints: HintSet = two_byte_hints();
+        hints.regular_parity_mut(usize::MAX / 2 + 1).fill(0xAA);
+    }
+
+    /// Without the range check, `2 * 2^62 * 2` wraps to byte 0 in a release build.
+    #[test]
+    #[should_panic(expected = "backup hint")]
+    fn a_backup_index_that_wraps_is_rejected() {
+        let mut hints: HintSet = two_byte_hints();
+        hints.backup_parity_out_mut(usize::MAX / 4 + 1).fill(0xAA);
     }
 
     #[test]

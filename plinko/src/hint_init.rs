@@ -164,7 +164,8 @@ struct Layout {
 
 impl Layout {
     /// # Panics
-    /// Panics if `database` or `num_block_iprfs` does not fit the geometry of `hints`.
+    /// Panics if `database` or `num_block_iprfs` does not fit the geometry of
+    /// `hints`, or if the blocks of the geometry hold fewer than `num_entries` records.
     fn new(hints: &HintSet, database: &[u8], num_block_iprfs: usize) -> Self {
         let geometry: HintGeometry = hints.geometry();
         let record_size: usize = hints.record_size();
@@ -176,6 +177,13 @@ impl Layout {
         assert_eq!(
             num_block_iprfs as u64, geometry.num_blocks,
             "one iPRF is necessary for each block"
+        );
+        assert!(
+            geometry
+                .num_blocks
+                .checked_mul(geometry.block_size)
+                .is_some_and(|capacity| capacity >= geometry.num_entries),
+            "the blocks must hold num_entries records"
         );
         Self {
             record_size,
@@ -349,7 +357,9 @@ where
 ///
 /// # Panics
 /// Panics if `database` does not have `num_entries` records of the record
-/// size of `hints`, or if `block_iprfs` does not have one iPRF for each block.
+/// size of `hints`, if `block_iprfs` does not have one iPRF for each block,
+/// or if `num_blocks * block_size` of the geometry is below `num_entries`
+/// (the records after the last block would get no hint).
 pub fn fill_parities(
     hints: &mut HintSet,
     database: &[u8],

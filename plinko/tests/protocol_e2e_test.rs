@@ -667,10 +667,12 @@ fn records_of_other_sizes_are_returned_whole() {
 /// The padded database has `num_blocks * block_size * record_size` bytes.
 #[test]
 fn parameters_of_a_database_that_does_not_fit_in_memory_are_rejected() {
-    let quarter: usize = 1usize << (usize::BITS - 2);
+    // 2^32 on a 64-bit target: the largest block size.
+    let block: usize = 1usize << (usize::BITS / 2);
     for (num_entries, record_size, block_size) in [
-        // Two blocks of `quarter` records of 4 bytes.
-        (1usize, 4usize, quarter),
+        // The records fit in `usize`; the padded blocks of 4-byte records
+        // take `isize::MAX + 1` bytes.
+        ((1usize << (usize::BITS - 3)) - 1, 4usize, block),
         // An odd block count at the limit of `usize`.
         (usize::MAX, 1, 1),
         // One byte above `isize::MAX` after the block count becomes even.
@@ -688,6 +690,76 @@ fn parameters_of_a_database_that_does_not_fit_in_memory_are_rejected() {
     let params: ProtocolParams =
         ProtocolParams::new(usize::MAX / 2 - 1, 1, Some(1), 1, Some(1)).expect("params");
     assert_eq!(params.n_effective_entries(), usize::MAX / 2 - 1);
+}
+
+/// The block size is the range of an iPRF, which is at most 2^32.
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn a_block_size_above_the_iprf_range_is_rejected() {
+    assert_eq!(
+        ProtocolParams::new(1, 1, Some(1 << 33), 1, Some(1)).err(),
+        Some(ProtocolError::InvalidParams(
+            "block_size must be a power of two of at most 2^32"
+        ))
+    );
+    let params: ProtocolParams =
+        ProtocolParams::new(1, 1, Some(1 << 32), 1, Some(1)).expect("params");
+    assert_eq!(params.num_blocks, 2);
+}
+
+/// The fields of the parameters are public. A changed block size or block
+/// count that does not hold all records must give no server and no hints:
+/// the last records would be in no block.
+#[test]
+fn parameters_that_new_does_not_derive_are_rejected() {
+    let params: ProtocolParams =
+        ProtocolParams::new(96, RECORD_SIZE, Some(16), 4, None).expect("params");
+    assert_eq!(params.num_blocks, 6);
+    let entries: Vec<u8> = make_db(params.num_entries);
+    let changed: [ProtocolParams; 4] = [
+        ProtocolParams {
+            block_size: 8,
+            ..params.clone()
+        },
+        ProtocolParams {
+            num_blocks: 4,
+            ..params.clone()
+        },
+        ProtocolParams {
+            num_total_hints: params.num_regular_hints,
+            ..params.clone()
+        },
+        ProtocolParams {
+            num_regular_hints: params.num_regular_hints + 1,
+            ..params.clone()
+        },
+    ];
+    for (case, invalid) in changed.iter().enumerate() {
+        assert!(
+            matches!(
+                Server::new(invalid.clone(), 0, &entries),
+                Err(ProtocolError::InvalidParams(_))
+            ),
+            "case {case}: server"
+        );
+        assert!(
+            matches!(
+                compute_hints(invalid, &[0xC1u8; 32], 0, &entries),
+                Err(ProtocolError::InvalidParams(_))
+            ),
+            "case {case}: hints"
+        );
+        assert!(
+            matches!(
+                Client::offline_init(invalid.clone(), [0xC1u8; 32], [0xC2u8; 32], 0, &entries),
+                Err(ProtocolError::InvalidParams(_))
+            ),
+            "case {case}: client"
+        );
+    }
+
+    let hints: HintSet = compute_hints(&params, &[0xC1u8; 32], 0, &entries).expect("hints");
+    assert!(Client::from_hints(params, [0xC1u8; 32], [0xC2u8; 32], hints).is_ok());
 }
 
 #[test]
@@ -1226,7 +1298,11 @@ fn a_restarted_client_does_not_send_a_hint_a_second_time() {
     assert!(client.unused_hints().is_none());
 
     let mut queries: usize = 0;
-    for index in (0..params.num_entries).cycle() {
+    // The bound ends the loop if no index has a hint while backup hints remain.
+    for index in (0..params.num_entries)
+        .cycle()
+        .take(20 * params.num_entries)
+    {
         let prepared: PreparedQuery = match client.prepare_query(index) {
             Ok(prepared) => prepared,
             Err(ProtocolError::NoHintForIndex { .. }) => continue,

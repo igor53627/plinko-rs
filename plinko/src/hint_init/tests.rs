@@ -482,3 +482,28 @@ fn a_database_of_another_length_is_rejected() {
         |_| {},
     );
 }
+
+/// Three blocks of records in a geometry of two blocks: the last block would get no hint.
+#[test]
+#[should_panic(expected = "the blocks must hold num_entries records")]
+fn a_geometry_that_does_not_hold_the_records_is_rejected() {
+    let scenario = Scenario {
+        master_seed: [42u8; 32],
+        record_size: 40,
+        n_entries: 24,
+        w: 8,
+        c: 2,
+        lambda: 2,
+        invalid: None,
+    };
+    let subset_prf: SubsetPrf = SubsetPrf::new(&scenario.master_seed);
+    let mut hints: HintSet = scenario.init(&subset_prf);
+    fill_parities(
+        &mut hints,
+        &scenario.db_bytes(),
+        &scenario.block_iprfs(),
+        &subset_prf,
+        1,
+        |_| {},
+    );
+}
