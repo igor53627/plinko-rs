@@ -26,6 +26,10 @@ const STORAGE_MAP_ENTRY_SIZE: u64 = 56;
 const HINT_CUTOFF_SIZE: u64 = 4;
 /// A parity is the XOR of whole records.
 const HINT_PARITY_SIZE: u64 = ENTRY_SIZE;
+/// A regular hint: cutoff and one parity (44 bytes).
+const REGULAR_HINT_SIZE: u64 = HINT_CUTOFF_SIZE + HINT_PARITY_SIZE;
+/// A backup hint: cutoff and two parities (84 bytes).
+const BACKUP_HINT_SIZE: u64 = HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE;
 
 // --- Measured throughput constants ---
 
@@ -202,18 +206,8 @@ fn main() -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE,
         "storage_mapping_bytes",
     )?;
-    // Regular hints: each is cutoff(4B) + parity(40B) = 44 bytes
-    let regular_hint_bytes = checked_mul(
-        num_regular,
-        HINT_CUTOFF_SIZE + HINT_PARITY_SIZE,
-        "regular_hint_bytes",
-    )?;
-    // Backup hints: each is cutoff(4B) + parity_in(40B) + parity_out(40B) = 84 bytes
-    let backup_hint_bytes = checked_mul(
-        num_backup,
-        HINT_CUTOFF_SIZE + 2 * HINT_PARITY_SIZE,
-        "backup_hint_bytes",
-    )?;
+    let regular_hint_bytes = checked_mul(num_regular, REGULAR_HINT_SIZE, "regular_hint_bytes")?;
+    let backup_hint_bytes = checked_mul(num_backup, BACKUP_HINT_SIZE, "backup_hint_bytes")?;
     let hint_storage = checked_add(regular_hint_bytes, backup_hint_bytes, "hint_storage_bytes")?;
     let data_storage = checked_add(
         db_size,
@@ -486,14 +480,16 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
         STORAGE_MAP_ENTRY_SIZE
     );
     println!(
-        "  Regular hints:      {} ({} x 36B)",
+        "  Regular hints:      {} ({} x {}B)",
         fmt_bytes(estimate.storage.regular_hint_bytes),
-        fmt_count(estimate.parameters.regular_hints)
+        fmt_count(estimate.parameters.regular_hints),
+        REGULAR_HINT_SIZE
     );
     println!(
-        "  Backup hints:       {} ({} x 68B)",
+        "  Backup hints:       {} ({} x {}B)",
         fmt_bytes(estimate.storage.backup_hint_bytes),
-        fmt_count(estimate.parameters.backup_hints)
+        fmt_count(estimate.parameters.backup_hints),
+        BACKUP_HINT_SIZE
     );
     println!(
         "  Total hint storage: {}",
