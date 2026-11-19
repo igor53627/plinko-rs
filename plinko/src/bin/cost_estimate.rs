@@ -7,6 +7,7 @@
 use clap::{value_parser, Parser};
 use eyre::eyre;
 use plinko::db::derive_plinko_params;
+use plinko::protocol::ProtocolParams;
 use serde::Serialize;
 
 /// Mainnet v3 snapshot counts (docs/plinko_paper_index.json).
@@ -139,8 +140,14 @@ struct Storage {
     total_bytes: u64,
 }
 
+/// Estimate for the GPU throughput benchmark (`bench_gpu_hints`), which has
+/// its own geometry (`plinko::db::derive_plinko_params`) and does not
+/// compute Plinko hints.
 #[derive(Serialize)]
 struct GpuCompute {
+    chunk_size: u64,
+    set_size: u64,
+    total_hints: u64,
     gpus: u64,
     throughput_hints_per_sec: f64,
     time_secs: f64,
@@ -178,11 +185,19 @@ fn main() -> eyre::Result<()> {
     };
 
     // --- Parameter derivation ---
-    let (w, c) = derive_plinko_params(entries);
+    let HintGeometry {
+        w,
+        c,
+        num_regular,
+        num_backup,
+    } = hint_geometry(entries, args.lambda)?;
     let capacity = checked_mul(w, c, "capacity")?;
-    let num_regular = checked_mul(args.lambda, w, "num_regular")?;
-    let num_backup = num_regular; // default: same as regular
     let total_hints = checked_add(num_regular, num_backup, "total_hints")?;
+
+    // The GPU benchmark has its own geometry and as many backup as regular hints.
+    let (gpu_w, gpu_c) = derive_plinko_params(entries);
+    let gpu_regular = checked_mul(args.lambda, gpu_w, "gpu_regular_hints")?;
+    let gpu_total_hints = checked_mul(gpu_regular, 2, "gpu_total_hints")?;
 
     if capacity < entries {
         return Err(eyre!(
@@ -219,7 +234,7 @@ fn main() -> eyre::Result<()> {
 
     // --- GPU compute estimates ---
     let gpu_throughput = GPU_HINTS_PER_SEC * args.gpus as f64;
-    let gpu_time_secs = total_hints as f64 / gpu_throughput;
+    let gpu_time_secs = gpu_total_hints as f64 / gpu_throughput;
     let gpu_time_hours = gpu_time_secs / 3600.0;
     let gpu_cost = gpu_time_hours * args.gpus as f64 * args.gpu_hourly_rate;
 
@@ -243,13 +258,13 @@ fn main() -> eyre::Result<()> {
 
     // --- Memory estimates ---
     let vram_packed_db = checked_mul(entries, GPU_ENTRY_SIZE, "vram_packed_db_bytes")?;
-    let subset_bytes_per_hint = c
+    let subset_bytes_per_hint = gpu_c
         .checked_add(7)
         .ok_or_else(|| eyre!("overflow while computing subset_bytes_per_hint"))?
         / 8;
-    let vram_block_keys = checked_mul(c, BLOCK_KEY_SIZE, "vram_block_keys_bytes")?;
-    let vram_subsets = checked_mul(total_hints, subset_bytes_per_hint, "vram_subsets_bytes")?;
-    let vram_output = checked_mul(total_hints, HINT_OUTPUT_SIZE, "vram_output_bytes")?;
+    let vram_block_keys = checked_mul(gpu_c, BLOCK_KEY_SIZE, "vram_block_keys_bytes")?;
+    let vram_subsets = checked_mul(gpu_total_hints, subset_bytes_per_hint, "vram_subsets_bytes")?;
+    let vram_output = checked_mul(gpu_total_hints, HINT_OUTPUT_SIZE, "vram_output_bytes")?;
     let vram_total = checked_add(vram_packed_db, vram_block_keys, "vram_total_with_keys")?;
     let vram_total = checked_add(vram_total, vram_subsets, "vram_total_with_subsets")?;
     let vram_total = checked_add(vram_total, vram_output, "vram_total_bytes")?;
@@ -279,6 +294,9 @@ fn main() -> eyre::Result<()> {
             total_bytes: total_storage,
         },
         gpu_compute: GpuCompute {
+            chunk_size: gpu_w,
+            set_size: gpu_c,
+            total_hints: gpu_total_hints,
             gpus: args.gpus,
             throughput_hints_per_sec: GPU_HINTS_PER_SEC,
             time_secs: gpu_time_secs,
@@ -308,6 +326,32 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+/// Geometry and hint counts of a `plinko_hints` run with default options.
+struct HintGeometry {
+    w: u64,
+    c: u64,
+    num_regular: u64,
+    num_backup: u64,
+}
+
+/// Derives the geometry with the rule of the protocol client and of
+/// `plinko_hints` ([`ProtocolParams::new`]).
+fn hint_geometry(entries: u64, lambda: u64) -> eyre::Result<HintGeometry> {
+    let entries: usize =
+        usize::try_from(entries).map_err(|_| eyre!("entries ({entries}) do not fit in usize"))?;
+    let lambda: usize =
+        usize::try_from(lambda).map_err(|_| eyre!("lambda ({lambda}) does not fit in usize"))?;
+    let params: ProtocolParams =
+        ProtocolParams::new(entries, ENTRY_SIZE as usize, None, lambda, None)
+            .map_err(|error| eyre!("cannot derive the parameters: {error}"))?;
+    Ok(HintGeometry {
+        w: params.block_size as u64,
+        c: params.num_blocks as u64,
+        num_regular: params.num_regular_hints as u64,
+        num_backup: params.num_backup_hints as u64,
+    })
 }
 
 fn checked_mul(a: u64, b: u64, label: &str) -> eyre::Result<u64> {
@@ -500,8 +544,12 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
         fmt_bytes(estimate.storage.total_bytes)
     );
     println!();
-    println!("GPU Compute (H200)");
-    println!("------------------");
+    println!("GPU Throughput Benchmark (H200, not Plinko hints)");
+    println!("-------------------------------------------------");
+    println!(
+        "  Benchmark geometry: w = {}, c = {}",
+        estimate.gpu_compute.chunk_size, estimate.gpu_compute.set_size
+    );
     println!("  GPUs:               {}", estimate.gpu_compute.gpus);
     println!(
         "  Throughput:         {:.0} hints/sec/GPU",
@@ -509,7 +557,7 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     );
     println!(
         "  Total hints:        {}",
-        fmt_count(estimate.parameters.total_hints)
+        fmt_count(estimate.gpu_compute.total_hints)
     );
     println!(
         "  Estimated time:     {}",
@@ -558,15 +606,15 @@ fn print_table(estimate: &CostEstimate) -> eyre::Result<()> {
     println!(
         "  VRAM block keys:    {} ({} x {}B)",
         fmt_bytes(estimate.memory.vram_block_keys_bytes),
-        fmt_count(estimate.parameters.set_size),
+        fmt_count(estimate.gpu_compute.set_size),
         BLOCK_KEY_SIZE
     );
     println!(
-        "  VRAM subsets:       {} (hints x ceil(c/8))",
+        "  VRAM subsets:       {} (benchmark hints x ceil(c/8))",
         fmt_bytes(estimate.memory.vram_subsets_bytes)
     );
     println!(
-        "  VRAM output:        {} (hints x {}B)",
+        "  VRAM output:        {} (benchmark hints x {}B)",
         fmt_bytes(estimate.memory.vram_output_bytes),
         HINT_OUTPUT_SIZE
     );
@@ -696,6 +744,24 @@ mod tests {
         );
     }
 
+    /// The mainnet numbers of `docs/data_format.md` (hint file) and of
+    /// `docs/hint_generation.md`: the estimator must use the geometry of
+    /// `plinko_hints`, not that of the GPU benchmark (w = 131072).
+    #[test]
+    fn mainnet_geometry_is_that_of_plinko_hints() {
+        let geometry: HintGeometry = hint_geometry(MAINNET_ENTRIES, 128).expect("geometry");
+        assert_eq!((geometry.w, geometry.c), (65_536, 27_988));
+        assert_eq!(
+            (geometry.num_regular, geometry.num_backup),
+            (8_388_608, 8_388_608)
+        );
+        // The hint file has a header and a checksum of 144 bytes in addition.
+        assert_eq!(
+            geometry.num_regular * REGULAR_HINT_SIZE + geometry.num_backup * BACKUP_HINT_SIZE,
+            1_073_741_968 - 144
+        );
+    }
+
     #[test]
     fn clap_rejects_zero_entries() {
         let args = Args::try_parse_from(["cost_estimate", "--entries", "0"]);
@@ -812,6 +878,9 @@ mod tests {
                 total_bytes: 0,
             },
             gpu_compute: GpuCompute {
+                chunk_size: 1,
+                set_size: 1,
+                total_hints: 0,
                 gpus: 1,
                 throughput_hints_per_sec: GPU_HINTS_PER_SEC,
                 time_secs: 0.0,
