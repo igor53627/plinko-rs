@@ -103,7 +103,7 @@ impl SwapOrNot {
     fn round(&self, round_num: usize, x: u64) -> u64 {
         let k_i = self.derive_round_key(round_num);
         // Partner: K_i - X mod N
-        let partner = (k_i + self.domain - (x % self.domain)) % self.domain;
+        let partner = sub_mod(k_i, x % self.domain, self.domain);
         // Canonical representative: max(X, X')
         let canonical = x.max(partner);
 
@@ -308,7 +308,7 @@ impl SwapOrNotSr {
 
     fn round(&self, level: usize, round_num: usize, n: u64, x: u64) -> u64 {
         let k_i = self.derive_round_key(level, round_num, n);
-        let partner = (k_i + n - (x % n)) % n;
+        let partner = sub_mod(k_i, x % n, n);
         let canonical = x.max(partner);
 
         if self.prf_bit(level, round_num, canonical, n) {
@@ -777,6 +777,15 @@ fn bin_starts(loads: &[u64]) -> Vec<u64> {
     starts
 }
 
+/// Returns `(k - x) mod n` for `k < n` and `x < n`.
+///
+/// `k + n - x` overflows for `n` above 2^63; this form does not.
+#[inline]
+fn sub_mod(k: u64, x: u64, n: u64) -> u64 {
+    let wrap: u64 = n & u64::from(k < x).wrapping_neg();
+    k.wrapping_sub(x).wrapping_add(wrap)
+}
+
 /// Checks that a PMNS tree with `m` bins has only splits with probability 1/2
 /// and that its bin indices fit the node encoding.
 fn assert_pmns_range(m: u64) {
@@ -1241,6 +1250,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A stage above 2^63: `k_i + n` does not fit in 64 bits there.
+    #[test]
+    fn test_prp_partner_does_not_overflow_on_the_largest_domain() {
+        let prp: SwapOrNotSr = SwapOrNotSr::with_security([3u8; 16], u64::MAX, 16);
+        for y in [0, 1, u64::MAX / 2, u64::MAX - 1] {
+            let batch: u64 = prp.inverse_range(y..y + 1)[0];
+            assert_eq!(prp.inverse(y), batch, "y={y}");
+            assert_eq!(prp.forward(batch), y, "y={y}");
+        }
+
+        let one_level: SwapOrNot = SwapOrNot::new([3u8; 16], u64::MAX);
+        for x in [0, 1, u64::MAX / 2, u64::MAX - 1] {
+            let y: u64 = one_level.forward(x);
+            assert!(y < u64::MAX, "x={x}");
+            assert_eq!(one_level.inverse(y), x, "x={x}");
+        }
+
+        assert_eq!(sub_mod(0, u64::MAX - 1, u64::MAX), 1);
+        assert_eq!(sub_mod(u64::MAX - 1, 0, u64::MAX), u64::MAX - 1);
+        assert_eq!(sub_mod(5, 7, 10), 8);
     }
 
     #[test]

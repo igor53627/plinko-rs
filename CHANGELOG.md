@@ -126,6 +126,8 @@ Not in this release:
 
 ### Fixed
 
+- **Findings of the review of the 0.2.0 pull request** (TASK-33):
+  - The scalar `SwapOrNotSr` and `SwapOrNot` compute the partner of a round without `k_i + n`, which overflowed for a domain above 2^63 (a panic in a debug build, a wrong value in a release build). No hint set has such a domain; the values for all other domains do not change.
 - **Inconsistent axiom in the formal model**: `sr_base_case_no_recurse` (`SwapOrNotSrSpec.v`) contradicted the proven bijection of Sometimes-Recurse, so `False` was derivable. The axiom is removed; `sr_base_case_equiv` now has the condition as a hypothesis.
 - **Decoy index was sequential**: a query for a cached index went to the smallest index that was not cached. It now goes to a uniform index among those that are not cached and not in flight (Fig. 7).
 - **A lost answer lost the hint, and an update during a query gave a wrong answer**: `prepare_query` took the hint out of the client and kept a copy of its parity.

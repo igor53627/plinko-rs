@@ -194,7 +194,9 @@ Axiom prf_bit_refinement : forall s r c,
     Section 5: Single Round Operation Refinement
     ============================================================================ *)
 
-(** Rust partner computation (matches SwapOrNotSpec.partner) *)
+(** Rust partner computation (matches SwapOrNotSpec.partner).
+    The Rust code computes the same value as [sub_mod k_i (x mod domain) domain],
+    which does not overflow in 64 bits; over Z the two forms are equal. *)
 Definition rust_partner (domain k_i x : Z) : Z :=
   (k_i + domain - (x mod domain)) mod domain.
 
