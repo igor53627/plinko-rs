@@ -6,7 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `docs/protocol-visualization.html` has a Russian version in the same file. A switch `English / Русский` beside the theme switch changes the text of the article and the text that the figures make. The page takes the language from the address (`?lang=ru` or `?lang=en`), then from the saved choice (`localStorage` key `plinko-lang`), then from the language of the browser. Pseudocode, formulas and the names `iPRF`, `HintInit` and `lambda` stay in English. The English text and the figures do not change. The two switches are now below the introduction, because they do not fit beside the title.
+
 ### Changed
+
+- `docs/protocol-visualization.html`: on a screen narrower than 40rem, the table of the Swap-or-Not rounds uses a smaller font and keeps each result on one line.
 
 - `README.md` header. The title is `plinko-rs`, the name of the repository; before, it was `Plinko RS`. The `Ask DeepWiki` badge uses a static shields.io image, because `deepwiki.com/badge.svg` answers the image proxy of GitHub with HTTP 429 and the badge showed as a broken image. New badges: CI status, license and paper. The demo badge links to the root of the GitHub Pages site.
 - The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`) publishes only the protocol demo, `docs/protocol-visualization.html`, as `index.html` and under its own name. Before, it published the whole `docs/` directory, with the PDF of the paper and the transcript of the talk, and it failed on each push because GitHub Pages was not enabled. It runs only when the demo or the workflow changes.

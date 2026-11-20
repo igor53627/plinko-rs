@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Plinko PIR, one ball at a time</title>
-<meta name="description" content="An interactive companion to the Plinko paper (ePrint 2024/318) and to plinko-rs.">
+<title data-i18n="page.title">Plinko PIR, one ball at a time</title>
+<meta name="description" data-i18n-content="page.description" content="An interactive companion to the Plinko paper (ePrint 2024/318) and to plinko-rs.">
 <style>
 :root {
     --serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
@@ -48,6 +48,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.15e
 .masthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 1.5rem; flex-wrap: wrap; }
 h1 { font-size: clamp(2.2rem, 5.2vw, 3.6rem); line-height: 1.05; letter-spacing: -0.02em; margin: 0; font-weight: 700; }
 .lede { max-width: 38rem; margin: 0.9rem 0 0; color: var(--muted); }
+.tools { display: flex; gap: 0.8rem; flex-wrap: wrap; }
 .switch { display: flex; border: 1px solid var(--ink); }
 .switch button {
     font: inherit; font-size: 0.95rem; padding: 0.3rem 0.8rem; border: 0; background: transparent;
@@ -201,47 +202,58 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
     .plot.padded { padding: 0.7rem; }
     .hints { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+@media (max-width: 40rem) {
+    .rounds { font-size: 0.9rem; }
+    .rounds th, .rounds td { padding-right: 0.4rem; }
+    .rounds td:last-child { white-space: nowrap; }
+}
 </style>
 </head>
 <body>
 <div class="page">
     <header class="masthead">
         <div>
-            <h1>Plinko PIR, one ball at a time</h1>
-            <p class="lede">An interactive companion to the Plinko paper
+            <h1 data-i18n="page.title">Plinko PIR, one ball at a time</h1>
+            <p data-i18n="page.lede" class="lede">An interactive companion to the Plinko paper
                (<a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>) and to
                <a href="https://github.com/igor53627/plinko-rs">plinko-rs</a>.
                Each figure runs the algorithm that its text describes, with small sizes and a toy hash
                in place of AES. The figures give no security.</p>
         </div>
-        <div class="switch" role="group" aria-label="Theme">
-            <button type="button" data-set-theme="paper" aria-pressed="true">Graph paper</button>
-            <button type="button" data-set-theme="slate" aria-pressed="false">Slate</button>
+        <div class="tools">
+            <div class="switch" role="group" aria-label="Language" data-i18n-label="lang.group">
+                <button type="button" data-set-lang="en" lang="en" aria-pressed="true">English</button>
+                <button type="button" data-set-lang="ru" lang="ru" aria-pressed="false">Русский</button>
+            </div>
+            <div class="switch" role="group" aria-label="Theme" data-i18n-label="theme.group">
+                <button type="button" data-set-theme="paper" aria-pressed="true" data-i18n="theme.paper">Graph paper</button>
+                <button type="button" data-set-theme="slate" aria-pressed="false" data-i18n="theme.slate">Slate</button>
+            </div>
         </div>
     </header>
 
     <figure>
-        <div class="plot"><svg id="tree" role="group" aria-label="Sampler tree"></svg></div>
+        <div class="plot"><svg id="tree" role="group" aria-label="Sampler tree" data-i18n-label="sampler.tree"></svg></div>
         <div class="controls">
-            <label>Ball x <input id="ball" type="range" min="0" max="31" value="13"> <output id="ball-out">13</output></label>
-            <button class="plain" type="button" id="rekey">Draw a new key</button>
+            <label><span data-i18n="sampler.ball">Ball x</span> <input id="ball" type="range" min="0" max="31" value="13"> <output id="ball-out">13</output></label>
+            <button data-i18n="sampler.rekey" class="plain" type="button" id="rekey">Draw a new key</button>
         </div>
         <figcaption>
             <span class="readout" id="tree-readout" aria-live="polite"></span>
-            <span class="note">The sampler of Fig. 4 of the paper: 32 balls, 8 bins. Each node gives
+            <span data-i18n="sampler.note" class="note">The sampler of Fig. 4 of the paper: 32 balls, 8 bins. Each node gives
             Binomial(count, 1/2) of its balls to the left child. Select a bin to see the balls in it.
             The key button gives a new key to all figures of the page.</span>
         </figcaption>
     </figure>
 
     <section class="part">
-        <h2>The sampler alone keeps the order of the balls</h2>
+        <h2 data-i18n="sampler.title">The sampler alone keeps the order of the balls</h2>
         <div>
-            <p>Plinko is a private information retrieval scheme: a client reads a record of a database, and
+            <p data-i18n="sampler.p1">Plinko is a private information retrieval scheme: a client reads a record of a database, and
                the server does not learn which one. The client prepares hints before it sends a query. The tool
                that makes the hints fast to find is a sampler that throws n balls into m bins. The paper calls it
                a pseudorandom multinomial sampler (PMNS).</p>
-            <p>Move the slider: ball 0 is always in the first bin that has a ball, and a higher ball never lands
+            <p data-i18n="sampler.p2">Move the slider: ball 0 is always in the first bin that has a ball, and a higher ball never lands
                to the left of a lower one. The sampler needs only the nodes on one path of the tree, so one ball
                costs O(log m) nodes.</p>
 <pre><b>def</b> trace_ball(k, x, n, m):
@@ -249,18 +261,18 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
     <b>while</b> low &lt; high:
         mid = (low + high) // 2
         left = binomial(count, 1/2, PRF(k, (low, high)))
-        <b>if</b> x &lt; left:  <i># the ball goes left</i>
+        <b>if</b> x &lt; left:  <i data-i18n="sampler.left"># the ball goes left</i>
             high, count = mid, left
         <b>else</b>:
             x, low, count = x - left, mid + 1, count - left
     <b>return</b> low</pre>
-            <p>The paper has a probability p at each node. plinko-rs needs m to be a power of two, so p is
+            <p data-i18n="sampler.p3">The paper has a probability p at each node. plinko-rs needs m to be a power of two, so p is
                always 1/2, and the number of balls for the left child is the number of set bits among
                <code>count</code> keystream bits.</p>
         </div>
         <aside>
-            <h3>This figure and plinko-rs</h3>
-            <table>
+            <h3 data-i18n="aside.title">This figure and plinko-rs</h3>
+            <table data-i18n="sampler.table">
                 <tr><th></th><th>Figure</th><th>plinko-rs default</th></tr>
                 <tr><td>Balls</td><td>32</td><td>2 * lambda * w hints</td></tr>
                 <tr><td>Bins</td><td>8</td><td>w offsets of a block</td></tr>
@@ -270,22 +282,22 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
     </section>
 
     <section class="part">
-        <h2>A permutation hides the order</h2>
+        <h2 data-i18n="prp.title">A permutation hides the order</h2>
         <div>
-            <p>A function that keeps the order of its inputs is not pseudorandom. Plinko sends the input through
+            <p data-i18n="prp.p1">A function that keeps the order of its inputs is not pseudorandom. Plinko sends the input through
                a keyed permutation first. The permutation is a Swap-or-Not shuffle (Hoang, Morris and Rogaway,
                2012). Each round pairs x with a partner and flips one keyed coin for the pair: swap, or not.</p>
 <pre><b>def</b> swap_or_not_round(k, x, round, N):
     partner = (round_key(k, round) - x) <b>mod</b> N
     <b>if</b> PRF(k, round, max(x, partner)) == 1:
-        <b>return</b> partner  <i># swap</i>
+        <b>return</b> partner  <i data-i18n="prp.swap"># swap</i>
     <b>return</b> x</pre>
-            <p>The two values of a pair see the same coin. A round is thus its own inverse, and the inverse
+            <p data-i18n="prp.p2">The two values of a pair see the same coin. A round is thus its own inverse, and the inverse
                permutation runs the same rounds in the opposite order.</p>
         </div>
         <aside>
-            <h3>This figure and plinko-rs</h3>
-            <table>
+            <h3 data-i18n="aside.title">This figure and plinko-rs</h3>
+            <table data-i18n="prp.table">
                 <tr><th></th><th>Figure</th><th>plinko-rs</th></tr>
                 <tr><td>Domain</td><td>24</td><td>the number of hints</td></tr>
                 <tr><td>Rounds</td><td>8</td><td>about 800 for each stage at lambda = 128</td></tr>
@@ -295,30 +307,30 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
         <figure>
             <div class="plot padded"><div class="strip" id="perm"></div></div>
             <div class="controls for-prp">
-                <label>Input x <input id="prp-x" type="range" min="0" max="23" value="5"> <output id="prp-x-out">5</output></label>
+                <label><span data-i18n="prp.input">Input x</span> <input id="prp-x" type="range" min="0" max="23" value="5"> <output id="prp-x-out">5</output></label>
             </div>
             <figcaption>
                 <span class="readout" id="prp-readout" aria-live="polite"></span>
-                <span class="note">The eight rounds for this input:</span>
+                <span data-i18n="prp.note" class="note">The eight rounds for this input:</span>
             </figcaption>
             <table class="rounds" id="rounds"></table>
         </figure>
     </section>
 
     <section class="part">
-        <h2>Together they make a function that runs backward</h2>
+        <h2 data-i18n="iprf.title">Together they make a function that runs backward</h2>
         <div>
-            <p>The invertible PRF (iPRF) of the paper is the permutation, then the sampler.</p>
+            <p data-i18n="iprf.p1">The invertible PRF (iPRF) of the paper is the permutation, then the sampler.</p>
             <p class="formula">F(k, x) = <span class="pmns">S</span>(k<sub>pmns</sub>, <span class="prp">P</span>(k<sub>prp</sub>, x))</p>
-            <p>To invert an output y, read the balls of bin y from the tree and send each ball back through
+            <p data-i18n="iprf.p2">To invert an output y, read the balls of bin y from the tree and send each ball back through
                <span class="prp">P</span><sup>-1</sup>. The cost grows with the number of results, not with
                the number of inputs.</p>
-            <p>In the protocol, an input is the number of a hint and an output is an offset in a block. Each
+            <p data-i18n="iprf.p3">In the protocol, an input is the number of a hint and an output is an offset in a block. Each
                block has its own key. The figure shows the function of block 0.</p>
         </div>
         <aside>
-            <h3>This figure and plinko-rs</h3>
-            <table>
+            <h3 data-i18n="aside.title">This figure and plinko-rs</h3>
+            <table data-i18n="iprf.table">
                 <tr><th></th><th>Figure</th><th>plinko-rs default</th></tr>
                 <tr><td>Inputs</td><td>24 hints</td><td>2 * lambda * w hints</td></tr>
                 <tr><td>Outputs</td><td>4 offsets</td><td>w offsets</td></tr>
@@ -326,41 +338,41 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
             </table>
         </aside>
         <figure>
-            <div class="plot"><svg id="iprf" viewBox="0 0 736 214" style="min-width: 40rem" role="group" aria-label="iPRF of block 0"></svg></div>
+            <div class="plot"><svg id="iprf" viewBox="0 0 736 214" style="min-width: 40rem" role="group" aria-label="iPRF of block 0" data-i18n-label="iprf.figure"></svg></div>
             <figcaption>
                 <span class="readout" id="iprf-readout" aria-live="polite"></span>
-                <span class="note">Select a hint number to run the function forward. Select an offset to run it backward.</span>
+                <span data-i18n="iprf.note" class="note">Select a hint number to run the function forward. Select an offset to run it backward.</span>
             </figcaption>
         </figure>
     </section>
 
     <section class="part">
-        <h2>A hint is one record from each block of a subset</h2>
+        <h2 data-i18n="init.title">A hint is one record from each block of a subset</h2>
         <div>
-            <p>The database is cut into c blocks of w records. Hint j has a random subset of the blocks. In each
+            <p data-i18n="init.p1">The database is cut into c blocks of w records. Hint j has a random subset of the blocks. In each
                block k of its subset it holds one record: the record at offset F(K[k], j). The hint stores only
                the XOR of these records, its <span class="hint">parity</span>.</p>
-            <p>The client makes the hints in one pass over the database (HintInit, Fig. 7 of the paper). For
+            <p data-i18n="init.p2">The client makes the hints in one pass over the database (HintInit, Fig. 7 of the paper). For
                each record it runs one iPRF inverse. The result is the list of hints that read this offset in
                this block.</p>
-<pre><b>for</b> i <b>in</b> 0..n:  <i># one pass over the database</i>
+<pre><b>for</b> i <b>in</b> 0..n:  <i data-i18n="init.pass"># one pass over the database</i>
     d = D[i]
     (block, offset) = (i // w, i <b>mod</b> w)
     <b>for</b> j <b>in</b> F_inverse(K[block], offset):
-        <b>if</b> j &lt; lambda*w:  <i># regular hint: c/2 + 1 blocks</i>
+        <b>if</b> j &lt; lambda*w:  <i data-i18n="init.regularComment"># regular hint: c/2 + 1 blocks</i>
             <b>if</b> block <b>in</b> H[j].subset:
                 H[j].parity ^= d
-        <b>else</b>:  <i># backup hint: c/2 blocks, two parities</i>
+        <b>else</b>:  <i data-i18n="init.backupComment"># backup hint: c/2 blocks, two parities</i>
             <b>if</b> block <b>in</b> T[j].subset:
                 T[j].parity_in ^= d
             <b>else</b>:
                 T[j].parity_out ^= d</pre>
-            <p>A backup hint keeps a parity for its subset and a parity for the other blocks. A query later
+            <p data-i18n="init.p3">A backup hint keeps a parity for its subset and a parity for the other blocks. A query later
                turns one backup hint into a regular hint.</p>
         </div>
         <aside>
-            <h3>This figure and plinko-rs</h3>
-            <table>
+            <h3 data-i18n="aside.title">This figure and plinko-rs</h3>
+            <table data-i18n="init.table">
                 <tr><th></th><th>Figure</th><th>plinko-rs default</th></tr>
                 <tr><td>Records</td><td>24, of 1 byte</td><td>n, of 40 bytes</td></tr>
                 <tr><td>Blocks</td><td>6 of 4 records</td><td>w is the smallest power of two that is at least sqrt(n)</td></tr>
@@ -373,51 +385,51 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
             <div class="plot padded">
                 <div class="bench">
                     <div>
-                        <h3>Database</h3>
+                        <h3 data-i18n="init.db">Database</h3>
                         <div class="db" id="init-db"></div>
                     </div>
                     <div>
-                        <h3>Regular hints</h3>
+                        <h3 data-i18n="hints.regular">Regular hints</h3>
                         <div class="hints" id="init-regular"></div>
-                        <h3>Backup hints (in, out)</h3>
+                        <h3 data-i18n="hints.backup">Backup hints (in, out)</h3>
                         <div class="hints" id="init-backup"></div>
                     </div>
                 </div>
             </div>
             <div class="controls">
-                <button class="plain" type="button" id="init-next">Read the next record</button>
-                <button class="plain" type="button" id="init-all">Read all records</button>
-                <button class="plain" type="button" id="init-reset">Start again</button>
+                <button data-i18n="init.next" class="plain" type="button" id="init-next">Read the next record</button>
+                <button data-i18n="init.all" class="plain" type="button" id="init-all">Read all records</button>
+                <button data-i18n="init.reset" class="plain" type="button" id="init-reset">Start again</button>
             </div>
             <figcaption>
                 <span class="readout" id="init-readout" aria-live="polite"></span>
                 <span class="note" id="init-hint-note" aria-live="polite"></span>
                 <div class="key">
-                    <span><span class="cell took"></span>hint took the record</span>
-                    <span><span class="cell skipped"></span>regular hint without this block</span>
-                    <span><span class="cell is-held"></span>record of the selected hint</span>
-                    <span><span class="cell is-out"></span>record of the out parity</span>
+                    <span><span class="cell took"></span><span data-i18n="legend.took">hint took the record</span></span>
+                    <span><span class="cell skipped"></span><span data-i18n="legend.skipped">regular hint without this block</span></span>
+                    <span><span class="cell is-held"></span><span data-i18n="legend.held">record of the selected hint</span></span>
+                    <span><span class="cell is-out"></span><span data-i18n="legend.out">record of the out parity</span></span>
                 </div>
             </figcaption>
         </figure>
     </section>
 
     <section class="part">
-        <h2>A query spends one hint, and an update repairs a few</h2>
+        <h2 data-i18n="online.title">A query spends one hint, and an update repairs a few</h2>
         <div>
-            <p>To read record i in block b, the client needs a hint that holds i. One iPRF inverse gives the
+            <p data-i18n="online.p1">To read record i in block b, the client needs a hint that holds i. One iPRF inverse gives the
                candidates. The client takes block b out of the subset of the hint and sends the other blocks
                with their offsets, next to a second subset of the same size. The server returns one parity for
                each subset. The parity of the hint and the parity from the server differ by exactly record i.</p>
-            <p>A hint that was sent is not used again: a second use would show the server what the two queries
+            <p data-i18n="online.p2">A hint that was sent is not used again: a second use would show the server what the two queries
                have in common. A backup hint takes its place, with record i as its extra record.</p>
-            <p>When a record changes, the client gets the index and the XOR of the old and the new value. One
+            <p data-i18n="online.p3">When a record changes, the client gets the index and the XOR of the old and the new value. One
                iPRF inverse gives the hints that hold the record, and the client corrects their parities. It
                reads no other hint.</p>
         </div>
         <aside>
-            <h3>This figure and plinko-rs</h3>
-            <table>
+            <h3 data-i18n="aside.title">This figure and plinko-rs</h3>
+            <table data-i18n="online.table">
                 <tr><th></th><th>Figure</th><th>plinko-rs</th></tr>
                 <tr><td>Choice of the hint</td><td>first candidate</td><td>candidates in random order</td></tr>
                 <tr><td>No hint holds the index</td><td>some indices</td><td>probability about e^(-lambda/2) for an index</td></tr>
@@ -427,22 +439,22 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
         </aside>
         <figure>
             <div class="controls" style="padding: 0 0 0.9rem">
-                <div class="switch" role="group" aria-label="Action">
-                    <button type="button" data-mode="query" aria-pressed="true">Read a record</button>
-                    <button type="button" data-mode="change" aria-pressed="false">Change a record</button>
+                <div class="switch" role="group" aria-label="Action" data-i18n-label="online.action">
+                    <button data-i18n="online.read" type="button" data-mode="query" aria-pressed="true">Read a record</button>
+                    <button data-i18n="online.change" type="button" data-mode="change" aria-pressed="false">Change a record</button>
                 </div>
-                <button class="plain" type="button" id="online-reset">Run HintInit again</button>
+                <button data-i18n="online.reset" class="plain" type="button" id="online-reset">Run HintInit again</button>
             </div>
             <div class="plot padded">
                 <div class="bench">
                     <div>
-                        <h3>Database of the server</h3>
+                        <h3 data-i18n="online.db">Database of the server</h3>
                         <div class="db" id="online-db"></div>
                     </div>
                     <div>
-                        <h3>Hints of the client</h3>
+                        <h3 data-i18n="online.hints">Hints of the client</h3>
                         <div class="hints" id="online-regular"></div>
-                        <h3>Backup hints (in, out)</h3>
+                        <h3 data-i18n="hints.backup">Backup hints (in, out)</h3>
                         <div class="hints" id="online-backup"></div>
                     </div>
                 </div>
@@ -452,20 +464,20 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
                 <ol class="steps" id="online-steps"></ol>
                 <span class="note" id="online-check"></span>
                 <div class="key">
-                    <span><span class="cell is-now"></span>the record of the action</span>
-                    <span><span class="cell is-s0"></span>subset 0 of the message</span>
-                    <span><span class="cell is-s1"></span>subset 1 of the message</span>
-                    <span><span class="cell is-known">ab</span>record that the client has</span>
-                    <span><span class="cell took"></span>hint of the action</span>
-                    <span><span class="cell promoted"></span>backup hint in use as a hint</span>
+                    <span><span class="cell is-now"></span><span data-i18n="legend.now">the record of the action</span></span>
+                    <span><span class="cell is-s0"></span><span data-i18n="legend.s0">subset 0 of the message</span></span>
+                    <span><span class="cell is-s1"></span><span data-i18n="legend.s1">subset 1 of the message</span></span>
+                    <span><span class="cell is-known">ab</span><span data-i18n="legend.known">record that the client has</span></span>
+                    <span><span class="cell took"></span><span data-i18n="legend.action">hint of the action</span></span>
+                    <span><span class="cell promoted"></span><span data-i18n="legend.promoted">backup hint in use as a hint</span></span>
                 </div>
             </figcaption>
         </figure>
     </section>
 
     <section class="closing">
-        <h2>What each step costs</h2>
-        <table>
+        <h2 data-i18n="cost.title">What each step costs</h2>
+        <table data-i18n="cost.table">
             <tr><th>Step</th><th>Work</th></tr>
             <tr><td>HintInit (client)</td><td>One iPRF inverse for each record of the database: 2 * lambda candidate hints on average</td></tr>
             <tr><td>Find a <span class="hint">hint</span> for an index</td><td>One iPRF inverse</td></tr>
@@ -475,12 +487,12 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
             <tr><td>Update (client)</td><td>One iPRF inverse for each changed record</td></tr>
             <tr><td>Query limit</td><td>One backup hint for each query; then a new HintInit</td></tr>
         </table>
-        <p style="max-width: 40rem; margin-top: 1.2rem">plinko-rs is a library for a database of fixed-size records.
+        <p data-i18n="cost.scope" style="max-width: 40rem; margin-top: 1.2rem">plinko-rs is a library for a database of fixed-size records.
            Each client downloads the database and runs HintInit. The full Ethereum state is not a target: at that
            size the download is 73.4 GB and HintInit needs about 300 core-hours (extrapolated).</p>
     </section>
 
-    <footer>
+    <footer data-i18n="page.footer">
         Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs,
         <a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>.
         Code and documents: <a href="https://github.com/igor53627/plinko-rs">github.com/igor53627/plinko-rs</a>.
@@ -801,8 +813,333 @@ function checkClient(world, client, server) {
 const SVG = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
 const hex = value => value.toString(16).padStart(2, '0');
-const words = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
+// ---------------------------------------------------------------------------
+// Languages. English is the text of the HTML. TRANSLATIONS holds the same
+// elements in another language, by the key of their data-i18n attribute.
+// MESSAGES holds the text that the figures make.
+// ---------------------------------------------------------------------------
+
+const TRANSLATIONS = {
+    ru: {
+        'page.title': 'Plinko PIR: шар за шаром',
+        'page.description': 'Интерактивное пояснение к plinko-rs и к статье о Plinko (ePrint 2024/318).',
+        'page.lede': 'Интерактивное пояснение к <a href="https://github.com/igor53627/plinko-rs">plinko-rs</a> и к статье о Plinko ' +
+            '(<a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>). ' +
+            'Каждый рисунок выполняет алгоритм, который описан в тексте рядом, с малыми размерами и с игрушечным хешем вместо AES. ' +
+            'Рисунки не дают никакой защиты.',
+        'page.footer': 'Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs, ' +
+            '<a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>. ' +
+            'Код и документы: <a href="https://github.com/igor53627/plinko-rs">github.com/igor53627/plinko-rs</a>.',
+        'lang.group': 'Язык',
+        'theme.group': 'Тема',
+        'theme.paper': 'Бумага',
+        'theme.slate': 'Грифель',
+        'aside.title': 'Рисунок и plinko-rs',
+
+        'sampler.tree': 'Дерево сэмплера',
+        'sampler.ball': 'Шар x',
+        'sampler.rekey': 'Новый ключ',
+        'sampler.note': 'Сэмплер с рис. 4 статьи: 32 шара, 8 корзин. Каждый узел отдаёт левому потомку Binomial(count, 1/2) своих шаров. ' +
+            'Выберите корзину, чтобы увидеть её шары. Кнопка «Новый ключ» меняет ключ на всех рисунках страницы.',
+        'sampler.title': 'Сэмплер сам по себе сохраняет порядок шаров',
+        'sampler.p1': 'Plinko — схема приватного извлечения информации (PIR): клиент читает запись базы данных, а сервер не узнаёт, какую именно. ' +
+            'Перед запросами клиент готовит подсказки (hints). Быстро находить нужную подсказку позволяет сэмплер, который бросает n шаров в m корзин. ' +
+            'В статье он называется псевдослучайным мультиномиальным сэмплером (PMNS).',
+        'sampler.p2': 'Подвигайте ползунок: шар 0 всегда лежит в первой непустой корзине, и шар с большим номером никогда не попадает левее шара с меньшим. ' +
+            'Сэмплеру нужны только узлы на одном пути дерева, поэтому один шар стоит O(log m) узлов.',
+        'sampler.left': '# шар идёт налево',
+        'sampler.p3': 'В статье у каждого узла своя вероятность p. plinko-rs требует, чтобы m было степенью двойки, поэтому p всегда равно 1/2, ' +
+            'а число шаров для левого потомка равно числу единичных битов среди <code>count</code> битов ключевого потока.',
+        'sampler.table': `
+            <tr><th></th><th>Рисунок</th><th>plinko-rs по умолчанию</th></tr>
+            <tr><td>Шары</td><td>32</td><td>2 * lambda * w подсказок</td></tr>
+            <tr><td>Корзины</td><td>8</td><td>w смещений блока</td></tr>
+            <tr><td>Монеты</td><td>игрушечный хеш</td><td>ключевой поток AES-128</td></tr>`,
+
+        'prp.title': 'Перестановка скрывает порядок',
+        'prp.p1': 'Функция, которая сохраняет порядок входов, не псевдослучайна. Поэтому Plinko сначала пропускает вход через перестановку с ключом. ' +
+            'Это перестановка Swap-or-Not (Hoang, Morris и Rogaway, 2012). ' +
+            'Каждый раунд даёт значению x партнёра и бросает для пары одну монету, которая зависит от ключа: менять местами или нет.',
+        'prp.swap': '# обмен',
+        'prp.p2': 'Оба значения пары видят одну и ту же монету. Поэтому раунд обратен самому себе, ' +
+            'а обратная перестановка выполняет те же раунды в обратном порядке.',
+        'prp.table': `
+            <tr><th></th><th>Рисунок</th><th>plinko-rs</th></tr>
+            <tr><td>Область определения</td><td>24</td><td>число подсказок</td></tr>
+            <tr><td>Раунды</td><td>8</td><td>около 800 на каждую стадию при lambda = 128</td></tr>
+            <tr><td>Перестановка</td><td>Swap-or-Not</td><td>Swap-or-Not внутри Sometimes-Recurse (Morris и Rogaway, 2014)</td></tr>`,
+        'prp.input': 'Вход x',
+        'prp.note': 'Восемь раундов для этого входа:',
+
+        'iprf.title': 'Вместе они дают функцию, которую можно вычислить назад',
+        'iprf.p1': 'Обратимая PRF (iPRF) из статьи — это перестановка, а за ней сэмплер.',
+        'iprf.p2': 'Чтобы обратить выход y, прочитайте по дереву шары корзины y и пропустите каждый шар назад через ' +
+            '<span class="prp">P</span><sup>-1</sup>. Стоимость растёт с числом результатов, а не с числом входов.',
+        'iprf.p3': 'В протоколе вход — это номер подсказки, а выход — смещение в блоке. У каждого блока свой ключ. Рисунок показывает функцию блока 0.',
+        'iprf.table': `
+            <tr><th></th><th>Рисунок</th><th>plinko-rs по умолчанию</th></tr>
+            <tr><td>Входы</td><td>24 подсказки</td><td>2 * lambda * w подсказок</td></tr>
+            <tr><td>Выходы</td><td>4 смещения</td><td>w смещений</td></tr>
+            <tr><td>Результаты одного обращения</td><td>в среднем 6</td><td>в среднем 2 * lambda</td></tr>`,
+        'iprf.figure': 'iPRF блока 0',
+        'iprf.note': 'Выберите номер подсказки, чтобы вычислить функцию вперёд. Выберите смещение, чтобы вычислить её назад.',
+
+        'init.title': 'Подсказка — это по одной записи из каждого блока подмножества',
+        'init.p1': 'База данных разрезана на c блоков по w записей. У подсказки j есть случайное подмножество блоков. ' +
+            'В каждом блоке k своего подмножества она держит одну запись: запись по смещению F(K[k], j). ' +
+            'Подсказка хранит только XOR этих записей — свою <span class="hint">чётность</span> (parity).',
+        'init.p2': 'Клиент строит подсказки за один проход по базе данных (HintInit, рис. 7 статьи). ' +
+            'Для каждой записи он один раз обращает iPRF. Результат — список подсказок, которые читают это смещение в этом блоке.',
+        'init.pass': '# один проход по базе данных',
+        'init.regularComment': '# обычная подсказка: c/2 + 1 блоков',
+        'init.backupComment': '# запасная подсказка: c/2 блоков, две чётности',
+        'init.p3': 'Запасная подсказка хранит одну чётность для своего подмножества и одну для остальных блоков. ' +
+            'Позже запрос превращает одну запасную подсказку в обычную.',
+        'init.table': `
+            <tr><th></th><th>Рисунок</th><th>plinko-rs по умолчанию</th></tr>
+            <tr><td>Записи</td><td>24, по 1 байту</td><td>n, по 40 байт</td></tr>
+            <tr><td>Блоки</td><td>6 по 4 записи</td><td>w — наименьшая степень двойки, не меньшая sqrt(n)</td></tr>
+            <tr><td>Обычные подсказки</td><td>16</td><td>lambda * w, lambda = 128</td></tr>
+            <tr><td>Запасные подсказки</td><td>8</td><td>lambda * w</td></tr>
+            <tr><td>Подмножество подсказки</td><td>список блоков</td><td>один 32-битный порог</td></tr>`,
+        'init.db': 'База данных',
+        'init.next': 'Прочитать следующую запись',
+        'init.all': 'Прочитать все записи',
+        'init.reset': 'Начать заново',
+        'hints.regular': 'Обычные подсказки',
+        'hints.backup': 'Запасные подсказки (in, out)',
+        'legend.took': 'подсказка взяла запись',
+        'legend.skipped': 'обычная подсказка без этого блока',
+        'legend.held': 'запись выбранной подсказки',
+        'legend.out': 'запись чётности out',
+
+        'online.title': 'Запрос тратит одну подсказку, а обновление исправляет несколько',
+        'online.p1': 'Чтобы прочитать запись i в блоке b, клиенту нужна подсказка, которая держит i. Одно обращение iPRF даёт кандидатов. ' +
+            'Клиент убирает блок b из подмножества подсказки и отправляет остальные блоки с их смещениями, а рядом — второе подмножество того же размера. ' +
+            'Сервер возвращает по одной чётности на каждое подмножество. Чётность подсказки и чётность от сервера различаются ровно на запись i.',
+        'online.p2': 'Отправленная подсказка больше не используется: повторное использование показало бы серверу, что общего у двух запросов. ' +
+            'Её место занимает запасная подсказка, и запись i становится её дополнительной записью.',
+        'online.p3': 'Когда запись меняется, клиент получает индекс и XOR старого и нового значений. ' +
+            'Одно обращение iPRF даёт подсказки, которые держат эту запись, и клиент исправляет их чётности. Других подсказок он не читает.',
+        'online.table': `
+            <tr><th></th><th>Рисунок</th><th>plinko-rs</th></tr>
+            <tr><td>Выбор подсказки</td><td>первый кандидат</td><td>кандидаты в случайном порядке</td></tr>
+            <tr><td>Ни одна подсказка не держит индекс</td><td>для некоторых индексов</td><td>вероятность около e^(-lambda/2) на индекс</td></tr>
+            <tr><td>Сообщение запроса</td><td>6 битов и 3 смещения</td><td>c битов и c/2 смещений</td></tr>
+            <tr><td>Запросов до нового HintInit</td><td>8</td><td>число запасных подсказок</td></tr>`,
+        'online.action': 'Действие',
+        'online.read': 'Прочитать запись',
+        'online.change': 'Изменить запись',
+        'online.reset': 'Запустить HintInit заново',
+        'online.db': 'База данных сервера',
+        'online.hints': 'Подсказки клиента',
+        'legend.now': 'запись действия',
+        'legend.s0': 'подмножество 0 из сообщения',
+        'legend.s1': 'подмножество 1 из сообщения',
+        'legend.known': 'запись, которая есть у клиента',
+        'legend.action': 'подсказка действия',
+        'legend.promoted': 'запасная подсказка, которая работает как обычная',
+
+        'cost.title': 'Сколько стоит каждый шаг',
+        'cost.table': `
+            <tr><th>Шаг</th><th>Работа</th></tr>
+            <tr><td>HintInit (клиент)</td><td>Одно обращение iPRF на каждую запись базы данных: в среднем 2 * lambda подсказок-кандидатов</td></tr>
+            <tr><td>Найти <span class="hint">подсказку</span> для индекса</td><td>Одно обращение iPRF</td></tr>
+            <tr><td>Запрос (клиент)</td><td>c/2 прямых вычислений iPRF, по одному на каждый блок подсказки</td></tr>
+            <tr><td>Сообщение запроса</td><td>c/8 байт маски блоков и c/2 смещений по 4 байта</td></tr>
+            <tr><td>Ответ (сервер)</td><td>XOR c записей в две чётности</td></tr>
+            <tr><td>Обновление (клиент)</td><td>Одно обращение iPRF на каждую изменённую запись</td></tr>
+            <tr><td>Предел запросов</td><td>Одна запасная подсказка на каждый запрос; затем новый HintInit</td></tr>`,
+        'cost.scope': 'plinko-rs — библиотека для базы данных с записями фиксированного размера. Каждый клиент скачивает базу данных и выполняет HintInit. ' +
+            'Полное состояние Ethereum не является целью: при таком размере загрузка составляет 73,4 ГБ, а HintInit требует около 300 ядро-часов (экстраполяция).',
+    },
+};
+
+const enList = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+const ruList = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} и ${items[items.length - 1]}`);
+// A count with the Russian form of its noun: 1 шар, 2 шара, 5 шаров.
+const ruCount = (count, one, few, many) => {
+    const tens = count % 100;
+    const units = count % 10;
+    const noun = tens >= 11 && tens <= 14 ? many : units === 1 ? one : units >= 2 && units <= 4 ? few : many;
+    return `${count} ${noun}`;
+};
 const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+const maskBits = mask => mask.map(bit => (bit ? 1 : 0)).join('');
+
+const enLocated = result => `Record ${result.index} is block ${result.block}, offset ${result.offset}. ` + (result.candidates.length
+    ? `The iPRF inverse gives ${result.candidates.length === 1 ? 'hint' : 'hints'} ${enList(result.candidates)}.`
+    : 'The iPRF inverse is empty.');
+const ruLocated = result => `Запись ${result.index} — это блок ${result.block}, смещение ${result.offset}. ` + (result.candidates.length
+    ? `Обращение iPRF даёт ${result.candidates.length === 1 ? 'подсказку' : 'подсказки'} ${ruList(result.candidates)}.`
+    : 'Обращение iPRF пусто.');
+
+const MESSAGES = {
+    en: {
+        list: enList,
+        binLabel: bin => `bin ${bin}`,
+        binName: (bin, count) => `Bin ${bin}, ${plural(count, 'ball')}`,
+        treeReadout(ball, landed, shown) {
+            const held = shown.count === 0 ? 'holds no ball'
+                : shown.count === 1 ? `holds ball ${shown.start}`
+                : `holds balls ${shown.start} to ${shown.start + shown.count - 1}`;
+            return `Ball ${ball} lands in bin ${landed}. Bin ${shown.low} ${held}. `;
+        },
+        roundsHead: ['Round', 'Round key', 'Value', 'Partner', 'Coin', 'Result'],
+        roundResult: (coin, out) => (coin ? `swap: ${out}` : `stay: ${out}`),
+        prpReadout: (x, y, back) => `P(${x}) = ${y}, and the rounds in the opposite order give P^-1(${y}) = ${back}. `,
+        iprfRows: ['hint j', 'ball P(j)', 'offset'],
+        hintName: hint => `Hint ${hint}`,
+        offsetName: (offset, count) => `Offset ${offset}, ${plural(count, 'hint')}`,
+        noBall: offset => `${offset}: no ball`,
+        iprfForward: (hint, ball, offset) =>
+            `F(K[0], ${hint}) = ${offset}: the permutation sends hint ${hint} to ball ${ball}, ` +
+            `and that ball is in the bin of offset ${offset}. Hint ${hint} reads offset ${offset} of block 0. `,
+        iprfInverse: (offset, leaf, hints) => (leaf.count === 0
+            ? `The inverse of offset ${offset} is empty: its bin has no ball. No hint reads offset ${offset} of block 0. `
+            : `The inverse of offset ${offset}: the bin holds ${leaf.count === 1 ? `ball ${leaf.start}` : `balls ${leaf.start} to ${leaf.start + leaf.count - 1}`}, ` +
+              `and the inverse permutation gives ${leaf.count === 1 ? 'hint' : 'hints'} ${enList(hints)}. `),
+        offsetHead: offset => `offset ${offset}`,
+        blockSide: block => `block ${block}`,
+        recordName: (index, block, offset, value) => `Record ${index}, block ${block}, offset ${offset}, value ${value}`,
+        initStart: 'No record is read yet. All parities are 00. ',
+        initStep(record, candidates, took, skipped, done) {
+            const found = candidates.length === 0
+                ? 'The iPRF inverse is empty: no hint reads this offset. '
+                : `The iPRF inverse gives ${candidates.length === 1 ? 'hint' : 'hints'} ${enList(candidates)}. ` +
+                  (took.length ? `${took.length === 1 ? 'Hint' : 'Hints'} ${enList(took)} ${took.length === 1 ? 'takes' : 'take'} the record. ` : 'No hint takes the record. ') +
+                  (skipped.length ? `${skipped.length === 1 ? 'Hint' : 'Hints'} ${enList(skipped)} ${skipped.length === 1 ? 'does' : 'do'} not have block ${record.block}. ` : '');
+            return `Record ${record.index} (${record.value}) is block ${record.block}, offset ${record.offset}. ` + found + (done ? 'HintInit is complete. ' : '');
+        },
+        initSelect: 'Select a hint to see its records in the database.',
+        initHint: (hint, blocks, sumIn, sumOut) => (sumOut === null
+            ? `Hint ${hint} has blocks ${enList(blocks)}. Its parity from the records read so far: ${sumIn}.`
+            : `Backup hint ${hint} has blocks ${enList(blocks)}. In parity so far: ${sumIn}. Out parity, from the other blocks: ${sumOut}.`),
+        onlineStart: mode => (mode === 'query'
+            ? 'Select a record of the database to read it privately. '
+            : 'Select a record of the database to change it. '),
+        noBackup: 'No backup hint is left, so the client sends nothing. It must run HintInit again. ',
+        noDecoy: last => `The client has record ${last.wanted} from an earlier query: ${hex(last.cachedValue)}. ` +
+            'It has all records, so no index is left for a decoy query. ',
+        noHint: last => (last.decoy
+            ? `The client has record ${last.wanted} from an earlier query: ${hex(last.cachedValue)}. No hint holds a record for a decoy query`
+            : `No hint holds record ${last.index}`) + ', so the client sends nothing. ',
+        located: enLocated,
+        noHintStep: last => `None of them is a hint with block ${last.block} in its subset. With lambda = 128 this occurs with a probability of about e^(-64) for an index.`,
+        queryReadout: query => (query.decoy
+            ? `The client has record ${query.wanted} from an earlier query: ${hex(query.cachedValue)}. It sends a decoy query for record ${query.index}, so that the server sees a query each time. `
+            : `The client reads record ${query.index}: ${hex(query.record)}. `),
+        queryFound: query => `${enLocated(query)} Hint ${query.hintId} is the first one that has block ${query.block}.`,
+        queryMessage: query => `Message: mask <code>${maskBits(query.mask)}</code>, offsets <code>${query.offsets.join(', ')}</code>. ` +
+            `Subset 0 is blocks ${enList(query.blocks[0])}, and subset 1 is blocks ${enList(query.blocks[1])}. The k-th block of a subset reads the k-th offset.` +
+            (query.chance
+                ? ` By chance, subset ${1 - query.realSubset} reads record ${query.index} itself. The server cannot tell this from a query for another record.`
+                : ` Record ${query.index} is in neither subset.`),
+        queryAnswer: query => `Answer: parity of subset 0 is <code>${hex(query.answer[0])}</code>, parity of subset 1 is <code>${hex(query.answer[1])}</code>. ` +
+            `The server cannot tell that subset ${query.realSubset} is the one from the hint.`,
+        queryRecord: query => `Record = <code>${hex(query.answer[query.realSubset])} xor ${hex(query.hintParity)} = ${hex(query.record)}</code>: ` +
+            `the answer for subset ${query.realSubset}, and the parity of hint ${query.hintId}.`,
+        queryPromote: query => `Hint ${query.hintId} is spent. Backup hint ${query.backupId} takes its place: its ${query.usedOutHalf ? 'out' : 'in'} half ` +
+            `(blocks ${enList(query.half)}) and record ${query.index}. ${plural(query.left, 'backup hint')} left.`,
+        changeReadout: last => `Record ${last.index} changes from ${hex(last.old)} to ${hex(last.value)}. The client gets the index and the change ${hex(last.change)}. `,
+        changeTouched(last) {
+            const name = entry => (entry.part === 'parity' ? `hint ${entry.hint}`
+                : entry.part === 'extra' ? `hint ${entry.hint} (the record is its extra record)`
+                : `backup hint ${entry.hint} (${entry.part === 'parityIn' ? 'in' : 'out'} parity)`);
+            return last.touched.length
+                ? `The client XORs <code>${hex(last.change)}</code> into ${enList(last.touched.map(name))}.`
+                : 'No hint holds the record. No parity changes.';
+        },
+        changeReads: last => `The client reads ${plural(last.candidates.length, 'hint')} of ${HINTS}.` +
+            (last.cached ? ` It also corrects its copy of record ${last.index}.` : ''),
+        check: result => (result.wrong === 0
+            ? `Check of the figure: all ${result.checked} parities and records of the client agree with the database of the server.`
+            : `Check of the figure: ${result.wrong} of ${result.checked} values of the client do not agree with the database. This is a defect of the page.`),
+    },
+    ru: {
+        list: ruList,
+        binLabel: bin => `корзина ${bin}`,
+        binName: (bin, count) => `Корзина ${bin}, ${ruCount(count, 'шар', 'шара', 'шаров')}`,
+        treeReadout(ball, landed, shown) {
+            const held = shown.count === 0 ? `В корзине ${shown.low} нет шаров`
+                : shown.count === 1 ? `В корзине ${shown.low} лежит шар ${shown.start}`
+                : `В корзине ${shown.low} лежат шары с ${shown.start} по ${shown.start + shown.count - 1}`;
+            return `Шар ${ball} попадает в корзину ${landed}. ${held}. `;
+        },
+        roundsHead: ['Раунд', 'Ключ', 'x', 'Партнёр', 'Монета', 'Итог'],
+        roundResult: (coin, out) => (coin ? `обмен: ${out}` : `на месте: ${out}`),
+        prpReadout: (x, y, back) => `P(${x}) = ${y}, а те же раунды в обратном порядке дают P^-1(${y}) = ${back}. `,
+        iprfRows: ['вход j', 'шар P(j)', 'выход'],
+        hintName: hint => `Подсказка ${hint}`,
+        offsetName: (offset, count) => `Смещение ${offset}, ${ruCount(count, 'подсказка', 'подсказки', 'подсказок')}`,
+        noBall: offset => `${offset}: нет шара`,
+        iprfForward: (hint, ball, offset) =>
+            `F(K[0], ${hint}) = ${offset}: перестановка переводит подсказку ${hint} в шар ${ball}, ` +
+            `а этот шар лежит в корзине смещения ${offset}. Подсказка ${hint} читает смещение ${offset} блока 0. `,
+        iprfInverse: (offset, leaf, hints) => (leaf.count === 0
+            ? `Обращение для смещения ${offset} пусто: в его корзине нет шаров. Ни одна подсказка не читает смещение ${offset} блока 0. `
+            : `Обращение для смещения ${offset}: в корзине ${leaf.count === 1 ? `лежит шар ${leaf.start}` : `лежат шары с ${leaf.start} по ${leaf.start + leaf.count - 1}`}, ` +
+              `и обратная перестановка даёт ${leaf.count === 1 ? 'подсказку' : 'подсказки'} ${ruList(hints)}. `),
+        offsetHead: offset => `смещ. ${offset}`,
+        blockSide: block => `блок ${block}`,
+        recordName: (index, block, offset, value) => `Запись ${index}, блок ${block}, смещение ${offset}, значение ${value}`,
+        initStart: 'Ни одна запись ещё не прочитана. Все чётности равны 00. ',
+        initStep(record, candidates, took, skipped, done) {
+            const found = candidates.length === 0
+                ? 'Обращение iPRF пусто: ни одна подсказка не читает это смещение. '
+                : `Обращение iPRF даёт ${candidates.length === 1 ? 'подсказку' : 'подсказки'} ${ruList(candidates)}. ` +
+                  (took.length ? `${took.length === 1 ? 'Подсказка' : 'Подсказки'} ${ruList(took)} ${took.length === 1 ? 'берёт' : 'берут'} запись. ` : 'Ни одна подсказка не берёт запись. ') +
+                  (skipped.length ? `У ${skipped.length === 1 ? 'подсказки' : 'подсказок'} ${ruList(skipped)} нет блока ${record.block}. ` : '');
+            return `Запись ${record.index} (${record.value}) — это блок ${record.block}, смещение ${record.offset}. ` + found + (done ? 'HintInit завершён. ' : '');
+        },
+        initSelect: 'Выберите подсказку, чтобы увидеть её записи в базе данных.',
+        initHint: (hint, blocks, sumIn, sumOut) => (sumOut === null
+            ? `У подсказки ${hint} блоки ${ruList(blocks)}. Её чётность по уже прочитанным записям: ${sumIn}.`
+            : `У запасной подсказки ${hint} блоки ${ruList(blocks)}. Чётность in на данный момент: ${sumIn}. Чётность out, по остальным блокам: ${sumOut}.`),
+        onlineStart: mode => (mode === 'query'
+            ? 'Выберите запись базы данных, чтобы прочитать её приватно. '
+            : 'Выберите запись базы данных, чтобы изменить её. '),
+        noBackup: 'Запасных подсказок не осталось, поэтому клиент ничего не отправляет. Он должен запустить HintInit заново. ',
+        noDecoy: last => `Запись ${last.wanted} уже есть у клиента из прошлого запроса: ${hex(last.cachedValue)}. ` +
+            'У него есть все записи, поэтому для ложного запроса не осталось индекса. ',
+        noHint: last => (last.decoy
+            ? `Запись ${last.wanted} уже есть у клиента из прошлого запроса: ${hex(last.cachedValue)}. Ни одна подсказка не держит запись для ложного запроса`
+            : `Ни одна подсказка не держит запись ${last.index}`) + ', поэтому клиент ничего не отправляет. ',
+        located: ruLocated,
+        noHintStep: last => `Среди них нет подсказки, у которой в подмножестве есть блок ${last.block}. При lambda = 128 это случается с вероятностью около e^(-64) на индекс.`,
+        queryReadout: query => (query.decoy
+            ? `Запись ${query.wanted} уже есть у клиента из прошлого запроса: ${hex(query.cachedValue)}. Он отправляет ложный запрос для записи ${query.index}, чтобы сервер каждый раз видел запрос. `
+            : `Клиент читает запись ${query.index}: ${hex(query.record)}. `),
+        queryFound: query => `${ruLocated(query)} Подсказка ${query.hintId} — первая из них, у которой есть блок ${query.block}.`,
+        queryMessage: query => `Сообщение: маска <code>${maskBits(query.mask)}</code>, смещения <code>${query.offsets.join(', ')}</code>. ` +
+            `Подмножество 0 — блоки ${ruList(query.blocks[0])}, подмножество 1 — блоки ${ruList(query.blocks[1])}. k-й блок подмножества читает k-е смещение.` +
+            (query.chance
+                ? ` Случайно подмножество ${1 - query.realSubset} читает саму запись ${query.index}. Сервер не может отличить это от запроса другой записи.`
+                : ` Записи ${query.index} нет ни в одном подмножестве.`),
+        queryAnswer: query => `Ответ: чётность подмножества 0 равна <code>${hex(query.answer[0])}</code>, чётность подмножества 1 равна <code>${hex(query.answer[1])}</code>. ` +
+            `Сервер не может определить, что из подсказки взято именно подмножество ${query.realSubset}.`,
+        queryRecord: query => `Запись = <code>${hex(query.answer[query.realSubset])} xor ${hex(query.hintParity)} = ${hex(query.record)}</code>: ` +
+            `ответ для подмножества ${query.realSubset} и чётность подсказки ${query.hintId}.`,
+        queryPromote: query => `Подсказка ${query.hintId} потрачена. Её место занимает запасная подсказка ${query.backupId}: её половина ${query.usedOutHalf ? 'out' : 'in'} ` +
+            `(блоки ${ruList(query.half)}) и запись ${query.index}. ` +
+            `${query.left === 1 ? 'Осталась' : 'Осталось'} ${ruCount(query.left, 'запасная подсказка', 'запасные подсказки', 'запасных подсказок')}.`,
+        changeReadout: last => `Запись ${last.index} меняется с ${hex(last.old)} на ${hex(last.value)}. Клиент получает индекс и изменение ${hex(last.change)}. `,
+        changeTouched(last) {
+            const name = entry => (entry.part === 'parity' ? `подсказке ${entry.hint}`
+                : entry.part === 'extra' ? `подсказке ${entry.hint} (эта запись — её дополнительная запись)`
+                : `запасной подсказке ${entry.hint} (чётность ${entry.part === 'parityIn' ? 'in' : 'out'})`);
+            return last.touched.length
+                ? `Клиент прибавляет <code>${hex(last.change)}</code> по XOR к ${ruList(last.touched.map(name))}.`
+                : 'Ни одна подсказка не держит эту запись. Чётности не меняются.';
+        },
+        changeReads: last => `Клиент читает ${ruCount(last.candidates.length, 'подсказку', 'подсказки', 'подсказок')} из ${HINTS}.` +
+            (last.cached ? ` Он также исправляет свою копию записи ${last.index}.` : ''),
+        check: result => (result.wrong === 0
+            ? `Проверка рисунка: чётности и записи клиента (всего ${result.checked}) совпадают с базой данных сервера.`
+            : `Проверка рисунка: ${result.wrong} из ${result.checked} значений клиента не совпадают с базой данных. Это дефект страницы.`),
+    },
+};
 
 function svgEl(name, attrs = {}, text) {
     const element = document.createElementNS(SVG, name);
@@ -841,6 +1178,7 @@ function keepFocus(draw) {
 
 const narrow = window.matchMedia('(max-width: 40rem)');
 const state = {
+    lang: 'en',
     master: 0x51ed270b,
     world: null,
     ball: 13,
@@ -859,9 +1197,10 @@ const TREE_BINS = 8;
 const renderTree = () => keepFocus(drawTree);
 
 function drawTree() {
+    const t = MESSAGES[state.lang];
     const shape = narrow.matches
         ? { width: 360, height: 318, pitch: 45, first: 22.5, radius: 13, top: 24, gap: 52, mouth: 196, base: 284, bar: 34, tall: 62, font: 13, small: 12, label: bin => `${bin}` }
-        : { width: 720, height: 384, pitch: 90, first: 45, radius: 17, top: 34, gap: 64, mouth: 248, base: 348, bar: 60, tall: 76, font: 15, small: 13, label: bin => `bin ${bin}` };
+        : { width: 720, height: 384, pitch: 90, first: 45, radius: 17, top: 34, gap: 64, mouth: 248, base: 348, bar: 60, tall: 76, font: 15, small: 13, label: t.binLabel };
     const binX = bin => shape.first + bin * shape.pitch;
     const nodeX = node => (binX(node.low) + binX(node.high)) / 2;
 
@@ -905,7 +1244,7 @@ function drawTree() {
         const on = state.pickedBin === null ? leaf === landed : state.pickedBin === leaf.low;
         const group = svgEl('g', {
             class: `bin${on ? ' on' : ''}`, tabindex: 0, role: 'button', 'data-focus': `tree-bin-${leaf.low}`,
-            'aria-label': `Bin ${leaf.low}, ${plural(leaf.count, 'ball')}`,
+            'aria-label': t.binName(leaf.low, leaf.count),
         });
         group.append(
             svgEl('rect', { class: 'bar', x: x - shape.bar / 2, y: shape.base - height, width: shape.bar, height }),
@@ -918,10 +1257,7 @@ function drawTree() {
     svg.append(edges, svgEl('line', { class: 'base', x1: 0, y1: shape.base, x2: shape.width, y2: shape.base }), bins, nodes);
 
     const shown = state.pickedBin === null ? landed : leaves[state.pickedBin];
-    const held = shown.count === 0 ? 'holds no ball'
-        : shown.count === 1 ? `holds ball ${shown.start}`
-        : `holds balls ${shown.start} to ${shown.start + shown.count - 1}`;
-    $('tree-readout').textContent = `Ball ${state.ball} lands in bin ${landed.low}. Bin ${shown.low} ${held}. `;
+    $('tree-readout').textContent = t.treeReadout(state.ball, landed.low, shown);
     $('ball-out').textContent = state.ball;
 }
 
@@ -930,6 +1266,7 @@ function drawTree() {
 const renderPrp = () => keepFocus(drawPrp);
 
 function drawPrp() {
+    const t = MESSAGES[state.lang];
     const key = state.world.iprfs[0].prpKey;
     const x = state.prpInput;
     const strip = $('perm');
@@ -939,16 +1276,16 @@ function drawPrp() {
     for (let i = 0; i < HINTS; i++) strip.append(htmlEl('span', { class: `box${i === x ? ' on' : ''}` }, prpForward(key, HINTS, i)));
 
     const rounds = $('rounds');
-    rounds.replaceChildren(htmlEl('tr', {}, '<th>Round</th><th>Round key</th><th>Value</th><th>Partner</th><th>Coin</th><th>Result</th>'));
+    rounds.replaceChildren(htmlEl('tr', {}, t.roundsHead.map(head => `<th>${head}</th>`).join('')));
     let value = x;
     for (let round = 0; round < PRP_ROUNDS; round++) {
         const step = prpRound(key, HINTS, round, value);
         rounds.append(htmlEl('tr', {},
             `<td>${round}</td><td>${step.roundKey}</td><td>${value}</td><td>${step.partner}</td>` +
-            `<td>${step.coin}</td><td class="${step.coin ? 'swap' : ''}">${step.coin ? `swap: ${step.out}` : `stay: ${step.out}`}</td>`));
+            `<td>${step.coin}</td><td class="${step.coin ? 'swap' : ''}">${t.roundResult(step.coin, step.out)}</td>`));
         value = step.out;
     }
-    $('prp-readout').textContent = `P(${x}) = ${value}, and the rounds in the opposite order give P^-1(${value}) = ${prpInverse(key, HINTS, value)}. `;
+    $('prp-readout').textContent = t.prpReadout(x, value, prpInverse(key, HINTS, value));
     $('prp-x-out').textContent = x;
 }
 
@@ -957,6 +1294,7 @@ function drawPrp() {
 const renderIprf = () => keepFocus(drawIprf);
 
 function drawIprf() {
+    const t = MESSAGES[state.lang];
     const iprf = state.world.iprfs[0];
     const pick = state.iprfPick;
     const svg = $('iprf');
@@ -967,9 +1305,9 @@ function drawIprf() {
     const balls = new Set(inputs.map(iprf.permute));
 
     svg.append(
-        svgEl('text', { class: 'rowname', x: 4, y: 40 }, 'hint j'),
-        svgEl('text', { class: 'rowname', x: 4, y: 136 }, 'ball P(j)'),
-        svgEl('text', { class: 'rowname', x: 4, y: 174 }, 'offset'));
+        svgEl('text', { class: 'rowname', x: 4, y: 40 }, t.iprfRows[0]),
+        svgEl('text', { class: 'rowname', x: 4, y: 136 }, t.iprfRows[1]),
+        svgEl('text', { class: 'rowname', x: 4, y: 174 }, t.iprfRows[2]));
 
     const wires = svgEl('g');
     const quiet = [];
@@ -985,7 +1323,7 @@ function drawIprf() {
 
     for (let j = 0; j < HINTS; j++) {
         const on = inputs.includes(j);
-        const group = svgEl('g', { class: `slot in pick${on ? ' on' : ''}`, tabindex: 0, role: 'button', 'data-focus': `iprf-hint-${j}`, 'aria-label': `Hint ${j}` });
+        const group = svgEl('g', { class: `slot in pick${on ? ' on' : ''}`, tabindex: 0, role: 'button', 'data-focus': `iprf-hint-${j}`, 'aria-label': t.hintName(j) });
         group.append(
             svgEl('rect', { x: at(j) - 12, y: 24, width: 24, height: 24 }),
             svgEl('text', { x: at(j), y: 41 }, j));
@@ -1007,14 +1345,14 @@ function drawIprf() {
         const width = empty ? 0 : leaf.count * 27 - 3;
         const group = svgEl('g', {
             class: `range pick${on ? ' on' : ''}${empty ? ' empty' : ''}`, tabindex: 0, role: 'button', 'data-focus': `iprf-offset-${leaf.low}`,
-            'aria-label': `Offset ${leaf.low}, ${plural(leaf.count, 'hint')}`,
+            'aria-label': t.offsetName(leaf.low, leaf.count),
         });
         if (empty) {
             const x = Math.min(Math.max(left - 2, emptyRight + 36, 100), 700);
             emptyRight = x + 36;
             group.append(
                 svgEl('rect', { class: 'hit', x: x - 34, y: 188, width: 68, height: 22 }),
-                svgEl('text', { x, y: 204 }, `${leaf.low}: no ball`));
+                svgEl('text', { x, y: 204 }, t.noBall(leaf.low)));
         } else {
             group.append(
                 svgEl('rect', { x: left, y: 156, width, height: 26 }),
@@ -1024,34 +1362,26 @@ function drawIprf() {
         svg.append(group);
     }
 
-    const leaf = iprf.leaves[output];
-    if (pick.kind === 'input') {
-        $('iprf-readout').textContent =
-            `F(K[0], ${pick.value}) = ${output}: the permutation sends hint ${pick.value} to ball ${iprf.permute(pick.value)}, ` +
-            `and that ball is in the bin of offset ${output}. Hint ${pick.value} reads offset ${output} of block 0. `;
-    } else if (leaf.count === 0) {
-        $('iprf-readout').textContent = `The inverse of offset ${output} is empty: its bin has no ball. No hint reads offset ${output} of block 0. `;
-    } else {
-        $('iprf-readout').textContent =
-            `The inverse of offset ${output}: the bin holds ${leaf.count === 1 ? `ball ${leaf.start}` : `balls ${leaf.start} to ${leaf.start + leaf.count - 1}`}, ` +
-            `and the inverse permutation gives ${leaf.count === 1 ? 'hint' : 'hints'} ${words(inputs)}. `;
-    }
+    $('iprf-readout').textContent = pick.kind === 'input'
+        ? t.iprfForward(pick.value, iprf.permute(pick.value), output)
+        : t.iprfInverse(output, iprf.leaves[output], inputs);
 }
 
 // Database and hint tables ---------------------------------------------------
 
 function renderDb(container, db, classOf, onPick) {
+    const t = MESSAGES[state.lang];
     container.replaceChildren(htmlEl('span'));
-    for (let offset = 0; offset < BLOCK_SIZE; offset++) container.append(htmlEl('span', { class: 'head' }, `offset ${offset}`));
+    for (let offset = 0; offset < BLOCK_SIZE; offset++) container.append(htmlEl('span', { class: 'head' }, t.offsetHead(offset)));
     for (let block = 0; block < BLOCKS; block++) {
-        container.append(htmlEl('span', { class: 'side' }, `block ${block}`));
+        container.append(htmlEl('span', { class: 'side' }, t.blockSide(block)));
         for (let offset = 0; offset < BLOCK_SIZE; offset++) {
             const index = block * BLOCK_SIZE + offset;
             const cell = htmlEl(onPick ? 'button' : 'span', { class: `cell ${classOf(index)}` }, hex(db[index]));
             if (onPick) {
                 cell.type = 'button';
                 cell.setAttribute('data-focus', `${container.id}-${index}`);
-                cell.setAttribute('aria-label', `Record ${index}, block ${block}, offset ${offset}, value ${hex(db[index])}`);
+                cell.setAttribute('aria-label', t.recordName(index, block, offset, hex(db[index])));
                 cell.addEventListener('click', () => onPick(index));
             }
             container.append(cell);
@@ -1090,6 +1420,7 @@ function stepInit() {
 const renderInit = () => keepFocus(drawInit);
 
 function drawInit() {
+    const t = MESSAGES[state.lang];
     const { world, init } = state;
     const picked = init.picked;
     const inCells = picked === null ? [] : cellsOf(world, picked, world.subsets[picked]);
@@ -1118,28 +1449,20 @@ function drawInit() {
     $('init-all').disabled = init.next >= RECORDS;
 
     if (!init.last) {
-        $('init-readout').textContent = 'No record is read yet. All parities are 00. ';
+        $('init-readout').textContent = t.initStart;
     } else {
         const { index, candidates, took } = init.last;
-        const skipped = candidates.filter(j => !took.includes(j));
-        const base = `Record ${index} (${hex(world.db[index])}) is block ${blockOf(index)}, offset ${offsetOf(index)}. `;
-        const found = candidates.length === 0
-            ? 'The iPRF inverse is empty: no hint reads this offset. '
-            : `The iPRF inverse gives ${candidates.length === 1 ? 'hint' : 'hints'} ${words(candidates)}. ` +
-              (took.length ? `${took.length === 1 ? 'Hint' : 'Hints'} ${words(took)} ${took.length === 1 ? 'takes' : 'take'} the record. ` : 'No hint takes the record. ') +
-              (skipped.length ? `${skipped.length === 1 ? 'Hint' : 'Hints'} ${words(skipped)} ${skipped.length === 1 ? 'does' : 'do'} not have block ${blockOf(index)}. ` : '');
-        $('init-readout').textContent = base + found + (init.next >= RECORDS ? 'HintInit is complete. ' : '');
+        const record = { index, value: hex(world.db[index]), block: blockOf(index), offset: offsetOf(index) };
+        $('init-readout').textContent = t.initStep(record, candidates, took, candidates.filter(j => !took.includes(j)), init.next >= RECORDS);
     }
 
     if (picked === null) {
-        $('init-hint-note').textContent = 'Select a hint to see its records in the database.';
+        $('init-hint-note').textContent = t.initSelect;
     } else {
         const seen = cells => cells.filter(cell => cell.index < init.next);
         const sum = cells => (seen(cells).length ? `${seen(cells).map(cell => hex(world.db[cell.index])).join(' xor ')} = ${hex(xorOf(world.db, seen(cells)))}` : '00');
-        const blocks = words([...world.subsets[picked]].sort((a, b) => a - b));
-        $('init-hint-note').textContent = picked < REGULAR
-            ? `Hint ${picked} has blocks ${blocks}. Its parity from the records read so far: ${sum(inCells)}.`
-            : `Backup hint ${picked} has blocks ${blocks}. In parity so far: ${sum(inCells)}. Out parity, from the other blocks: ${sum(outCells)}.`;
+        const blocks = [...world.subsets[picked]].sort((a, b) => a - b);
+        $('init-hint-note').textContent = t.initHint(picked, blocks, sum(inCells), picked < REGULAR ? null : sum(outCells));
     }
 }
 
@@ -1170,6 +1493,7 @@ function actOnline(index) {
 const renderOnline = () => keepFocus(drawOnline);
 
 function drawOnline() {
+    const t = MESSAGES[state.lang];
     const { world, online } = state;
     const { client, server, last } = online;
     const query = last && last.kind === 'query' && !last.error ? last : null;
@@ -1201,64 +1525,44 @@ function drawOnline() {
 
     const steps = $('online-steps');
     steps.replaceChildren();
-    const add = text => steps.append(htmlEl('li', {}, text));
-    const left = backupsLeft(client);
-    const where = result => `block ${result.block}, offset ${result.offset}`;
-    const lookup = result => (result.candidates.length
-        ? `The iPRF inverse gives ${result.candidates.length === 1 ? 'hint' : 'hints'} ${words(result.candidates)}.`
-        : 'The iPRF inverse is empty.');
+    const add = step => steps.append(htmlEl('li', {}, step));
+    const readout = $('online-readout');
 
     if (!last) {
-        $('online-readout').textContent = online.mode === 'query'
-            ? 'Select a record of the database to read it privately. '
-            : 'Select a record of the database to change it. ';
+        readout.textContent = t.onlineStart(online.mode);
     } else if (last.error === 'no-backup') {
-        $('online-readout').textContent = 'No backup hint is left, so the client sends nothing. It must run HintInit again. ';
+        readout.textContent = t.noBackup;
     } else if (last.error === 'no-decoy') {
-        $('online-readout').textContent = `The client has record ${last.wanted} from an earlier query: ${hex(last.cachedValue)}. ` +
-            'It has all records, so no index is left for a decoy query. ';
+        readout.textContent = t.noDecoy(last);
     } else if (last.error === 'no-hint') {
-        $('online-readout').textContent = (last.decoy
-            ? `The client has record ${last.wanted} from an earlier query: ${hex(last.cachedValue)}. No hint holds a record for a decoy query`
-            : `No hint holds record ${last.index}`) + ', so the client sends nothing. ';
-        add(`Record ${last.index} is ${where(last)}. ${lookup(last)}`);
-        add(`None of them is a hint with block ${last.block} in its subset. With lambda = 128 this occurs with a probability of about e^(-64) for an index.`);
+        readout.textContent = t.noHint(last);
+        add(t.located(last));
+        add(t.noHintStep(last));
     } else if (query) {
-        $('online-readout').textContent = query.decoy
-            ? `The client has record ${query.wanted} from an earlier query: ${hex(query.cachedValue)}. It sends a decoy query for record ${query.index}, so that the server sees a query each time. `
-            : `The client reads record ${query.index}: ${hex(query.record)}. `;
-        const blocksOf = cells => words(cells.map(cell => cell.block));
-        const first = query.realIsFirst ? query.real : query.dummy;
-        const second = query.realIsFirst ? query.dummy : query.real;
-        add(`Record ${query.index} is ${where(query)}. ${lookup(query)} Hint ${query.hintId} is the first one that has block ${query.block}.`);
-        add(`Message: mask <code>${query.mask.map(bit => (bit ? 1 : 0)).join('')}</code>, offsets <code>${query.offsets.join(', ')}</code>. ` +
-            `Subset 0 is blocks ${blocksOf(first)}, and subset 1 is blocks ${blocksOf(second)}. The k-th block of a subset reads the k-th offset.` +
-            (query.dummy.some(cell => cell.index === query.index)
-                ? ` By chance, subset ${query.realIsFirst ? 1 : 0} reads record ${query.index} itself. The server cannot tell this from a query for another record.`
-                : ` Record ${query.index} is in neither subset.`));
-        add(`Answer: parity of subset 0 is <code>${hex(query.answer[0])}</code>, parity of subset 1 is <code>${hex(query.answer[1])}</code>. ` +
-            `The server cannot tell that subset ${query.realIsFirst ? 0 : 1} is the one from the hint.`);
-        add(`Record = <code>${hex(query.answer[query.realIsFirst ? 0 : 1])} xor ${hex(query.hintParity)} = ${hex(query.record)}</code>: ` +
-            `the answer for subset ${query.realIsFirst ? 0 : 1}, and the parity of hint ${query.hintId}.`);
-        add(`Hint ${query.hintId} is spent. Backup hint ${query.backupId} takes its place: its ${query.usedOutHalf ? 'out' : 'in'} half ` +
-            `(blocks ${words(query.half)}) and record ${query.index}. ${plural(left, 'backup hint')} left.`);
+        const realSubset = query.realIsFirst ? 0 : 1;
+        const real = query.real.map(cell => cell.block);
+        const dummy = query.dummy.map(cell => cell.block);
+        const view = {
+            ...query,
+            realSubset,
+            blocks: realSubset === 0 ? [real, dummy] : [dummy, real],
+            chance: query.dummy.some(cell => cell.index === query.index),
+            left: backupsLeft(client),
+        };
+        readout.textContent = t.queryReadout(view);
+        add(t.queryFound(view));
+        add(t.queryMessage(view));
+        add(t.queryAnswer(view));
+        add(t.queryRecord(view));
+        add(t.queryPromote(view));
     } else {
-        $('online-readout').textContent = `Record ${last.index} changes from ${hex(last.old)} to ${hex(last.value)}. The client gets the index and the change ${hex(last.change)}. `;
-        add(`Record ${last.index} is ${where(last)}. ${lookup(last)}`);
-        const describe = entry => (entry.part === 'parity' ? `hint ${entry.hint}`
-            : entry.part === 'extra' ? `hint ${entry.hint} (the record is its extra record)`
-            : `backup hint ${entry.hint} (${entry.part === 'parityIn' ? 'in' : 'out'} parity)`);
-        add(last.touched.length
-            ? `The client XORs <code>${hex(last.change)}</code> into ${words(last.touched.map(describe))}.`
-            : 'No hint holds the record. No parity changes.');
-        add(`The client reads ${plural(last.candidates.length, 'hint')} of ${HINTS}.` +
-            (last.cached ? ` It also corrects its copy of record ${last.index}.` : ''));
+        readout.textContent = t.changeReadout(last);
+        add(t.located(last));
+        add(t.changeTouched(last));
+        add(t.changeReads(last));
     }
 
-    const check = checkClient(world, client, server);
-    $('online-check').textContent = check.wrong === 0
-        ? `Check of the figure: all ${check.checked} parities and records of the client agree with the database of the server.`
-        : `Check of the figure: ${check.wrong} of ${check.checked} values of the client do not agree with the database. This is a defect of the page.`;
+    $('online-check').textContent = t.check(checkClient(world, client, server));
 }
 
 // Start ------------------------------------------------------------------------
@@ -1277,6 +1581,42 @@ function rekey(master) {
     state.pickedBin = null;
     resetInit();
     resetOnline(false);
+}
+
+const I18N_MARKERS = [['data-i18n', null], ['data-i18n-label', 'aria-label'], ['data-i18n-content', 'content']];
+const englishText = new Map();
+
+// Puts the text of a language into each element with a key. The HTML holds the English text.
+function applyStatic(lang) {
+    const translated = TRANSLATIONS[lang] || {};
+    for (const [marker, attribute] of I18N_MARKERS) {
+        for (const element of document.querySelectorAll(`[${marker}]`)) {
+            const key = element.getAttribute(marker);
+            if (!englishText.has(key)) englishText.set(key, attribute ? element.getAttribute(attribute) : element.innerHTML);
+            const value = translated[key] ?? englishText.get(key);
+            if (attribute) element.setAttribute(attribute, value);
+            else element.innerHTML = value;
+        }
+    }
+}
+
+function setLanguage(lang) {
+    state.lang = lang;
+    document.documentElement.lang = lang;
+    applyStatic(lang);
+    for (const button of document.querySelectorAll('[data-set-lang]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.setLang === lang));
+    }
+    renderAll();
+}
+
+// The address (?lang=ru), then the saved choice, then the language of the browser.
+function pickLanguage() {
+    let saved = null;
+    try { saved = localStorage.getItem('plinko-lang'); } catch (error) { /* storage is not available */ }
+    const browser = (navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en';
+    return [new URLSearchParams(window.location.search).get('lang'), saved, browser]
+        .find(lang => lang !== null && Object.hasOwn(MESSAGES, lang));
 }
 
 function setTheme(theme) {
@@ -1302,6 +1642,18 @@ for (const button of document.querySelectorAll('[data-set-theme]')) {
         try { localStorage.setItem('plinko-theme', button.dataset.setTheme); } catch (error) { /* storage is not available */ }
     });
 }
+for (const button of document.querySelectorAll('[data-set-lang]')) {
+    button.addEventListener('click', () => {
+        const lang = button.dataset.setLang;
+        setLanguage(lang);
+        try { localStorage.setItem('plinko-lang', lang); } catch (error) { /* storage is not available */ }
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.set('lang', lang);
+            window.history.replaceState(null, '', url);
+        } catch (error) { /* the address cannot change */ }
+    });
+}
 narrow.addEventListener('change', renderTree);
 
 try {
@@ -1310,7 +1662,7 @@ try {
 } catch (error) { /* storage is not available */ }
 
 rekey(state.master);
-renderAll();
+setLanguage(pickLanguage());
 </script>
 </body>
 </html>

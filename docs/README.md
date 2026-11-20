@@ -5,7 +5,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | Link | URL |
 |------|-----|
 | DeepWiki (agent index) | [deepwiki.com/igor53627/plinko-rs](https://deepwiki.com/igor53627/plinko-rs) |
-| Protocol demo (GitHub Pages) | [igor53627.github.io/plinko-rs](https://igor53627.github.io/plinko-rs/): the page [`protocol-visualization.html`](protocol-visualization.html) |
+| Protocol demo (GitHub Pages) | [igor53627.github.io/plinko-rs](https://igor53627.github.io/plinko-rs/): the page [`protocol-visualization.html`](protocol-visualization.html), in English and in Russian ([`?lang=ru`](https://igor53627.github.io/plinko-rs/?lang=ru)) |
 
 ## Canonical (use for implementation)
 
