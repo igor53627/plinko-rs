@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plinko Protocol Visualization</title>
     <!-- Matter.js Physics Engine -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js" integrity="sha512-0z8URjGET6GWnS1xcgiLBZBzoaS8BNlKayfZyQNKz4IRp+s7CKXx0yz7Eco2+TcwoeMBa5KMwmTX7Kus7Fa5Uw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <style>
         :root {
             --bg-primary: #0d1117;
@@ -106,8 +106,8 @@
 
         .plinko-canvas-container {
             position: relative;
-            width: 600px;
-            height: 450px;
+            width: 100%;
+            max-width: 600px;
             background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
             border-radius: 12px;
             border: 3px solid var(--accent-orange);
@@ -118,7 +118,7 @@
         .plinko-canvas-container canvas {
             display: block;
             width: 100%;
-            height: 100%;
+            height: auto;
         }
 
         .plinko-stats {
@@ -174,10 +174,12 @@
             gap: 4px;
             margin-top: 10px;
             justify-content: center;
+            max-width: 100%;
         }
 
         .bin {
-            width: 55px;
+            flex: 0 1 55px;
+            min-width: 0;
             height: 50px;
             background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
             border: 2px solid var(--border-color);
@@ -325,6 +327,10 @@
             color: var(--bg-primary);
         }
 
+        .hint-cell.skipped {
+            border: 2px dashed var(--accent-green);
+        }
+
         /* Database streaming */
         .db-stream {
             display: flex;
@@ -437,6 +443,8 @@
 
         .code-line {
             padding: 2px 0;
+            white-space: pre;
+            min-height: 1.6em;
         }
 
         .code-line.highlight {
@@ -569,18 +577,26 @@
             .flow-arrow {
                 transform: rotate(90deg);
             }
+
+            table {
+                display: block;
+                overflow-x: auto;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Plinko Protocol Visualization</h1>
-        <p class="subtitle">Single-Server PIR with Sublinear Online Time via Invertible PRFs</p>
+        <p class="subtitle">Single-Server PIR with Efficient Updates via Invertible PRFs</p>
 
         <div class="key-property">
-            <strong>Key Innovation:</strong> Plinko achieves O(1) hint updates after database changes using 
-            invertible PRFs (iPRFs). The client can find all affected hints in constant time without scanning.
+            <strong>Key Innovation:</strong> Plinko updates its hints in O~(1) time after a database change, with
+            invertible PRFs (iPRFs). One iPRF inverse gives the hints that hold a changed record; the client does not scan its hints.
         </div>
+
+        <p class="subtitle">The demos on this page use toy sizes and toy round functions. They show the structure of the
+           algorithms and give no security.</p>
 
         <!-- Section 1: Protocol Overview -->
         <div class="section">
@@ -608,7 +624,7 @@
                 <tr>
                     <td>UpdateHint</td>
                     <td>Update hints after database change</td>
-                    <td><span class="complexity good">O(1)</span></td>
+                    <td><span class="complexity good">O~(1)</span></td>
                 </tr>
             </table>
 
@@ -616,15 +632,15 @@
             <div class="legend">
                 <div class="legend-item">
                     <div class="legend-color" style="background: var(--accent-blue);"></div>
-                    <span><strong>n</strong> = database size (bits)</span>
+                    <span><strong>n</strong> = number of records in the database</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: var(--accent-orange);"></div>
-                    <span><strong>w</strong> = block size</span>
+                    <span><strong>w</strong> = records in a block</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: var(--accent-green);"></div>
-                    <span><strong>c</strong> = n/w (number of blocks)</span>
+                    <span><strong>c</strong> = ceil(n/w) (number of blocks)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: var(--accent-purple);"></div>
@@ -636,12 +652,13 @@
         <!-- Section 2: PMNS (Plinko Game) -->
         <div class="section">
             <h2>2. PMNS: Pseudorandom Multinomial Sampler</h2>
-            <p>Named after the Plinko game! Simulates throwing n balls into m bins using a binary tree. 
-               At each peg, the ball bounces left or right based on a PRF-derived probability.</p>
+            <p>Named after the Plinko game! The sampler throws n balls into m bins with a binary tree over the bins.
+               At each node of the tree, a keyed PRF decides how many of the balls go to the left half.</p>
 
             <div class="key-property">
                 <strong>Key Property:</strong> Both forward (ball -> bin) and inverse (bin -> balls) 
-                operations run in O(log m) time by traversing the binary tree of pegs.
+                visit O(log m) nodes of the tree. plinko-rs draws the count at a node from an AES keystream,
+                so the work at a node grows with the number of balls there.
             </div>
 
             <div class="visualization-container" id="pmns-viz">
@@ -667,12 +684,15 @@
                 </div>
             </div>
 
+            <p>The board is a physics animation. It shows the shape of a balls-into-bins distribution; it does not run
+               the keyed sampler below.</p>
+
             <div class="controls">
                 <button onclick="plinkoDropBall()">Drop Ball</button>
                 <button onclick="plinkoDropMultiple(10)" class="secondary">Drop 10</button>
                 <button onclick="plinkoDropMultiple(50)" class="secondary">Drop 50</button>
                 <button onclick="plinkoReset()" class="secondary">Reset</button>
-                <button onclick="toggleSound()" class="secondary" id="sound-toggle">[Sound: ON]</button>
+                <button onclick="toggleSound()" class="secondary" id="sound-toggle">[Sound: OFF]</button>
             </div>
 
             <div class="slider-container">
@@ -682,28 +702,30 @@
 
             <h3>Algorithm: trace_ball (Forward)</h3>
             <div class="code-block">
-                <div class="code-line"><span class="keyword">def</span> <span class="function">trace_ball</span>(x, n, m):</div>
+                <div class="code-line"><span class="keyword">def</span> <span class="function">trace_ball</span>(k, x, n, m):</div>
                 <div class="code-line">    low, high = <span class="number">0</span>, m - <span class="number">1</span>  <span class="comment"># bin range</span></div>
                 <div class="code-line">    ball_count = n</div>
-                <div class="code-line">    <span class="keyword">while</span> low < high:  <span class="comment"># descend tree</span></div>
+                <div class="code-line">    <span class="keyword">while</span> low &lt; high:  <span class="comment"># descend tree</span></div>
                 <div class="code-line">        mid = (low + high) // <span class="number">2</span></div>
                 <div class="code-line">        p = (mid - low + <span class="number">1</span>) / (high - low + <span class="number">1</span>)  <span class="comment"># left probability</span></div>
-                <div class="code-line">        left_count = <span class="function">binomial_sample</span>(ball_count, p, <span class="function">PRF</span>(node))</div>
-                <div class="code-line">        <span class="keyword">if</span> x < left_count:  <span class="comment"># go LEFT</span></div>
+                <div class="code-line">        left_count = <span class="function">binomial_sample</span>(ball_count, p, <span class="function">PRF</span>(k, (low, high)))</div>
+                <div class="code-line">        <span class="keyword">if</span> x &lt; left_count:  <span class="comment"># go LEFT</span></div>
                 <div class="code-line">            high = mid</div>
                 <div class="code-line">            ball_count = left_count</div>
                 <div class="code-line">        <span class="keyword">else</span>:  <span class="comment"># go RIGHT</span></div>
                 <div class="code-line">            x -= left_count</div>
                 <div class="code-line">            low = mid + <span class="number">1</span></div>
                 <div class="code-line">            ball_count -= left_count</div>
-                <div class="code-line">    <span class="keyword">return</span> low  <span class="comment"># final bin</span></div>
+                <div class="code-line">    <span class="keyword"><span class="keyword">return</span> low  <span class="comment"># final bin</span></div>
             </div>
+            <p>plinko-rs needs m to be a power of two. The probability p is then 1/2 at each node, and the sample is
+               the number of set bits among ball_count keystream bits.</p>
         </div>
 
         <!-- Section 3: SwapOrNot PRP -->
         <div class="section">
             <h2>3. SwapOrNot: Small-Domain PRP</h2>
-            <p>A pseudorandom permutation for small domains based on Morris-Rogaway 2013.</p>
+            <p>A pseudorandom permutation for small domains: the Swap-or-Not shuffle of Hoang, Morris and Rogaway (2012).</p>
 
             <div class="key-property">
                 <strong>Key Insight:</strong> Each round is an involution (self-inverse). 
@@ -723,6 +745,9 @@
                 </div>
             </div>
 
+            <p>Toy parameters: N = 8, 6 rounds and a toy round function. plinko-rs uses AES and several hundred
+               rounds for each stage at lambda = 128.</p>
+
             <div class="controls">
                 <button onclick="stepSwapOrNot()">Step Round</button>
                 <button onclick="runFullPRP()">Run All Rounds</button>
@@ -736,13 +761,15 @@
 
             <h3>Single Round</h3>
             <div class="code-block">
-                <div class="code-line"><span class="keyword">def</span> <span class="function">swap_or_not_round</span>(x, round_key, round):</div>
+                <div class="code-line"><span class="keyword">def</span> <span class="function">swap_or_not_round</span>(k, x, round_key, round):</div>
                 <div class="code-line">    partner = (round_key - x) <span class="keyword">mod</span> N</div>
                 <div class="code-line">    canonical = <span class="function">max</span>(x, partner)</div>
-                <div class="code-line">    <span class="keyword">if</span> <span class="function">PRF</span>(round, canonical) == <span class="number">1</span>:</div>
+                <div class="code-line">    <span class="keyword">if</span> <span class="function">PRF</span>(k, round, canonical) == <span class="number">1</span>:</div>
                 <div class="code-line">        <span class="keyword">return</span> partner  <span class="comment"># swap</span></div>
-                <div class="code-line">    <span class="keyword">return</span> x  <span class="comment"># no swap</span></div>
+                <div class="code-line">    <span class="keyword"><span class="keyword">return</span> x  <span class="comment"># no swap</span></div>
             </div>
+            <p>plinko-rs runs these rounds inside the Sometimes-Recurse shuffle of Morris and Rogaway (2014): after a
+               stage, the values in the lower half go through a new stage of half the size.</p>
         </div>
 
         <!-- Section 4: iPRF Construction -->
@@ -804,6 +831,9 @@
                 </div>
             </div>
 
+            <p>Toy parameters: 16 inputs and 8 outputs. The toy sampler splits the balls almost evenly; the real
+               sampler draws Binomial(count, 1/2) from an AES keystream.</p>
+
             <div class="controls">
                 <button onclick="runIPRFForward()">Compute Forward</button>
                 <button onclick="runIPRFInverse()" class="secondary">Compute Inverse</button>
@@ -818,8 +848,8 @@
         <!-- Section 5: HintInit -->
         <div class="section">
             <h2>5. HintInit: Offline Hint Generation</h2>
-            <p>The client streams the entire database once to initialize hints. Each database entry 
-               is mapped to O(1) hints using iPRF inversion.</p>
+            <p>The client streams the whole database once to initialize the hints. One iPRF inverse maps a database entry
+               to its hints: lambda + q/w hints on average.</p>
 
             <h3>Hint Types</h3>
             <div class="legend">
@@ -850,6 +880,11 @@
                 </div>
             </div>
 
+            <p>Toy parameters: 16 entries in 4 blocks of 4, 8 regular hints and 4 backup hints. The iPRF inverse
+               of the last entry gives the green hints and the hints with a dashed border. A green hint took the entry into a
+               parity. A regular hint with a dashed border did not: its subset does not have the block. The toy iPRF inverse
+               scans the 12 hints; the real inverse walks the PMNS tree.</p>
+
             <div class="controls">
                 <button onclick="stepHintInit()">Step</button>
                 <button onclick="runHintInit()">Run Full Init</button>
@@ -859,19 +894,19 @@
             <h3>HintInit Algorithm</h3>
             <div class="code-block">
                 <div class="code-line" id="hint-line-0"><span class="comment"># Generate keys and initialize hints</span></div>
-                <div class="code-line" id="hint-line-1"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">1</span>..c:</div>
+                <div class="code-line" id="hint-line-1"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">0</span>..c:</div>
                 <div class="code-line" id="hint-line-2">    K[i] = <span class="function">iF.Gen</span>(<span class="number">1</span>^lambda)</div>
-                <div class="code-line" id="hint-line-3"><span class="keyword">for</span> j <span class="keyword">in</span> <span class="number">1</span>..lambda*w:</div>
+                <div class="code-line" id="hint-line-3"><span class="keyword">for</span> j <span class="keyword">in</span> <span class="number">0</span>..lambda*w:</div>
                 <div class="code-line" id="hint-line-4">    H[j] = (<span class="function">random_subset</span>(c/<span class="number">2</span>+<span class="number">1</span>), <span class="number">0</span>)</div>
-                <div class="code-line" id="hint-line-5"><span class="keyword">for</span> j <span class="keyword">in</span> <span class="number">1</span>..q:</div>
+                <div class="code-line" id="hint-line-5"><span class="keyword">for</span> j <span class="keyword">in</span> lambda*w..lambda*w+q:</div>
                 <div class="code-line" id="hint-line-6">    T[j] = (<span class="function">random_subset</span>(c/<span class="number">2</span>), <span class="number">0</span>, <span class="number">0</span>)</div>
                 <div class="code-line" id="hint-line-7"></div>
                 <div class="code-line" id="hint-line-8"><span class="comment"># Stream database entries</span></div>
                 <div class="code-line" id="hint-line-9"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">0</span>..n:</div>
                 <div class="code-line" id="hint-line-10">    d = <span class="function">stream</span>(D[i])</div>
-                <div class="code-line" id="hint-line-11">    (block, offset) = (i / w, i <span class="keyword">mod</span> w)</div>
-                <div class="code-line" id="hint-line-12">    <span class="keyword">for</span> j <span class="keyword">in</span> <span class="function">iF.F^-1</span>(K[block], offset):  <span class="comment"># O(1) hints!</span></div>
-                <div class="code-line" id="hint-line-13">        <span class="keyword">if</span> j < lambda*w:</div>
+                <div class="code-line" id="hint-line-11">    (block, offset) = (i // w, i <span class="keyword">mod</span> w)</div>
+                <div class="code-line" id="hint-line-12">    <span class="keyword">for</span> j <span class="keyword">in</span> <span class="function">iF.F^-1</span>(K[block], offset):  <span class="comment"># lambda + q/w hints on average</span></div>
+                <div class="code-line" id="hint-line-13">        <span class="keyword">if</span> j &lt; lambda*w:</div>
                 <div class="code-line" id="hint-line-14">            <span class="keyword">if</span> block <span class="keyword">in</span> H[j].P:</div>
                 <div class="code-line" id="hint-line-15">                H[j].parity ^= d</div>
                 <div class="code-line" id="hint-line-16">        <span class="keyword">else</span>:</div>
@@ -901,38 +936,43 @@
                 </tr>
                 <tr>
                     <td>Query (client)</td>
-                    <td><span class="complexity good">O(1)</span></td>
+                    <td><span class="complexity ok">O~(n/w)</span></td>
                     <td>O(c) = O(n/w)</td>
-                    <td>Find hint via iPRF^-1</td>
+                    <td>One iPRF^-1 finds the hint; c/2 iPRF calls give its offsets</td>
                 </tr>
                 <tr>
                     <td>Answer (server)</td>
                     <td><span class="complexity ok">O(n/w)</span></td>
-                    <td>O(B)</td>
-                    <td>Compute parities</td>
+                    <td>2 records</td>
+                    <td>XOR of c records into two parities</td>
                 </tr>
                 <tr>
                     <td>UpdateHint</td>
-                    <td><span class="complexity good">O(1)</span></td>
-                    <td>O(log n)</td>
-                    <td>iPRF^-1 finds affected hints</td>
+                    <td><span class="complexity good">O~(1)</span></td>
+                    <td>Index and record change</td>
+                    <td>One iPRF^-1 finds the hints of the changed record</td>
                 </tr>
                 <tr>
                     <td>Client Storage</td>
                     <td colspan="2"><span class="complexity ok">O(lambda*w + q) hints</span></td>
-                    <td>Plus c iPRF keys</td>
+                    <td>Plus c iPRF keys (plinko-rs derives them from one seed)</td>
                 </tr>
             </table>
 
             <div class="key-property">
-                <strong>Why O(1) Updates Matter:</strong> Previous PIR schemes required O(n) or O(sqrt(n)) 
-                time to update hints after database changes. Plinko's iPRF inversion finds all O(1) affected 
-                hints directly, making it practical for dynamic databases like Ethereum state.
+                <strong>Why Fast Updates Matter:</strong> Without an iPRF, the client must test each hint to find those that
+                hold a changed record. In Plinko one iPRF inverse gives these hints. The paper states a worst-case
+                update time of O~(1).
+            </div>
+
+            <div class="key-property">
+                <strong>Scope of plinko-rs:</strong> a library for a database of fixed-size records. Each client downloads
+                the database and runs HintInit, so the full Ethereum state is not a target.
             </div>
         </div>
 
         <footer>
-            Plinko: Single-Server PIR with Sublinear Online Time via Invertible PRFs | 
+            Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs |
             <a href="https://eprint.iacr.org/2024/318">Paper (2024/318)</a> | 
             <a href="https://github.com/igor53627/plinko-rs">GitHub</a>
         </footer>
@@ -940,17 +980,17 @@
 
     <script>
         // =====================================================
-        // PLINKO PHYSICS ENGINE (based on AnsonH/plinko-game)
+        // PLINKO PHYSICS ENGINE
         // =====================================================
         
-        const { Engine, Render, Runner, Bodies, Body, Composite, Events } = Matter;
+        const { Engine, Render, Runner, Bodies, Body, Composite, Events } = window.Matter || {};
         
         // =====================================================
         // SOUND ENGINE (Web Audio API)
         // =====================================================
         
         let audioContext = null;
-        let soundEnabled = true;
+        let soundEnabled = false;
         
         function initAudio() {
             if (!audioContext) {
@@ -1263,14 +1303,14 @@
                 // Play drop sound
                 playDropSound();
                 
+                renderPlinkoBins();
+
                 // Flash the bin
                 const binEl = document.getElementById(`plinko-bin-${binIndex}`);
                 if (binEl) {
                     binEl.classList.add('highlight');
                     setTimeout(() => binEl.classList.remove('highlight'), 300);
                 }
-                
-                renderPlinkoBins();
             }
             
             // Remove ball after a short delay
@@ -1284,7 +1324,7 @@
             container.innerHTML = '';
             
             // Initialize bin counts
-            const numBins = 2 + plinkoRowCount;
+            const numBins = plinkoRowCount + 1;
             plinkoBinCounts = new Array(numBins).fill(0);
             plinkoBallsDropped = 0;
             
@@ -1364,7 +1404,7 @@
         
         function renderPlinkoBins() {
             const binRow = document.getElementById('bin-row');
-            const numBins = 2 + plinkoRowCount;
+            const numBins = plinkoRowCount + 1;
             const maxCount = Math.max(1, ...plinkoBinCounts);
             const total = plinkoBinCounts.reduce((a, b) => a + b, 0);
             
@@ -1417,13 +1457,21 @@
             document.getElementById('balls-dropped').textContent = plinkoBallsDropped;
         }
         
+        let plinkoDropTimers = [];
+
         function plinkoDropMultiple(count) {
             for (let i = 0; i < count; i++) {
-                setTimeout(() => plinkoDropBall(), i * 100);
+                plinkoDropTimers.push(setTimeout(() => plinkoDropBall(), i * 100));
             }
         }
         
+        function plinkoCancelDrops() {
+            plinkoDropTimers.forEach(id => clearTimeout(id));
+            plinkoDropTimers = [];
+        }
+
         function plinkoReset() {
+            plinkoCancelDrops();
             // Remove all balls
             Composite.allBodies(plinkoEngine.world).forEach(body => {
                 if (body.collisionFilter.category === BALL_CATEGORY) {
@@ -1432,7 +1480,7 @@
             });
             
             // Reset counts
-            const numBins = 2 + plinkoRowCount;
+            const numBins = plinkoRowCount + 1;
             plinkoBinCounts = new Array(numBins).fill(0);
             plinkoBallsDropped = 0;
             
@@ -1447,6 +1495,7 @@
             const newRowCount = parseInt(document.getElementById('row-slider').value);
             if (newRowCount !== plinkoRowCount) {
                 plinkoRowCount = newRowCount;
+                plinkoCancelDrops();
                 
                 // Stop current engine
                 if (plinkoRunner) Runner.stop(plinkoRunner);
@@ -1640,6 +1689,10 @@
             document.getElementById('iprf-prp').textContent = 'P(x) = ?';
             document.getElementById('iprf-pmns').textContent = 'S(P(x)) = ?';
             document.getElementById('iprf-output').textContent = 'y = ?';
+            document.getElementById('iprf-inv-input').textContent = 'y = ?';
+            document.getElementById('iprf-inv-pmns').textContent = 'S^-1(y) = {...}';
+            document.getElementById('iprf-inv-prp').textContent = '{P^-1(z) : z in ...}';
+            document.getElementById('iprf-inv-output').textContent = '{...}';
         }
 
         function runIPRFForward() {
@@ -1665,7 +1718,8 @@
         }
 
         function runIPRFInverse() {
-            const y = parseInt(document.getElementById('iprf-output').textContent.split('=')[1]) || 0;
+            if (document.getElementById('iprf-output').textContent === 'y = ?') runIPRFForward();
+            const y = parseInt(document.getElementById('iprf-output').textContent.split('=')[1]);
             
             // Find all balls in bin y (simulate PMNS inverse)
             const pmnsPreimages = [];
@@ -1689,13 +1743,29 @@
                 return x;
             });
             
-            document.getElementById('iprf-inv-prp').textContent = `{P^-1(z)...}`;
+            document.getElementById('iprf-inv-prp').textContent =
+                pmnsPreimages.map((z, i) => `P^-1(${z}) = ${preimages[i]}`).join(', ') || '(empty bin)';
             document.getElementById('iprf-inv-output').textContent = `{${preimages.join(', ')}}`;
         }
 
         // HintInit Visualization
+        // Toy iPRF of a block: hint j -> offset in the block. The inverse scans the 12 hints.
+        let lastHints = [];
+        let lastUpdated = [];
+
+        function demoIprf(block, j) {
+            return Math.floor(hash(1000 + block, j) / 100) % blockSize;
+        }
+
+        function demoIprfInverse(block, offset) {
+            const total = regularHints.length + backupHints.length;
+            return Array.from({ length: total }, (_, j) => j).filter(j => demoIprf(block, j) === offset);
+        }
+
         function initHintInit() {
             currentDbIndex = 0;
+            lastHints = [];
+            lastUpdated = [];
             regularHints = Array(8).fill(null).map((_, i) => ({
                 blocks: generateRandomSubset(numBlocks, Math.floor(numBlocks/2) + 1, i),
                 parity: 0
@@ -1734,9 +1804,9 @@
             const regHints = document.getElementById('regular-hints');
             regHints.innerHTML = '';
             regularHints.forEach((h, i) => {
-                const active = currentDbIndex > 0 && h.blocks.includes(Math.floor((currentDbIndex - 1) / blockSize));
+                const state = lastUpdated.includes(i) ? 'active' : lastHints.includes(i) ? 'skipped' : '';
                 regHints.innerHTML += `
-                    <div class="hint-cell regular ${active ? 'active' : ''}">
+                    <div class="hint-cell regular ${state}">
                         H[${i}]<br>
                         <small>p=${h.parity}</small>
                     </div>
@@ -1747,12 +1817,11 @@
             const bkpHints = document.getElementById('backup-hints');
             bkpHints.innerHTML = '';
             backupHints.forEach((h, i) => {
-                const block = Math.floor((currentDbIndex - 1) / blockSize);
-                const inBlock = currentDbIndex > 0 && h.blocks.includes(block);
+                const state = lastUpdated.includes(regularHints.length + i) ? 'active' : '';
                 bkpHints.innerHTML += `
-                    <div class="hint-cell backup ${currentDbIndex > 0 ? 'active' : ''}">
+                    <div class="hint-cell backup ${state}">
                         T[${i}]<br>
-                        <small>${inBlock ? 'in' : 'out'}</small>
+                        <small>in=${h.parityIn}<br>out=${h.parityOut}</small>
                     </div>
                 `;
             });
@@ -1762,7 +1831,7 @@
             if (currentDbIndex === 0) {
                 document.getElementById('hint-line-0')?.classList.add('highlight');
             } else if (currentDbIndex <= dbSize) {
-                document.getElementById('hint-line-10')?.classList.add('highlight');
+                [10, 11, 12].forEach(n => document.getElementById(`hint-line-${n}`)?.classList.add('highlight'));
             }
         }
 
@@ -1773,18 +1842,17 @@
             const block = Math.floor(currentDbIndex / blockSize);
             const offset = currentDbIndex % blockSize;
             
-            // Simulate iPRF inverse to find affected hints
-            regularHints.forEach((h, i) => {
-                if (h.blocks.includes(block)) {
-                    h.parity ^= value;
-                }
-            });
-            
-            backupHints.forEach((h, i) => {
-                if (h.blocks.includes(block)) {
-                    h.parityIn ^= value;
+            // iPRF inverse of the offset, with the key of the block: the candidate hints of this entry.
+            // A regular hint takes the entry only if its subset has the block; a backup hint always takes it.
+            lastHints = demoIprfInverse(block, offset);
+            lastUpdated = lastHints.filter(j => j >= regularHints.length || regularHints[j].blocks.includes(block));
+            lastUpdated.forEach(j => {
+                if (j < regularHints.length) {
+                    regularHints[j].parity ^= value;
                 } else {
-                    h.parityOut ^= value;
+                    const h = backupHints[j - regularHints.length];
+                    if (h.blocks.includes(block)) h.parityIn ^= value;
+                    else h.parityOut ^= value;
                 }
             });
             
@@ -1820,7 +1888,12 @@
 
         // Initialize all visualizations
         document.addEventListener('DOMContentLoaded', () => {
-            initPlinko();
+            if (window.Matter) {
+                initPlinko();
+            } else {
+                document.getElementById('plinko-container').textContent =
+                    'The physics library did not load. The board is not available.';
+            }
             initSwapOrNot();
             initHintInit();
             updateIPRFInput();

@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`). GitHub Pages is not in use for the repository, and the workflow failed on each push to `main` that changed `docs/`. The protocol demo is not hosted: the badge with the `igor53627.github.io` link is removed from `README.md`, and `docs/README.md` says to open `docs/protocol-visualization.html` from a clone in a browser.
 
+### Fixed
+
+- `docs/protocol-visualization.html` (the protocol demo):
+  - The HintInit demo sent each entry to every hint whose subset holds the block. It now uses a toy iPRF inverse, as the pseudocode beside it does, and shows the two parities of a backup hint.
+  - The pseudocode blocks had no indentation in a browser. The HintInit pseudocode used two index ranges for the backup hints.
+  - The page showed the wrong title of the paper, gave `O(1)` for the client query and for the hints of an entry, and named the Ethereum state as a use. The text now agrees with `docs/protocol_overview.md`, and each demo states its toy parameters.
+  - The board drew one bin too many, and `Reset` did not stop `Drop 10` and `Drop 50`. `Compute Inverse` could show the result of another `y`.
+  - The page loads matter.js with a subresource integrity hash, and the other demos run if that file does not load. Sound is off at the start. The page has no horizontal scroll on a narrow screen.
+
 ## [0.2.0] - 2026-11-19
 
 The target of the repository is now a PIR library for a database of fixed-size records
