@@ -8,11 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- `README.md` header. The title is `plinko-rs`, the name of the repository; before, it was `Plinko RS`. The `Ask DeepWiki` badge uses a static shields.io image, because `deepwiki.com/badge.svg` answers the image proxy of GitHub with HTTP 429 and the badge showed as a broken image. New badges: CI status, license and paper.
-
-### Removed
-
-- The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`). GitHub Pages is not in use for the repository, and the workflow failed on each push to `main` that changed `docs/`. The protocol demo is not hosted: the badge with the `igor53627.github.io` link is removed from `README.md`, and `docs/README.md` says to open `docs/protocol-visualization.html` from a clone in a browser.
+- `README.md` header. The title is `plinko-rs`, the name of the repository; before, it was `Plinko RS`. The `Ask DeepWiki` badge uses a static shields.io image, because `deepwiki.com/badge.svg` answers the image proxy of GitHub with HTTP 429 and the badge showed as a broken image. New badges: CI status, license and paper. The demo badge links to the root of the GitHub Pages site.
+- The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`) publishes only the protocol demo, `docs/protocol-visualization.html`, as `index.html` and under its own name. Before, it published the whole `docs/` directory, with the PDF of the paper and the transcript of the talk, and it failed on each push because GitHub Pages was not enabled. It runs only when the demo or the workflow changes.
 
 ### Fixed
 

@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Paper: ePrint 2024/318](https://img.shields.io/badge/paper-ePrint%202024%2F318-blue.svg)](https://eprint.iacr.org/2024/318)
 [![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-ask-blue.svg)](https://deepwiki.com/igor53627/plinko-rs)
+[![Demo: protocol tutorial](https://img.shields.io/badge/demo-protocol%20tutorial-blue.svg)](https://igor53627.github.io/plinko-rs/)
 
 Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server PIR for a database of fixed-size records: invertible PRF (iPRF) primitives, hint generation by the client, the online protocol, hint updates, and Rocq models.
 
