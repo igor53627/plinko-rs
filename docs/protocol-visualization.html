@@ -1,1903 +1,1316 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="paper">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plinko Protocol Visualization</title>
-    <!-- Matter.js Physics Engine -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js" integrity="sha512-0z8URjGET6GWnS1xcgiLBZBzoaS8BNlKayfZyQNKz4IRp+s7CKXx0yz7Eco2+TcwoeMBa5KMwmTX7Kus7Fa5Uw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --bg-tertiary: #21262d;
-            --text-primary: #c9d1d9;
-            --text-secondary: #8b949e;
-            --accent-blue: #58a6ff;
-            --accent-green: #3fb950;
-            --accent-orange: #d29922;
-            --accent-red: #f85149;
-            --accent-purple: #a371f7;
-            --border-color: #30363d;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.6;
-            padding: 2rem;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        h1 {
-            font-size: 2.5rem;
-            margin-bottom: 0.5rem;
-            color: var(--accent-blue);
-        }
-
-        h2 {
-            font-size: 1.5rem;
-            margin: 2rem 0 1rem;
-            color: var(--text-primary);
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.5rem;
-        }
-
-        h3 {
-            font-size: 1.2rem;
-            color: var(--accent-green);
-            margin: 1.5rem 0 0.75rem;
-        }
-
-        .subtitle {
-            color: var(--text-secondary);
-            font-size: 1.1rem;
-            margin-bottom: 2rem;
-        }
-
-        .key-property {
-            background: var(--bg-secondary);
-            border-left: 4px solid var(--accent-green);
-            padding: 1rem;
-            margin: 1rem 0;
-            border-radius: 0 8px 8px 0;
-        }
-
-        .key-property strong {
-            color: var(--accent-green);
-        }
-
-        .section {
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            padding: 1.5rem;
-            margin: 1.5rem 0;
-            border: 1px solid var(--border-color);
-        }
-
-        .visualization-container {
-            background: var(--bg-tertiary);
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin: 1rem 0;
-            min-height: 300px;
-            position: relative;
-        }
-
-        /* Plinko Board Styles */
-        .plinko-board {
-            position: relative;
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .plinko-canvas-container {
-            position: relative;
-            width: 100%;
-            max-width: 600px;
-            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
-            border-radius: 12px;
-            border: 3px solid var(--accent-orange);
-            overflow: hidden;
-            margin: 0 auto;
-        }
-
-        .plinko-canvas-container canvas {
-            display: block;
-            width: 100%;
-            height: auto;
-        }
-
-        .plinko-stats {
-            display: flex;
-            gap: 20px;
-            margin-top: 15px;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-
-        .stat-item {
-            background: var(--bg-secondary);
-            padding: 8px 16px;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
-        }
-
-        .stat-label {
-            color: var(--text-secondary);
-            font-size: 0.8rem;
-        }
-
-        .stat-value {
-            color: var(--accent-blue);
-            font-size: 1.2rem;
-            font-weight: bold;
-        }
-
-        .tree-decision {
-            margin-top: 15px;
-            padding: 12px;
-            background: var(--bg-secondary);
-            border-radius: 8px;
-            font-family: 'Fira Code', monospace;
-            font-size: 0.85rem;
-            min-height: 80px;
-        }
-
-        .tree-decision .step {
-            padding: 2px 0;
-        }
-
-        .tree-decision .left {
-            color: var(--accent-green);
-        }
-
-        .tree-decision .right {
-            color: var(--accent-orange);
-        }
-
-        .bin-row {
-            display: flex;
-            gap: 4px;
-            margin-top: 10px;
-            justify-content: center;
-            max-width: 100%;
-        }
-
-        .bin {
-            flex: 0 1 55px;
-            min-width: 0;
-            height: 50px;
-            background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
-            border: 2px solid var(--border-color);
-            border-top: none;
-            border-radius: 0 0 8px 8px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            position: relative;
-            transition: all 0.3s;
-        }
-
-        .bin.highlight {
-            border-color: var(--accent-green);
-            box-shadow: 0 0 10px var(--accent-green);
-        }
-
-        .bin-label {
-            position: absolute;
-            bottom: -25px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-
-        .bin-count {
-            font-size: 0.9rem;
-            font-weight: bold;
-            color: var(--accent-blue);
-        }
-
-        /* SwapOrNot Visualization */
-        .swap-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 30px;
-        }
-
-        .domain-row {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-
-        .domain-cell {
-            width: 40px;
-            height: 40px;
-            background: var(--bg-secondary);
-            border: 2px solid var(--border-color);
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.9rem;
-            transition: all 0.3s;
-        }
-
-        .domain-cell.current {
-            background: var(--accent-blue);
-            border-color: var(--accent-blue);
-            color: var(--bg-primary);
-        }
-
-        .domain-cell.partner {
-            background: var(--accent-orange);
-            border-color: var(--accent-orange);
-            color: var(--bg-primary);
-        }
-
-        .domain-cell.swapped {
-            background: var(--accent-green);
-            border-color: var(--accent-green);
-            color: var(--bg-primary);
-        }
-
-        /* iPRF Flow */
-        .iprf-flow {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .flow-box {
-            background: var(--bg-secondary);
-            border: 2px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1rem 1.5rem;
-            text-align: center;
-            min-width: 120px;
-        }
-
-        .flow-box.input {
-            border-color: var(--accent-blue);
-        }
-
-        .flow-box.prp {
-            border-color: var(--accent-orange);
-        }
-
-        .flow-box.pmns {
-            border-color: var(--accent-purple);
-        }
-
-        .flow-box.output {
-            border-color: var(--accent-green);
-        }
-
-        .flow-arrow {
-            color: var(--text-secondary);
-            font-size: 1.5rem;
-        }
-
-        /* Hint Init Visualization */
-        .hint-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
-            gap: 8px;
-            margin: 1rem 0;
-        }
-
-        .hint-cell {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            padding: 8px;
-            text-align: center;
-            font-size: 0.75rem;
-            transition: all 0.3s;
-        }
-
-        .hint-cell.regular {
-            border-color: var(--accent-blue);
-        }
-
-        .hint-cell.backup {
-            border-color: var(--accent-orange);
-        }
-
-        .hint-cell.active {
-            background: var(--accent-green);
-            color: var(--bg-primary);
-        }
-
-        .hint-cell.skipped {
-            border: 2px dashed var(--accent-green);
-        }
-
-        /* Database streaming */
-        .db-stream {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin: 1rem 0;
-            overflow-x: auto;
-            padding: 10px 0;
-        }
-
-        .db-entry {
-            min-width: 40px;
-            height: 40px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.8rem;
-            transition: all 0.3s;
-        }
-
-        .db-entry.current {
-            background: var(--accent-blue);
-            border-color: var(--accent-blue);
-            color: var(--bg-primary);
-            transform: scale(1.2);
-        }
-
-        .db-entry.processed {
-            background: var(--accent-green);
-            border-color: var(--accent-green);
-            color: var(--bg-primary);
-            opacity: 0.7;
-        }
-
-        /* Controls */
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin: 1rem 0;
-            flex-wrap: wrap;
-        }
-
-        button {
-            background: var(--accent-blue);
-            color: var(--bg-primary);
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.2s;
-        }
-
-        button:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-        }
-
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        button.secondary {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-        }
-
-        /* Slider */
-        .slider-container {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin: 1rem 0;
-        }
-
-        input[type="range"] {
-            flex: 1;
-            height: 6px;
-            background: var(--bg-tertiary);
-            border-radius: 3px;
-            outline: none;
-            -webkit-appearance: none;
-        }
-
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 18px;
-            height: 18px;
-            background: var(--accent-blue);
-            border-radius: 50%;
-            cursor: pointer;
-        }
-
-        /* Code block */
-        .code-block {
-            background: var(--bg-tertiary);
-            border-radius: 8px;
-            padding: 1rem;
-            font-family: 'Fira Code', monospace;
-            font-size: 0.85rem;
-            overflow-x: auto;
-            margin: 1rem 0;
-        }
-
-        .code-line {
-            padding: 2px 0;
-            white-space: pre;
-            min-height: 1.6em;
-        }
-
-        .code-line.highlight {
-            background: rgba(88, 166, 255, 0.2);
-            margin: 0 -1rem;
-            padding: 2px 1rem;
-        }
-
-        .keyword { color: var(--accent-purple); }
-        .function { color: var(--accent-blue); }
-        .comment { color: var(--text-secondary); }
-        .string { color: var(--accent-green); }
-        .number { color: var(--accent-orange); }
-
-        /* Table */
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 1rem 0;
-        }
-
-        th, td {
-            padding: 0.75rem;
-            text-align: left;
-            border: 1px solid var(--border-color);
-        }
-
-        th {
-            background: var(--bg-tertiary);
-            color: var(--accent-blue);
-        }
-
-        td {
-            background: var(--bg-secondary);
-        }
-
-        /* Legend */
-        .legend {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            margin: 1rem 0;
-            padding: 1rem;
-            background: var(--bg-tertiary);
-            border-radius: 8px;
-        }
-
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .legend-color {
-            width: 16px;
-            height: 16px;
-            border-radius: 4px;
-        }
-
-        /* Complexity badges */
-        .complexity {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            font-weight: bold;
-        }
-
-        .complexity.good {
-            background: rgba(63, 185, 80, 0.2);
-            color: var(--accent-green);
-        }
-
-        .complexity.ok {
-            background: rgba(210, 153, 34, 0.2);
-            color: var(--accent-orange);
-        }
-
-        /* Animation keyframes */
-        @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        .animate-bounce {
-            animation: bounce 0.5s ease-in-out;
-        }
-
-        .animate-pulse {
-            animation: pulse 1s infinite;
-        }
-
-        /* Footer */
-        footer {
-            margin-top: 3rem;
-            padding-top: 2rem;
-            border-top: 1px solid var(--border-color);
-            text-align: center;
-            color: var(--text-secondary);
-        }
-
-        footer a {
-            color: var(--accent-blue);
-            text-decoration: none;
-        }
-
-        footer a:hover {
-            text-decoration: underline;
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            body {
-                padding: 1rem;
-            }
-
-            h1 {
-                font-size: 1.8rem;
-            }
-
-            .iprf-flow {
-                flex-direction: column;
-            }
-
-            .flow-arrow {
-                transform: rotate(90deg);
-            }
-
-            table {
-                display: block;
-                overflow-x: auto;
-            }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plinko PIR, one ball at a time</title>
+<meta name="description" content="An interactive companion to the Plinko paper (ePrint 2024/318) and to plinko-rs.">
+<style>
+:root {
+    --serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+:root[data-theme="paper"] {
+    --paper: #F2F5F1;
+    --field: #FFFFFF;
+    --ink: #16233B;
+    --muted: #556273;
+    --rule: #B9C6BF;
+    --grid: #DDE6E0;
+    --pmns: #0B7565;
+    --prp: #A61E5C;
+    --hint: #7E5600;
+}
+:root[data-theme="slate"] {
+    --paper: #1D2928;
+    --field: #172120;
+    --ink: #EAF0E8;
+    --muted: #A3B4AC;
+    --rule: #43544F;
+    --grid: #273533;
+    --pmns: #F0CF65;
+    --prp: #F4A6BD;
+    --hint: #9FCDEB;
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.125rem;
+    line-height: 1.6;
+}
+.page { max-width: 68rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.15em; }
+
+/* Masthead */
+.masthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 1.5rem; flex-wrap: wrap; }
+h1 { font-size: clamp(2.2rem, 5.2vw, 3.6rem); line-height: 1.05; letter-spacing: -0.02em; margin: 0; font-weight: 700; }
+.lede { max-width: 38rem; margin: 0.9rem 0 0; color: var(--muted); }
+.switch { display: flex; border: 1px solid var(--ink); }
+.switch button {
+    font: inherit; font-size: 0.95rem; padding: 0.3rem 0.8rem; border: 0; background: transparent;
+    color: var(--ink); cursor: pointer;
+}
+.switch button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+:focus-visible { outline: 3px solid var(--prp); outline-offset: 2px; }
+
+/* Text and margin */
+.part { display: grid; grid-template-columns: minmax(0, 40rem) minmax(0, 1fr); gap: 0 3rem; margin-top: 3.5rem; }
+.part > h2 { grid-column: 1 / -1; }
+h2 { font-size: 1.7rem; line-height: 1.2; margin: 0 0 0.6rem; letter-spacing: -0.01em; max-width: 40rem; }
+p { margin: 0 0 1rem; }
+aside { font-size: 0.95rem; line-height: 1.45; border-top: 2px solid var(--ink); padding-top: 0.6rem; align-self: start; }
+aside h3 { font-size: 1rem; margin: 0 0 0.4rem; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 0.4rem 0.8rem 0.4rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 700; border-bottom: 1px solid var(--ink); }
+.formula {
+    font-family: var(--mono); font-size: 1rem; padding: 0.8rem 0 0.8rem 1rem; margin: 0 0 1rem;
+    border-left: 3px solid var(--ink); overflow-x: auto; white-space: nowrap;
+}
+.prp { color: var(--prp); font-weight: 700; }
+.pmns { color: var(--pmns); font-weight: 700; }
+.hint { color: var(--hint); font-weight: 700; }
+pre {
+    font-family: var(--mono); font-size: 0.9rem; line-height: 1.55; margin: 0 0 1rem; padding: 1rem;
+    background: var(--field); border: 1px solid var(--rule); overflow-x: auto;
+}
+pre b { font-weight: 700; }
+pre i { font-style: normal; color: var(--muted); }
+
+/* Figures */
+figure { margin: 2.2rem 0 0; grid-column: 1 / -1; }
+.part figure { margin: 0.6rem 0 1.6rem; }
+.plot {
+    border-top: 2px solid var(--ink);
+    border-bottom: 1px solid var(--rule);
+    background-color: var(--field);
+    background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 18px 18px;
+    padding: 0.5rem 0;
+    overflow-x: auto;
+}
+.plot svg { display: block; width: 100%; height: auto; }
+.plot.padded { padding: 1rem; }
+.controls { display: flex; align-items: center; gap: 0.8rem 1.2rem; flex-wrap: wrap; padding: 0.9rem 0 0; }
+.controls label { display: flex; align-items: center; gap: 0.7rem; flex: 1 1 18rem; }
+.controls input[type="range"] { flex: 1; accent-color: var(--pmns); }
+.controls.for-prp input[type="range"] { accent-color: var(--prp); }
+.controls output { font-variant-numeric: tabular-nums; min-width: 1.6em; font-weight: 700; }
+.plain {
+    font: inherit; font-size: 1rem; padding: 0.35rem 0.9rem; background: transparent; color: var(--ink);
+    border: 1px solid var(--ink); cursor: pointer;
+}
+.plain:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.plain:disabled { color: var(--muted); border-color: var(--rule); cursor: default; }
+figcaption { margin-top: 0.7rem; max-width: 44rem; }
+.readout { font-weight: 700; }
+.note { color: var(--muted); font-size: 1rem; }
+
+/* Sampler tree */
+.edge { stroke: var(--rule); fill: none; stroke-linecap: round; }
+.edge.on { stroke: var(--pmns); }
+.node circle { fill: var(--field); stroke: var(--ink); stroke-width: 1.5; }
+.node.on circle { stroke: var(--pmns); stroke-width: 3.5; }
+.node text, .count { font-family: var(--serif); font-variant-numeric: tabular-nums; fill: var(--ink); text-anchor: middle; }
+.node text { font-weight: 700; }
+.bin { cursor: pointer; }
+.bin rect.bar { fill: var(--ink); opacity: 0.22; }
+.bin.on rect.bar { fill: var(--pmns); opacity: 1; }
+.bin rect.hit, .pick rect.hit { fill: transparent; }
+.bin.on .count { font-weight: 700; }
+.index { font-family: var(--serif); fill: var(--muted); text-anchor: middle; }
+.base { stroke: var(--ink); stroke-width: 1.5; }
+
+/* Permutation */
+.strip { display: grid; grid-template-columns: 4.5rem repeat(24, minmax(1.7rem, 1fr)); gap: 2px; min-width: 46rem; align-items: center; }
+.strip span { text-align: center; font-variant-numeric: tabular-nums; font-size: 0.95rem; padding: 0.15rem 0; }
+.strip .label { text-align: left; color: var(--muted); }
+.strip .box { background: var(--field); border: 1px solid var(--rule); }
+.strip .box.on { background: var(--prp); border-color: var(--prp); color: var(--field); font-weight: 700; }
+.rounds td.swap { color: var(--prp); font-weight: 700; }
+.rounds { max-width: 40rem; }
+
+/* iPRF */
+.slot rect { fill: var(--field); stroke: var(--rule); }
+.slot text, .range text, .rowname { font-family: var(--serif); font-variant-numeric: tabular-nums; fill: var(--ink); }
+.slot text { text-anchor: middle; font-size: 13px; }
+.pick { cursor: pointer; }
+.slot.in.on rect { fill: var(--prp); stroke: var(--prp); }
+.slot.ball.on rect { fill: var(--pmns); stroke: var(--pmns); }
+.slot.on text { fill: var(--field); font-weight: 700; }
+.wire { stroke: var(--rule); stroke-width: 1; }
+.wire.on { stroke: var(--prp); stroke-width: 2.5; }
+.range rect { fill: none; stroke: var(--ink); stroke-width: 1.5; }
+.range.on rect { fill: var(--pmns); stroke: var(--pmns); }
+.range text { text-anchor: middle; font-size: 14px; }
+.range.on text { fill: var(--field); font-weight: 700; }
+.range.empty text { fill: var(--muted); }
+.rowname { font-size: 13px; fill: var(--muted); }
+
+/* Database and hints */
+.bench { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 1.5rem 2.5rem; align-items: start; }
+.bench h3 { font-size: 1rem; margin: 0 0 0.5rem; }
+.db { display: grid; grid-template-columns: auto repeat(4, minmax(2.6rem, 1fr)); gap: 3px; font-size: 0.95rem; }
+.db .head { color: var(--muted); font-size: 0.85rem; text-align: center; align-self: end; }
+.db .side { color: var(--muted); font-size: 0.85rem; padding-right: 0.5rem; align-self: center; white-space: nowrap; }
+.cell {
+    font-family: var(--mono); font-size: 0.95rem; text-align: center; padding: 0.35rem 0;
+    background: var(--field); color: var(--ink); border: 1px solid var(--rule); min-width: 0;
+}
+button.cell { cursor: pointer; }
+button.cell:hover { border-color: var(--ink); }
+.cell.is-waiting { color: var(--muted); }
+.cell.is-now { outline: 3px solid var(--ink); outline-offset: -1px; font-weight: 700; }
+.cell.is-held { background: color-mix(in srgb, var(--hint) 28%, var(--field)); border-color: var(--hint); font-weight: 700; }
+.cell.is-out { border: 2px dashed var(--hint); }
+.cell.is-s0 { background: color-mix(in srgb, var(--ink) 22%, var(--field)); }
+.cell.is-s1 {
+    background-image: repeating-linear-gradient(45deg, color-mix(in srgb, var(--ink) 30%, var(--field)) 0 3px, var(--field) 3px 7px);
+}
+.cell.is-known { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.2em; }
+.hints { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; margin-bottom: 1rem; }
+.hints .cell { font-size: 0.8rem; line-height: 1.35; padding: 0.25rem 0; }
+.hints .cell strong { display: block; font-family: var(--serif); font-size: 0.85rem; font-weight: 400; color: var(--muted); }
+.cell.took { background: var(--hint); border-color: var(--hint); color: var(--field); }
+.cell.took strong { color: var(--field); }
+.cell.skipped { border: 2px dashed var(--hint); }
+.cell.picked { outline: 3px solid var(--ink); outline-offset: -1px; }
+.cell.used { color: var(--muted); border-style: dotted; text-decoration: line-through; }
+.cell.used.took { color: var(--field); }
+.cell.promoted { border: 2px solid var(--hint); }
+.steps { margin: 0.8rem 0 0; padding-left: 1.3rem; max-width: 46rem; }
+.steps li { margin-bottom: 0.35rem; }
+.steps code, figcaption code { font-family: var(--mono); font-size: 0.92em; }
+.key { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; font-size: 0.9rem; color: var(--muted); margin-top: 0.8rem; }
+.key .cell { display: inline-block; width: 1.6rem; height: 1.1rem; padding: 0; vertical-align: -0.2rem; margin-right: 0.35rem; font-size: 0.75rem; line-height: 1; }
+
+.closing { margin-top: 3.5rem; }
+.closing table { max-width: 52rem; }
+footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.95rem; }
+
+@media (max-width: 52rem) {
+    .part { grid-template-columns: minmax(0, 1fr); }
+    aside { margin: 0.5rem 0 1.5rem; }
+    body { font-size: 1.05rem; }
+    .bench { grid-template-columns: minmax(0, 1fr); }
+    .plot.padded { padding: 0.7rem; }
+    .hints { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>Plinko Protocol Visualization</h1>
-        <p class="subtitle">Single-Server PIR with Efficient Updates via Invertible PRFs</p>
-
-        <div class="key-property">
-            <strong>Key Innovation:</strong> Plinko updates its hints in O~(1) time after a database change, with
-            invertible PRFs (iPRFs). One iPRF inverse gives the hints that hold a changed record; the client does not scan its hints.
+<div class="page">
+    <header class="masthead">
+        <div>
+            <h1>Plinko PIR, one ball at a time</h1>
+            <p class="lede">An interactive companion to the Plinko paper
+               (<a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>) and to
+               <a href="https://github.com/igor53627/plinko-rs">plinko-rs</a>.
+               Each figure runs the algorithm that its text describes, with small sizes and a toy hash
+               in place of AES. The figures give no security.</p>
         </div>
+        <div class="switch" role="group" aria-label="Theme">
+            <button type="button" data-set-theme="paper" aria-pressed="true">Graph paper</button>
+            <button type="button" data-set-theme="slate" aria-pressed="false">Slate</button>
+        </div>
+    </header>
 
-        <p class="subtitle">The demos on this page use toy sizes and toy round functions. They show the structure of the
-           algorithms and give no security.</p>
+    <figure>
+        <div class="plot"><svg id="tree" role="group" aria-label="Sampler tree"></svg></div>
+        <div class="controls">
+            <label>Ball x <input id="ball" type="range" min="0" max="31" value="13"> <output id="ball-out">13</output></label>
+            <button class="plain" type="button" id="rekey">Draw a new key</button>
+        </div>
+        <figcaption>
+            <span class="readout" id="tree-readout" aria-live="polite"></span>
+            <span class="note">The sampler of Fig. 4 of the paper: 32 balls, 8 bins. Each node gives
+            Binomial(count, 1/2) of its balls to the left child. Select a bin to see the balls in it.
+            The key button gives a new key to all figures of the page.</span>
+        </figcaption>
+    </figure>
 
-        <!-- Section 1: Protocol Overview -->
-        <div class="section">
-            <h2>1. Protocol Overview</h2>
-            <p>Plinko is a Private Information Retrieval (PIR) scheme that allows a client to query a database 
-               without revealing which entry they're accessing.</p>
-
-            <h3>Key Components</h3>
+    <section class="part">
+        <h2>The sampler alone keeps the order of the balls</h2>
+        <div>
+            <p>Plinko is a private information retrieval scheme: a client reads a record of a database, and
+               the server does not learn which one. The client prepares hints before it sends a query. The tool
+               that makes the hints fast to find is a sampler that throws n balls into m bins. The paper calls it
+               a pseudorandom multinomial sampler (PMNS).</p>
+            <p>Move the slider: ball 0 is always in the first bin that has a ball, and a higher ball never lands
+               to the left of a lower one. The sampler needs only the nodes on one path of the tree, so one ball
+               costs O(log m) nodes.</p>
+<pre><b>def</b> trace_ball(k, x, n, m):
+    low, high, count = 0, m - 1, n
+    <b>while</b> low &lt; high:
+        mid = (low + high) // 2
+        left = binomial(count, 1/2, PRF(k, (low, high)))
+        <b>if</b> x &lt; left:  <i># the ball goes left</i>
+            high, count = mid, left
+        <b>else</b>:
+            x, low, count = x - left, mid + 1, count - left
+    <b>return</b> low</pre>
+            <p>The paper has a probability p at each node. plinko-rs needs m to be a power of two, so p is
+               always 1/2, and the number of balls for the left child is the number of set bits among
+               <code>count</code> keystream bits.</p>
+        </div>
+        <aside>
+            <h3>This figure and plinko-rs</h3>
             <table>
-                <tr>
-                    <th>Component</th>
-                    <th>Purpose</th>
-                    <th>Complexity</th>
-                </tr>
-                <tr>
-                    <td>HintInit</td>
-                    <td>Offline preprocessing - stream database to compute hints</td>
-                    <td><span class="complexity ok">O(n)</span></td>
-                </tr>
-                <tr>
-                    <td>Query/Answer</td>
-                    <td>Single query round trip</td>
-                    <td><span class="complexity good">O(n/w)</span></td>
-                </tr>
-                <tr>
-                    <td>UpdateHint</td>
-                    <td>Update hints after database change</td>
-                    <td><span class="complexity good">O~(1)</span></td>
-                </tr>
+                <tr><th></th><th>Figure</th><th>plinko-rs default</th></tr>
+                <tr><td>Balls</td><td>32</td><td>2 * lambda * w hints</td></tr>
+                <tr><td>Bins</td><td>8</td><td>w offsets of a block</td></tr>
+                <tr><td>Coins</td><td>toy hash</td><td>AES-128 keystream</td></tr>
             </table>
+        </aside>
+    </section>
 
-            <h3>Parameters</h3>
-            <div class="legend">
-                <div class="legend-item">
-                    <div class="legend-color" style="background: var(--accent-blue);"></div>
-                    <span><strong>n</strong> = number of records in the database</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background: var(--accent-orange);"></div>
-                    <span><strong>w</strong> = records in a block</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background: var(--accent-green);"></div>
-                    <span><strong>c</strong> = ceil(n/w) (number of blocks)</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background: var(--accent-purple);"></div>
-                    <span><strong>lambda</strong> = security parameter</span>
-                </div>
-            </div>
+    <section class="part">
+        <h2>A permutation hides the order</h2>
+        <div>
+            <p>A function that keeps the order of its inputs is not pseudorandom. Plinko sends the input through
+               a keyed permutation first. The permutation is a Swap-or-Not shuffle (Hoang, Morris and Rogaway,
+               2012). Each round pairs x with a partner and flips one keyed coin for the pair: swap, or not.</p>
+<pre><b>def</b> swap_or_not_round(k, x, round, N):
+    partner = (round_key(k, round) - x) <b>mod</b> N
+    <b>if</b> PRF(k, round, max(x, partner)) == 1:
+        <b>return</b> partner  <i># swap</i>
+    <b>return</b> x</pre>
+            <p>The two values of a pair see the same coin. A round is thus its own inverse, and the inverse
+               permutation runs the same rounds in the opposite order.</p>
         </div>
-
-        <!-- Section 2: PMNS (Plinko Game) -->
-        <div class="section">
-            <h2>2. PMNS: Pseudorandom Multinomial Sampler</h2>
-            <p>Named after the Plinko game! The sampler throws n balls into m bins with a binary tree over the bins.
-               At each node of the tree, a keyed PRF decides how many of the balls go to the left half.</p>
-
-            <div class="key-property">
-                <strong>Key Property:</strong> Both forward (ball -> bin) and inverse (bin -> balls) 
-                visit O(log m) nodes of the tree. plinko-rs draws the count at a node from an AES keystream,
-                so the work at a node grows with the number of balls there.
-            </div>
-
-            <div class="visualization-container" id="pmns-viz">
-                <div class="plinko-board">
-                    <div class="plinko-canvas-container" id="plinko-container">
-                        <!-- Matter.js will render here -->
-                    </div>
-                    <div class="plinko-stats">
-                        <div class="stat-item">
-                            <div class="stat-label">Balls Dropped</div>
-                            <div class="stat-value" id="balls-dropped">0</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Last Bin</div>
-                            <div class="stat-value" id="last-bin">-</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Distribution</div>
-                            <div class="stat-value" id="distribution-info">-</div>
-                        </div>
-                    </div>
-                    <div class="bin-row" id="bin-row"></div>
-                </div>
-            </div>
-
-            <p>The board is a physics animation. It shows the shape of a balls-into-bins distribution; it does not run
-               the keyed sampler below.</p>
-
-            <div class="controls">
-                <button onclick="plinkoDropBall()">Drop Ball</button>
-                <button onclick="plinkoDropMultiple(10)" class="secondary">Drop 10</button>
-                <button onclick="plinkoDropMultiple(50)" class="secondary">Drop 50</button>
-                <button onclick="plinkoReset()" class="secondary">Reset</button>
-                <button onclick="toggleSound()" class="secondary" id="sound-toggle">[Sound: OFF]</button>
-            </div>
-
-            <div class="slider-container">
-                <span>Rows: <span id="row-count-display">8</span></span>
-                <input type="range" id="row-slider" min="6" max="12" value="8" onchange="updateRowCount()">
-            </div>
-
-            <h3>Algorithm: trace_ball (Forward)</h3>
-            <div class="code-block">
-                <div class="code-line"><span class="keyword">def</span> <span class="function">trace_ball</span>(k, x, n, m):</div>
-                <div class="code-line">    low, high = <span class="number">0</span>, m - <span class="number">1</span>  <span class="comment"># bin range</span></div>
-                <div class="code-line">    ball_count = n</div>
-                <div class="code-line">    <span class="keyword">while</span> low &lt; high:  <span class="comment"># descend tree</span></div>
-                <div class="code-line">        mid = (low + high) // <span class="number">2</span></div>
-                <div class="code-line">        p = (mid - low + <span class="number">1</span>) / (high - low + <span class="number">1</span>)  <span class="comment"># left probability</span></div>
-                <div class="code-line">        left_count = <span class="function">binomial_sample</span>(ball_count, p, <span class="function">PRF</span>(k, (low, high)))</div>
-                <div class="code-line">        <span class="keyword">if</span> x &lt; left_count:  <span class="comment"># go LEFT</span></div>
-                <div class="code-line">            high = mid</div>
-                <div class="code-line">            ball_count = left_count</div>
-                <div class="code-line">        <span class="keyword">else</span>:  <span class="comment"># go RIGHT</span></div>
-                <div class="code-line">            x -= left_count</div>
-                <div class="code-line">            low = mid + <span class="number">1</span></div>
-                <div class="code-line">            ball_count -= left_count</div>
-                <div class="code-line">    <span class="keyword"><span class="keyword">return</span> low  <span class="comment"># final bin</span></div>
-            </div>
-            <p>plinko-rs needs m to be a power of two. The probability p is then 1/2 at each node, and the sample is
-               the number of set bits among ball_count keystream bits.</p>
-        </div>
-
-        <!-- Section 3: SwapOrNot PRP -->
-        <div class="section">
-            <h2>3. SwapOrNot: Small-Domain PRP</h2>
-            <p>A pseudorandom permutation for small domains: the Swap-or-Not shuffle of Hoang, Morris and Rogaway (2012).</p>
-
-            <div class="key-property">
-                <strong>Key Insight:</strong> Each round is an involution (self-inverse). 
-                Inversion simply runs rounds in reverse order.
-            </div>
-
-            <div class="visualization-container">
-                <div class="swap-container">
-                    <div>
-                        <strong>Domain [0, N):</strong>
-                        <div class="domain-row" id="domain-row"></div>
-                    </div>
-                    <div id="swap-status" style="text-align: center; min-height: 60px;"></div>
-                    <div>
-                        <strong>Round <span id="round-num">0</span> / <span id="total-rounds">6</span></strong>
-                    </div>
-                </div>
-            </div>
-
-            <p>Toy parameters: N = 8, 6 rounds and a toy round function. plinko-rs uses AES and several hundred
-               rounds for each stage at lambda = 128.</p>
-
-            <div class="controls">
-                <button onclick="stepSwapOrNot()">Step Round</button>
-                <button onclick="runFullPRP()">Run All Rounds</button>
-                <button onclick="resetSwapOrNot()" class="secondary">Reset</button>
-            </div>
-
-            <div class="slider-container">
-                <span>Input X: <span id="input-x-display">3</span></span>
-                <input type="range" id="input-x-slider" min="0" max="7" value="3" onchange="updateInputX()">
-            </div>
-
-            <h3>Single Round</h3>
-            <div class="code-block">
-                <div class="code-line"><span class="keyword">def</span> <span class="function">swap_or_not_round</span>(k, x, round_key, round):</div>
-                <div class="code-line">    partner = (round_key - x) <span class="keyword">mod</span> N</div>
-                <div class="code-line">    canonical = <span class="function">max</span>(x, partner)</div>
-                <div class="code-line">    <span class="keyword">if</span> <span class="function">PRF</span>(k, round, canonical) == <span class="number">1</span>:</div>
-                <div class="code-line">        <span class="keyword">return</span> partner  <span class="comment"># swap</span></div>
-                <div class="code-line">    <span class="keyword"><span class="keyword">return</span> x  <span class="comment"># no swap</span></div>
-            </div>
-            <p>plinko-rs runs these rounds inside the Sometimes-Recurse shuffle of Morris and Rogaway (2014): after a
-               stage, the values in the lower half go through a new stage of half the size.</p>
-        </div>
-
-        <!-- Section 4: iPRF Construction -->
-        <div class="section">
-            <h2>4. iPRF: Invertible Pseudorandom Function</h2>
-            <p>Combines SwapOrNot PRP with PMNS to create an invertible PRF.</p>
-
-            <div class="key-property">
-                <strong>Forward:</strong> iF.F(k, x) = S(k_pmns, P(k_prp, x))<br>
-                <strong>Inverse:</strong> iF.F^-1(k, y) = {P^-1(k_prp, z) : z in S^-1(k_pmns, y)}
-            </div>
-
-            <div class="visualization-container">
-                <div class="iprf-flow">
-                    <div class="flow-box input">
-                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Input</div>
-                        <div id="iprf-input" style="font-size: 1.5rem;">x = 5</div>
-                    </div>
-                    <div class="flow-arrow">-></div>
-                    <div class="flow-box prp">
-                        <div style="font-size: 0.8rem; color: var(--text-secondary);">SwapOrNot PRP</div>
-                        <div id="iprf-prp" style="font-size: 1.2rem;">P(x) = ?</div>
-                    </div>
-                    <div class="flow-arrow">-></div>
-                    <div class="flow-box pmns">
-                        <div style="font-size: 0.8rem; color: var(--text-secondary);">PMNS</div>
-                        <div id="iprf-pmns" style="font-size: 1.2rem;">S(P(x)) = ?</div>
-                    </div>
-                    <div class="flow-arrow">-></div>
-                    <div class="flow-box output">
-                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Output</div>
-                        <div id="iprf-output" style="font-size: 1.5rem;">y = ?</div>
-                    </div>
-                </div>
-
-                <div style="margin-top: 2rem;">
-                    <h4 style="color: var(--accent-purple); margin-bottom: 1rem;">Inverse: Finding all preimages of y</h4>
-                    <div class="iprf-flow">
-                        <div class="flow-box output">
-                            <div style="font-size: 0.8rem; color: var(--text-secondary);">Input</div>
-                            <div id="iprf-inv-input">y = ?</div>
-                        </div>
-                        <div class="flow-arrow">-></div>
-                        <div class="flow-box pmns">
-                            <div style="font-size: 0.8rem; color: var(--text-secondary);">PMNS^-1</div>
-                            <div id="iprf-inv-pmns" style="font-size: 0.9rem;">S^-1(y) = {...}</div>
-                        </div>
-                        <div class="flow-arrow">-></div>
-                        <div class="flow-box prp">
-                            <div style="font-size: 0.8rem; color: var(--text-secondary);">PRP^-1</div>
-                            <div id="iprf-inv-prp" style="font-size: 0.9rem;">{P^-1(z) : z in ...}</div>
-                        </div>
-                        <div class="flow-arrow">-></div>
-                        <div class="flow-box input">
-                            <div style="font-size: 0.8rem; color: var(--text-secondary);">Preimages</div>
-                            <div id="iprf-inv-output">{...}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <p>Toy parameters: 16 inputs and 8 outputs. The toy sampler splits the balls almost evenly; the real
-               sampler draws Binomial(count, 1/2) from an AES keystream.</p>
-
-            <div class="controls">
-                <button onclick="runIPRFForward()">Compute Forward</button>
-                <button onclick="runIPRFInverse()" class="secondary">Compute Inverse</button>
-            </div>
-
-            <div class="slider-container">
-                <span>x: <span id="iprf-x-display">5</span></span>
-                <input type="range" id="iprf-x-slider" min="0" max="15" value="5" onchange="updateIPRFInput()">
-            </div>
-        </div>
-
-        <!-- Section 5: HintInit -->
-        <div class="section">
-            <h2>5. HintInit: Offline Hint Generation</h2>
-            <p>The client streams the whole database once to initialize the hints. One iPRF inverse maps a database entry
-               to its hints: lambda + q/w hints on average.</p>
-
-            <h3>Hint Types</h3>
-            <div class="legend">
-                <div class="legend-item">
-                    <div class="legend-color" style="background: var(--accent-blue);"></div>
-                    <span><strong>Regular Hints (H)</strong>: (P_j, p_j) - subset of c/2+1 blocks + parity</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color" style="background: var(--accent-orange);"></div>
-                    <span><strong>Backup Hints (T)</strong>: (B_j, l_j, r_j) - subset of c/2 blocks + two parities</span>
-                </div>
-            </div>
-
-            <div class="visualization-container">
-                <div>
-                    <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">Database Stream</h4>
-                    <div class="db-stream" id="db-stream"></div>
-                </div>
-
-                <div style="margin-top: 1.5rem;">
-                    <h4 style="color: var(--accent-blue); margin-bottom: 0.5rem;">Regular Hints (lambda*w slots)</h4>
-                    <div class="hint-grid" id="regular-hints"></div>
-                </div>
-
-                <div style="margin-top: 1rem;">
-                    <h4 style="color: var(--accent-orange); margin-bottom: 0.5rem;">Backup Hints (q slots)</h4>
-                    <div class="hint-grid" id="backup-hints"></div>
-                </div>
-            </div>
-
-            <p>Toy parameters: 16 entries in 4 blocks of 4, 8 regular hints and 4 backup hints. The iPRF inverse
-               of the last entry gives the green hints and the hints with a dashed border. A green hint took the entry into a
-               parity. A regular hint with a dashed border did not: its subset does not have the block. The toy iPRF inverse
-               scans the 12 hints; the real inverse walks the PMNS tree.</p>
-
-            <div class="controls">
-                <button onclick="stepHintInit()">Step</button>
-                <button onclick="runHintInit()">Run Full Init</button>
-                <button onclick="resetHintInit()" class="secondary">Reset</button>
-            </div>
-
-            <h3>HintInit Algorithm</h3>
-            <div class="code-block">
-                <div class="code-line" id="hint-line-0"><span class="comment"># Generate keys and initialize hints</span></div>
-                <div class="code-line" id="hint-line-1"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">0</span>..c:</div>
-                <div class="code-line" id="hint-line-2">    K[i] = <span class="function">iF.Gen</span>(<span class="number">1</span>^lambda)</div>
-                <div class="code-line" id="hint-line-3"><span class="keyword">for</span> j <span class="keyword">in</span> <span class="number">0</span>..lambda*w:</div>
-                <div class="code-line" id="hint-line-4">    H[j] = (<span class="function">random_subset</span>(c/<span class="number">2</span>+<span class="number">1</span>), <span class="number">0</span>)</div>
-                <div class="code-line" id="hint-line-5"><span class="keyword">for</span> j <span class="keyword">in</span> lambda*w..lambda*w+q:</div>
-                <div class="code-line" id="hint-line-6">    T[j] = (<span class="function">random_subset</span>(c/<span class="number">2</span>), <span class="number">0</span>, <span class="number">0</span>)</div>
-                <div class="code-line" id="hint-line-7"></div>
-                <div class="code-line" id="hint-line-8"><span class="comment"># Stream database entries</span></div>
-                <div class="code-line" id="hint-line-9"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">0</span>..n:</div>
-                <div class="code-line" id="hint-line-10">    d = <span class="function">stream</span>(D[i])</div>
-                <div class="code-line" id="hint-line-11">    (block, offset) = (i // w, i <span class="keyword">mod</span> w)</div>
-                <div class="code-line" id="hint-line-12">    <span class="keyword">for</span> j <span class="keyword">in</span> <span class="function">iF.F^-1</span>(K[block], offset):  <span class="comment"># lambda + q/w hints on average</span></div>
-                <div class="code-line" id="hint-line-13">        <span class="keyword">if</span> j &lt; lambda*w:</div>
-                <div class="code-line" id="hint-line-14">            <span class="keyword">if</span> block <span class="keyword">in</span> H[j].P:</div>
-                <div class="code-line" id="hint-line-15">                H[j].parity ^= d</div>
-                <div class="code-line" id="hint-line-16">        <span class="keyword">else</span>:</div>
-                <div class="code-line" id="hint-line-17">            <span class="keyword">if</span> block <span class="keyword">in</span> T[j].B:</div>
-                <div class="code-line" id="hint-line-18">                T[j].parity_in ^= d</div>
-                <div class="code-line" id="hint-line-19">            <span class="keyword">else</span>:</div>
-                <div class="code-line" id="hint-line-20">                T[j].parity_out ^= d</div>
-            </div>
-        </div>
-
-        <!-- Section 6: Complexity Summary -->
-        <div class="section">
-            <h2>6. Complexity Summary</h2>
-
+        <aside>
+            <h3>This figure and plinko-rs</h3>
             <table>
-                <tr>
-                    <th>Operation</th>
-                    <th>Time</th>
-                    <th>Communication</th>
-                    <th>Notes</th>
-                </tr>
-                <tr>
-                    <td>HintInit</td>
-                    <td><span class="complexity ok">O(n)</span></td>
-                    <td>O(n)</td>
-                    <td>One-time offline, streaming</td>
-                </tr>
-                <tr>
-                    <td>Query (client)</td>
-                    <td><span class="complexity ok">O~(n/w)</span></td>
-                    <td>O(c) = O(n/w)</td>
-                    <td>One iPRF^-1 finds the hint; c/2 iPRF calls give its offsets</td>
-                </tr>
-                <tr>
-                    <td>Answer (server)</td>
-                    <td><span class="complexity ok">O(n/w)</span></td>
-                    <td>2 records</td>
-                    <td>XOR of c records into two parities</td>
-                </tr>
-                <tr>
-                    <td>UpdateHint</td>
-                    <td><span class="complexity good">O~(1)</span></td>
-                    <td>Index and record change</td>
-                    <td>One iPRF^-1 finds the hints of the changed record</td>
-                </tr>
-                <tr>
-                    <td>Client Storage</td>
-                    <td colspan="2"><span class="complexity ok">O(lambda*w + q) hints</span></td>
-                    <td>Plus c iPRF keys (plinko-rs derives them from one seed)</td>
-                </tr>
+                <tr><th></th><th>Figure</th><th>plinko-rs</th></tr>
+                <tr><td>Domain</td><td>24</td><td>the number of hints</td></tr>
+                <tr><td>Rounds</td><td>8</td><td>about 800 for each stage at lambda = 128</td></tr>
+                <tr><td>Shuffle</td><td>Swap-or-Not</td><td>Swap-or-Not inside the Sometimes-Recurse shuffle (Morris and Rogaway, 2014)</td></tr>
             </table>
-
-            <div class="key-property">
-                <strong>Why Fast Updates Matter:</strong> Without an iPRF, the client must test each hint to find those that
-                hold a changed record. In Plinko one iPRF inverse gives these hints. The paper states a worst-case
-                update time of O~(1).
+        </aside>
+        <figure>
+            <div class="plot padded"><div class="strip" id="perm"></div></div>
+            <div class="controls for-prp">
+                <label>Input x <input id="prp-x" type="range" min="0" max="23" value="5"> <output id="prp-x-out">5</output></label>
             </div>
+            <figcaption>
+                <span class="readout" id="prp-readout" aria-live="polite"></span>
+                <span class="note">The eight rounds for this input:</span>
+            </figcaption>
+            <table class="rounds" id="rounds"></table>
+        </figure>
+    </section>
 
-            <div class="key-property">
-                <strong>Scope of plinko-rs:</strong> a library for a database of fixed-size records. Each client downloads
-                the database and runs HintInit, so the full Ethereum state is not a target.
-            </div>
+    <section class="part">
+        <h2>Together they make a function that runs backward</h2>
+        <div>
+            <p>The invertible PRF (iPRF) of the paper is the permutation, then the sampler.</p>
+            <p class="formula">F(k, x) = <span class="pmns">S</span>(k<sub>pmns</sub>, <span class="prp">P</span>(k<sub>prp</sub>, x))</p>
+            <p>To invert an output y, read the balls of bin y from the tree and send each ball back through
+               <span class="prp">P</span><sup>-1</sup>. The cost grows with the number of results, not with
+               the number of inputs.</p>
+            <p>In the protocol, an input is the number of a hint and an output is an offset in a block. Each
+               block has its own key. The figure shows the function of block 0.</p>
         </div>
+        <aside>
+            <h3>This figure and plinko-rs</h3>
+            <table>
+                <tr><th></th><th>Figure</th><th>plinko-rs default</th></tr>
+                <tr><td>Inputs</td><td>24 hints</td><td>2 * lambda * w hints</td></tr>
+                <tr><td>Outputs</td><td>4 offsets</td><td>w offsets</td></tr>
+                <tr><td>Results of one inverse</td><td>6 on average</td><td>2 * lambda on average</td></tr>
+            </table>
+        </aside>
+        <figure>
+            <div class="plot"><svg id="iprf" viewBox="0 0 736 214" style="min-width: 40rem" role="group" aria-label="iPRF of block 0"></svg></div>
+            <figcaption>
+                <span class="readout" id="iprf-readout" aria-live="polite"></span>
+                <span class="note">Select a hint number to run the function forward. Select an offset to run it backward.</span>
+            </figcaption>
+        </figure>
+    </section>
 
-        <footer>
-            Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs |
-            <a href="https://eprint.iacr.org/2024/318">Paper (2024/318)</a> | 
-            <a href="https://github.com/igor53627/plinko-rs">GitHub</a>
-        </footer>
-    </div>
-
-    <script>
-        // =====================================================
-        // PLINKO PHYSICS ENGINE
-        // =====================================================
-        
-        const { Engine, Render, Runner, Bodies, Body, Composite, Events } = window.Matter || {};
-        
-        // =====================================================
-        // SOUND ENGINE (Web Audio API)
-        // =====================================================
-        
-        let audioContext = null;
-        let soundEnabled = false;
-        
-        function initAudio() {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            return audioContext;
-        }
-        
-        // Play a bounce sound (short ping)
-        function playBounceSound(velocity = 1) {
-            if (!soundEnabled) return;
-            try {
-                const ctx = initAudio();
-                if (ctx.state === 'suspended') ctx.resume();
-                
-                const oscillator = ctx.createOscillator();
-                const gainNode = ctx.createGain();
-                
-                // Vary pitch based on velocity (faster = higher pitch)
-                const baseFreq = 800 + Math.random() * 400;
-                const freq = baseFreq + velocity * 100;
-                
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(freq, ctx.currentTime);
-                oscillator.frequency.exponentialRampToValueAtTime(freq * 0.5, ctx.currentTime + 0.1);
-                
-                // Quick fade out
-                const volume = Math.min(0.15, 0.05 + velocity * 0.02);
-                gainNode.gain.setValueAtTime(volume, ctx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(ctx.destination);
-                
-                oscillator.start(ctx.currentTime);
-                oscillator.stop(ctx.currentTime + 0.1);
-            } catch (e) {
-                // Audio not available
-            }
-        }
-        
-        // Play a drop/land sound (thud)
-        function playDropSound() {
-            if (!soundEnabled) return;
-            try {
-                const ctx = initAudio();
-                if (ctx.state === 'suspended') ctx.resume();
-                
-                const oscillator = ctx.createOscillator();
-                const gainNode = ctx.createGain();
-                
-                // Low frequency thud
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(150, ctx.currentTime);
-                oscillator.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.15);
-                
-                gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(ctx.destination);
-                
-                oscillator.start(ctx.currentTime);
-                oscillator.stop(ctx.currentTime + 0.2);
-                
-                // Add a click layer
-                const clickOsc = ctx.createOscillator();
-                const clickGain = ctx.createGain();
-                
-                clickOsc.type = 'square';
-                clickOsc.frequency.setValueAtTime(100, ctx.currentTime);
-                
-                clickGain.gain.setValueAtTime(0.1, ctx.currentTime);
-                clickGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
-                
-                clickOsc.connect(clickGain);
-                clickGain.connect(ctx.destination);
-                
-                clickOsc.start(ctx.currentTime);
-                clickOsc.stop(ctx.currentTime + 0.05);
-            } catch (e) {
-                // Audio not available
-            }
-        }
-        
-        function toggleSound() {
-            soundEnabled = !soundEnabled;
-            document.getElementById('sound-toggle').textContent = 
-                soundEnabled ? '[Sound: ON]' : '[Sound: OFF]';
-        }
-        
-        // =====================================================
-        // MUSICAL NOTES FOR SWAPORNOT (do re mi fa sol la si)
-        // =====================================================
-        
-        // Note frequencies (C4 major scale)
-        const NOTES = {
-            do:  261.63,  // C4
-            re:  293.66,  // D4
-            mi:  329.63,  // E4
-            fa:  349.23,  // F4
-            sol: 392.00,  // G4
-            la:  440.00,  // A4
-            si:  493.88,  // B4
-            do2: 523.25,  // C5 (octave up)
-        };
-        
-        const SCALE = ['do', 're', 'mi', 'fa', 'sol', 'la', 'si', 'do2'];
-        
-        function playNote(noteName, duration = 0.2, volume = 0.3) {
-            if (!soundEnabled) return;
-            
-            try {
-                if (!audioContext) {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                }
-                const ctx = audioContext;
-                if (ctx.state === 'suspended') ctx.resume();
-                
-                const freq = NOTES[noteName] || 440;
-                
-                const oscillator = ctx.createOscillator();
-                const gainNode = ctx.createGain();
-                
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(freq, ctx.currentTime);
-                
-                // Smooth envelope for pleasant tone
-                gainNode.gain.setValueAtTime(0, ctx.currentTime);
-                gainNode.gain.linearRampToValueAtTime(volume, ctx.currentTime + 0.02);
-                gainNode.gain.setValueAtTime(volume, ctx.currentTime + duration * 0.6);
-                gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(ctx.destination);
-                
-                oscillator.start(ctx.currentTime);
-                oscillator.stop(ctx.currentTime + duration);
-            } catch (e) {
-                // Audio not available
-            }
-        }
-        
-        function playSwapSound() {
-            // Two quick ascending notes for swap
-            playNote('mi', 0.15, 0.25);
-            setTimeout(() => playNote('sol', 0.15, 0.25), 80);
-        }
-        
-        function playNoSwapSound() {
-            // Single lower note for no swap
-            playNote('re', 0.2, 0.2);
-        }
-        
-        function playRoundNote(roundNum) {
-            // Play ascending scale note based on round number
-            const noteIndex = roundNum % SCALE.length;
-            playNote(SCALE[noteIndex], 0.25, 0.3);
-        }
-        
-        function playCompletionSound() {
-            // Victory fanfare: do-mi-sol-do2
-            playNote('do', 0.2, 0.3);
-            setTimeout(() => playNote('mi', 0.2, 0.3), 150);
-            setTimeout(() => playNote('sol', 0.2, 0.3), 300);
-            setTimeout(() => playNote('do2', 0.4, 0.35), 450);
-        }
-        
-        // =====================================================
-        // PLINKO CONFIGURATION
-        // =====================================================
-        
-        // Plinko configuration
-        const PLINKO_WIDTH = 600;
-        const PLINKO_HEIGHT = 450;
-        const PADDING_X = 40;
-        const PADDING_TOP = 30;
-        const PADDING_BOTTOM = 50;
-        
-        // Collision categories
-        const PIN_CATEGORY = 0x0001;
-        const BALL_CATEGORY = 0x0002;
-        
-        // Ball friction parameters (tuned for realistic distribution)
-        const BALL_FRICTIONS = {
-            friction: 0.5,
-            frictionAirByRowCount: {
-                6: 0.035,
-                7: 0.038,
-                8: 0.0395,
-                9: 0.041,
-                10: 0.038,
-                11: 0.0355,
-                12: 0.0414,
-            }
-        };
-        
-        // Plinko state
-        let plinkoEngine, plinkoRender, plinkoRunner;
-        let plinkoPins = [];
-        let plinkoWalls = [];
-        let plinkoSensor;
-        let pinsLastRowXCoords = [];
-        let plinkoRowCount = 8;
-        let plinkoBinCounts = [];
-        let plinkoBallsDropped = 0;
-        
-        function getPinRadius() {
-            return Math.max(4, (20 - plinkoRowCount) / 2);
-        }
-        
-        function getPinDistanceX() {
-            const lastRowPinCount = 3 + plinkoRowCount - 1;
-            return (PLINKO_WIDTH - PADDING_X * 2) / (lastRowPinCount - 1);
-        }
-        
-        function placePinsAndWalls() {
-            // Remove existing pins and walls
-            plinkoPins.forEach(pin => Composite.remove(plinkoEngine.world, pin));
-            plinkoWalls.forEach(wall => Composite.remove(plinkoEngine.world, wall));
-            plinkoPins = [];
-            plinkoWalls = [];
-            pinsLastRowXCoords = [];
-            
-            const pinRadius = getPinRadius();
-            const pinDistanceX = getPinDistanceX();
-            const pinDistanceY = (PLINKO_HEIGHT - PADDING_TOP - PADDING_BOTTOM) / plinkoRowCount;
-            
-            // Create pins row by row
-            for (let row = 0; row < plinkoRowCount; row++) {
-                const rowY = PADDING_TOP + row * pinDistanceY;
-                const pinsInRow = 3 + row;
-                const rowPaddingX = PADDING_X + ((plinkoRowCount - 1 - row) * pinDistanceX) / 2;
-                
-                for (let col = 0; col < pinsInRow; col++) {
-                    const colX = rowPaddingX + ((PLINKO_WIDTH - rowPaddingX * 2) / (pinsInRow - 1)) * col;
-                    
-                    const pin = Bodies.circle(colX, rowY, pinRadius, {
-                        isStatic: true,
-                        render: {
-                            fillStyle: '#8b949e',
-                        },
-                        collisionFilter: {
-                            category: PIN_CATEGORY,
-                            mask: BALL_CATEGORY,
-                        },
-                    });
-                    plinkoPins.push(pin);
-                    
-                    if (row === plinkoRowCount - 1) {
-                        pinsLastRowXCoords.push(colX);
-                    }
-                }
-            }
-            
-            Composite.add(plinkoEngine.world, plinkoPins);
-            
-            // Create angled walls (guard rails)
-            const firstPinX = plinkoPins[0].position.x;
-            const lastRowFirstPinX = pinsLastRowXCoords[0];
-            const wallAngle = Math.atan2(
-                firstPinX - lastRowFirstPinX,
-                PLINKO_HEIGHT - PADDING_TOP - PADDING_BOTTOM
-            );
-            
-            const leftWallX = firstPinX - (firstPinX - lastRowFirstPinX) / 2 - pinDistanceX * 0.3;
-            const leftWall = Bodies.rectangle(
-                leftWallX,
-                PLINKO_HEIGHT / 2,
-                10,
-                PLINKO_HEIGHT,
-                {
-                    isStatic: true,
-                    angle: wallAngle,
-                    render: { visible: false },
-                    collisionFilter: {
-                        category: PIN_CATEGORY,
-                        mask: BALL_CATEGORY,
-                    },
-                }
-            );
-            
-            const rightWall = Bodies.rectangle(
-                PLINKO_WIDTH - leftWallX,
-                PLINKO_HEIGHT / 2,
-                10,
-                PLINKO_HEIGHT,
-                {
-                    isStatic: true,
-                    angle: -wallAngle,
-                    render: { visible: false },
-                    collisionFilter: {
-                        category: PIN_CATEGORY,
-                        mask: BALL_CATEGORY,
-                    },
-                }
-            );
-            
-            plinkoWalls.push(leftWall, rightWall);
-            Composite.add(plinkoEngine.world, plinkoWalls);
-        }
-        
-        function handleBallEnterBin(ball) {
-            const binIndex = pinsLastRowXCoords.findLastIndex(pinX => pinX < ball.position.x);
-            
-            if (binIndex !== -1 && binIndex < pinsLastRowXCoords.length - 1) {
-                plinkoBinCounts[binIndex]++;
-                document.getElementById('last-bin').textContent = binIndex;
-                
-                // Play drop sound
-                playDropSound();
-                
-                renderPlinkoBins();
-
-                // Flash the bin
-                const binEl = document.getElementById(`plinko-bin-${binIndex}`);
-                if (binEl) {
-                    binEl.classList.add('highlight');
-                    setTimeout(() => binEl.classList.remove('highlight'), 300);
-                }
-            }
-            
-            // Remove ball after a short delay
-            setTimeout(() => {
-                Composite.remove(plinkoEngine.world, ball);
-            }, 100);
-        }
-        
-        function initPlinko() {
-            const container = document.getElementById('plinko-container');
-            container.innerHTML = '';
-            
-            // Initialize bin counts
-            const numBins = plinkoRowCount + 1;
-            plinkoBinCounts = new Array(numBins).fill(0);
-            plinkoBallsDropped = 0;
-            
-            // Create Matter.js engine
-            plinkoEngine = Engine.create({
-                timing: { timeScale: 1 }
-            });
-            
-            // Create renderer
-            plinkoRender = Render.create({
-                element: container,
-                engine: plinkoEngine,
-                options: {
-                    width: PLINKO_WIDTH,
-                    height: PLINKO_HEIGHT,
-                    background: 'transparent',
-                    wireframes: false,
-                }
-            });
-            
-            // Create runner
-            plinkoRunner = Runner.create();
-            
-            // Place pins and walls
-            placePinsAndWalls();
-            
-            // Create bottom sensor for detecting when balls enter bins
-            plinkoSensor = Bodies.rectangle(
-                PLINKO_WIDTH / 2,
-                PLINKO_HEIGHT - 10,
-                PLINKO_WIDTH,
-                20,
-                {
-                    isSensor: true,
-                    isStatic: true,
-                    render: { visible: false },
-                }
-            );
-            Composite.add(plinkoEngine.world, plinkoSensor);
-            
-            // Listen for collisions
-            Events.on(plinkoEngine, 'collisionStart', ({ pairs }) => {
-                pairs.forEach(({ bodyA, bodyB, collision }) => {
-                    // Ball entering bin (sensor collision)
-                    if (bodyA === plinkoSensor && bodyB.collisionFilter.category === BALL_CATEGORY) {
-                        handleBallEnterBin(bodyB);
-                    } else if (bodyB === plinkoSensor && bodyA.collisionFilter.category === BALL_CATEGORY) {
-                        handleBallEnterBin(bodyA);
-                    }
-                    
-                    // Ball hitting pin (bounce sound)
-                    const isPinA = bodyA.collisionFilter.category === PIN_CATEGORY && bodyA !== plinkoSensor;
-                    const isPinB = bodyB.collisionFilter.category === PIN_CATEGORY && bodyB !== plinkoSensor;
-                    const isBallA = bodyA.collisionFilter.category === BALL_CATEGORY;
-                    const isBallB = bodyB.collisionFilter.category === BALL_CATEGORY;
-                    
-                    if ((isPinA && isBallB) || (isPinB && isBallA)) {
-                        const ball = isBallA ? bodyA : bodyB;
-                        const velocity = Math.sqrt(ball.velocity.x ** 2 + ball.velocity.y ** 2);
-                        playBounceSound(velocity);
-                    }
-                });
-            });
-            
-            // Start engine
-            Render.run(plinkoRender);
-            Runner.run(plinkoRunner, plinkoEngine);
-            
-            // Update UI
-            document.getElementById('balls-dropped').textContent = '0';
-            document.getElementById('last-bin').textContent = '-';
-            document.getElementById('distribution-info').textContent = '-';
-            document.getElementById('row-count-display').textContent = plinkoRowCount;
-            
-            renderPlinkoBins();
-        }
-        
-        function renderPlinkoBins() {
-            const binRow = document.getElementById('bin-row');
-            const numBins = plinkoRowCount + 1;
-            const maxCount = Math.max(1, ...plinkoBinCounts);
-            const total = plinkoBinCounts.reduce((a, b) => a + b, 0);
-            
-            binRow.innerHTML = '';
-            for (let i = 0; i < numBins; i++) {
-                const pct = total > 0 ? ((plinkoBinCounts[i] / total) * 100).toFixed(0) : 0;
-                binRow.innerHTML += `
-                    <div class="bin" id="plinko-bin-${i}">
-                        <span class="bin-count">${plinkoBinCounts[i]}</span>
-                        <span class="bin-label">${i}</span>
+    <section class="part">
+        <h2>A hint is one record from each block of a subset</h2>
+        <div>
+            <p>The database is cut into c blocks of w records. Hint j has a random subset of the blocks. In each
+               block k of its subset it holds one record: the record at offset F(K[k], j). The hint stores only
+               the XOR of these records, its <span class="hint">parity</span>.</p>
+            <p>The client makes the hints in one pass over the database (HintInit, Fig. 7 of the paper). For
+               each record it runs one iPRF inverse. The result is the list of hints that read this offset in
+               this block.</p>
+<pre><b>for</b> i <b>in</b> 0..n:  <i># one pass over the database</i>
+    d = D[i]
+    (block, offset) = (i // w, i <b>mod</b> w)
+    <b>for</b> j <b>in</b> F_inverse(K[block], offset):
+        <b>if</b> j &lt; lambda*w:  <i># regular hint: c/2 + 1 blocks</i>
+            <b>if</b> block <b>in</b> H[j].subset:
+                H[j].parity ^= d
+        <b>else</b>:  <i># backup hint: c/2 blocks, two parities</i>
+            <b>if</b> block <b>in</b> T[j].subset:
+                T[j].parity_in ^= d
+            <b>else</b>:
+                T[j].parity_out ^= d</pre>
+            <p>A backup hint keeps a parity for its subset and a parity for the other blocks. A query later
+               turns one backup hint into a regular hint.</p>
+        </div>
+        <aside>
+            <h3>This figure and plinko-rs</h3>
+            <table>
+                <tr><th></th><th>Figure</th><th>plinko-rs default</th></tr>
+                <tr><td>Records</td><td>24, of 1 byte</td><td>n, of 40 bytes</td></tr>
+                <tr><td>Blocks</td><td>6 of 4 records</td><td>w is the smallest power of two that is at least sqrt(n)</td></tr>
+                <tr><td>Regular hints</td><td>16</td><td>lambda * w, lambda = 128</td></tr>
+                <tr><td>Backup hints</td><td>8</td><td>lambda * w</td></tr>
+                <tr><td>Subset of a hint</td><td>list of blocks</td><td>one 32-bit cutoff</td></tr>
+            </table>
+        </aside>
+        <figure>
+            <div class="plot padded">
+                <div class="bench">
+                    <div>
+                        <h3>Database</h3>
+                        <div class="db" id="init-db"></div>
                     </div>
-                `;
-            }
-            
-            // Update distribution info
-            if (total > 0) {
-                const centerBin = Math.floor(numBins / 2);
-                const centerPct = ((plinkoBinCounts[centerBin] / total) * 100).toFixed(1);
-                document.getElementById('distribution-info').textContent = `Center: ${centerPct}%`;
-            }
-        }
-        
-        function plinkoDropBall() {
-            const pinDistanceX = getPinDistanceX();
-            const ballOffsetRangeX = pinDistanceX * 0.6;
-            const ballRadius = getPinRadius() * 1.8;
-            
-            const { friction, frictionAirByRowCount } = BALL_FRICTIONS;
-            const frictionAir = frictionAirByRowCount[plinkoRowCount] || 0.04;
-            
-            // Random starting position near center
-            const startX = PLINKO_WIDTH / 2 + (Math.random() - 0.5) * ballOffsetRangeX * 2;
-            
-            const ball = Bodies.circle(startX, 10, ballRadius, {
-                restitution: 0.8,
-                friction: friction,
-                frictionAir: frictionAir,
-                collisionFilter: {
-                    category: BALL_CATEGORY,
-                    mask: PIN_CATEGORY,
-                },
-                render: {
-                    fillStyle: '#58a6ff',
-                },
-            });
-            
-            Composite.add(plinkoEngine.world, ball);
-            
-            plinkoBallsDropped++;
-            document.getElementById('balls-dropped').textContent = plinkoBallsDropped;
-        }
-        
-        let plinkoDropTimers = [];
-
-        function plinkoDropMultiple(count) {
-            for (let i = 0; i < count; i++) {
-                plinkoDropTimers.push(setTimeout(() => plinkoDropBall(), i * 100));
-            }
-        }
-        
-        function plinkoCancelDrops() {
-            plinkoDropTimers.forEach(id => clearTimeout(id));
-            plinkoDropTimers = [];
-        }
-
-        function plinkoReset() {
-            plinkoCancelDrops();
-            // Remove all balls
-            Composite.allBodies(plinkoEngine.world).forEach(body => {
-                if (body.collisionFilter.category === BALL_CATEGORY) {
-                    Composite.remove(plinkoEngine.world, body);
-                }
-            });
-            
-            // Reset counts
-            const numBins = plinkoRowCount + 1;
-            plinkoBinCounts = new Array(numBins).fill(0);
-            plinkoBallsDropped = 0;
-            
-            document.getElementById('balls-dropped').textContent = '0';
-            document.getElementById('last-bin').textContent = '-';
-            document.getElementById('distribution-info').textContent = '-';
-            
-            renderPlinkoBins();
-        }
-        
-        function updateRowCount() {
-            const newRowCount = parseInt(document.getElementById('row-slider').value);
-            if (newRowCount !== plinkoRowCount) {
-                plinkoRowCount = newRowCount;
-                plinkoCancelDrops();
-                
-                // Stop current engine
-                if (plinkoRunner) Runner.stop(plinkoRunner);
-                if (plinkoRender) Render.stop(plinkoRender);
-                
-                // Reinitialize
-                initPlinko();
-            }
-        }
-
-        // SwapOrNot State
-        let domainSize = 8;
-        let currentX = 3;
-        let currentRound = 0;
-        let totalRounds = 6;
-        let swapHistory = [];
-        let prpRunning = false;
-        let prpInterval = null;
-
-        // HintInit State
-        let dbSize = 16;
-        let blockSize = 4;
-        let numBlocks = 4;
-        let currentDbIndex = 0;
-        let regularHints = [];
-        let backupHints = [];
-        let isRunning = false;
-
-        // Deterministic hash for demo
-        function hash(seed, x, y = 0) {
-            let h = seed * 2654435761 + x * 1103515245 + y * 12345;
-            return Math.abs(h) % 1000000;
-        }
-
-        // Calculate path through pegs based on binary tree decisions
-        // NOTE: This is a toy PMNS with deterministic approximate splits,
-        // not a faithful statistically correct Binomial sampler as in the paper.
-        function calculateBallPath(ballIndex, n, m, seed = 42) {
-            let low = 0, high = m - 1;
-            let ballCount = n;
-            let currentBallIndex = ballIndex;
-            let decisions = [];
-            let treeSteps = [];
-
-            while (low < high) {
-                const mid = Math.floor((low + high) / 2);
-                const leftBins = mid - low + 1;
-                const totalBins = high - low + 1;
-                const p = leftBins / totalBins;
-                
-                const prfOut = hash(seed, low, high);
-                const leftCount = Math.floor(ballCount * p + (prfOut % (totalBins + 1)) / totalBins);
-                
-                const goLeft = currentBallIndex < leftCount;
-                decisions.push(goLeft);
-                
-                treeSteps.push({
-                    range: `[${low}, ${high}]`,
-                    mid: mid,
-                    p: p.toFixed(2),
-                    leftCount: leftCount,
-                    ballIndex: currentBallIndex,
-                    decision: goLeft ? 'LEFT' : 'RIGHT'
-                });
-                
-                if (goLeft) {
-                    high = mid;
-                    ballCount = leftCount;
-                } else {
-                    currentBallIndex -= leftCount;
-                    low = mid + 1;
-                    ballCount -= leftCount;
-                }
-            }
-            
-            return { bin: low, decisions, treeSteps };
-        }
-
-        // Alias for iPRF visualization compatibility
-        function traceBall(x, n, m, seed = 42) {
-            return calculateBallPath(x, n, m, seed);
-        }
-
-        // SwapOrNot Visualization
-        function initSwapOrNot() {
-            currentRound = 0;
-            swapHistory = [currentX];
-            renderSwapOrNot();
-        }
-
-        function renderSwapOrNot() {
-            const row = document.getElementById('domain-row');
-            row.innerHTML = '';
-            
-            const current = swapHistory[swapHistory.length - 1];
-            const roundKey = hash(42, currentRound) % domainSize;
-            const partner = (roundKey + domainSize - current) % domainSize;
-            
-            for (let i = 0; i < domainSize; i++) {
-                let className = 'domain-cell';
-                if (i === current) className += ' current';
-                if (i === partner && currentRound < totalRounds) className += ' partner';
-                row.innerHTML += `<div class="${className}">${i}</div>`;
-            }
-            
-            document.getElementById('round-num').textContent = currentRound;
-            document.getElementById('total-rounds').textContent = totalRounds;
-            
-            if (currentRound < totalRounds) {
-                const canonical = Math.max(current, partner);
-                const swapBit = hash(42, currentRound, canonical) % 2;
-                document.getElementById('swap-status').innerHTML = `
-                    <div>K_${currentRound} = ${roundKey}, partner = ${partner}</div>
-                    <div>canonical = max(${current}, ${partner}) = ${canonical}</div>
-                    <div>PRF(${currentRound}, ${canonical}) = ${swapBit} -> ${swapBit ? 'SWAP' : 'NO SWAP'}</div>
-                `;
-            } else {
-                document.getElementById('swap-status').innerHTML = `
-                    <div style="color: var(--accent-green);">Complete! P(${currentX}) = ${current}</div>
-                `;
-            }
-            
-            document.getElementById('input-x-display').textContent = currentX;
-        }
-
-        function stepSwapOrNot() {
-            if (currentRound >= totalRounds) return;
-            
-            const current = swapHistory[swapHistory.length - 1];
-            const roundKey = hash(42, currentRound) % domainSize;
-            const partner = (roundKey + domainSize - current) % domainSize;
-            const canonical = Math.max(current, partner);
-            const swapBit = hash(42, currentRound, canonical) % 2;
-            
-            const next = swapBit ? partner : current;
-            swapHistory.push(next);
-            currentRound++;
-            
-            // Play musical note based on swap/no-swap
-            if (swapBit) {
-                playSwapSound();
-            } else {
-                playNoSwapSound();
-            }
-            
-            // Play completion fanfare when done
-            if (currentRound >= totalRounds) {
-                setTimeout(() => playCompletionSound(), 200);
-            }
-            
-            renderSwapOrNot();
-        }
-
-        function runFullPRP() {
-            if (prpRunning) return;
-            prpRunning = true;
-            prpInterval = setInterval(() => {
-                if (currentRound >= totalRounds) {
-                    clearInterval(prpInterval);
-                    prpRunning = false;
-                    prpInterval = null;
-                    return;
-                }
-                stepSwapOrNot();
-            }, 300);
-        }
-
-        function resetSwapOrNot() {
-            if (prpInterval) {
-                clearInterval(prpInterval);
-                prpInterval = null;
-            }
-            prpRunning = false;
-            currentX = parseInt(document.getElementById('input-x-slider').value);
-            initSwapOrNot();
-        }
-
-        function updateInputX() {
-            currentX = parseInt(document.getElementById('input-x-slider').value);
-            document.getElementById('input-x-display').textContent = currentX;
-            initSwapOrNot();
-        }
-
-        // iPRF Visualization
-        let iprfX = 5;
-        
-        function updateIPRFInput() {
-            iprfX = parseInt(document.getElementById('iprf-x-slider').value);
-            document.getElementById('iprf-x-display').textContent = iprfX;
-            document.getElementById('iprf-input').textContent = `x = ${iprfX}`;
-            document.getElementById('iprf-prp').textContent = 'P(x) = ?';
-            document.getElementById('iprf-pmns').textContent = 'S(P(x)) = ?';
-            document.getElementById('iprf-output').textContent = 'y = ?';
-            document.getElementById('iprf-inv-input').textContent = 'y = ?';
-            document.getElementById('iprf-inv-pmns').textContent = 'S^-1(y) = {...}';
-            document.getElementById('iprf-inv-prp').textContent = '{P^-1(z) : z in ...}';
-            document.getElementById('iprf-inv-output').textContent = '{...}';
-        }
-
-        function runIPRFForward() {
-            // Simulate PRP
-            let permuted = iprfX;
-            for (let r = 0; r < 6; r++) {
-                const roundKey = hash(42, r) % 16;
-                const partner = (roundKey + 16 - permuted) % 16;
-                const canonical = Math.max(permuted, partner);
-                const swapBit = hash(42, r, canonical) % 2;
-                permuted = swapBit ? partner : permuted;
-            }
-            
-            document.getElementById('iprf-prp').textContent = `P(${iprfX}) = ${permuted}`;
-            
-            // Simulate PMNS
-            const { bin } = traceBall(permuted, 16, 8, 42);
-            document.getElementById('iprf-pmns').textContent = `S(${permuted}) = ${bin}`;
-            document.getElementById('iprf-output').textContent = `y = ${bin}`;
-            
-            // Update inverse display
-            document.getElementById('iprf-inv-input').textContent = `y = ${bin}`;
-        }
-
-        function runIPRFInverse() {
-            if (document.getElementById('iprf-output').textContent === 'y = ?') runIPRFForward();
-            const y = parseInt(document.getElementById('iprf-output').textContent.split('=')[1]);
-            
-            // Find all balls in bin y (simulate PMNS inverse)
-            const pmnsPreimages = [];
-            for (let i = 0; i < 16; i++) {
-                const { bin } = traceBall(i, 16, 8, 42);
-                if (bin === y) pmnsPreimages.push(i);
-            }
-            
-            document.getElementById('iprf-inv-pmns').textContent = `S^-1(${y}) = {${pmnsPreimages.join(', ')}}`;
-            
-            // Apply inverse PRP to each
-            const preimages = pmnsPreimages.map(z => {
-                let x = z;
-                for (let r = 5; r >= 0; r--) {
-                    const roundKey = hash(42, r) % 16;
-                    const partner = (roundKey + 16 - x) % 16;
-                    const canonical = Math.max(x, partner);
-                    const swapBit = hash(42, r, canonical) % 2;
-                    x = swapBit ? partner : x;
-                }
-                return x;
-            });
-            
-            document.getElementById('iprf-inv-prp').textContent =
-                pmnsPreimages.map((z, i) => `P^-1(${z}) = ${preimages[i]}`).join(', ') || '(empty bin)';
-            document.getElementById('iprf-inv-output').textContent = `{${preimages.join(', ')}}`;
-        }
-
-        // HintInit Visualization
-        // Toy iPRF of a block: hint j -> offset in the block. The inverse scans the 12 hints.
-        let lastHints = [];
-        let lastUpdated = [];
-
-        function demoIprf(block, j) {
-            return Math.floor(hash(1000 + block, j) / 100) % blockSize;
-        }
-
-        function demoIprfInverse(block, offset) {
-            const total = regularHints.length + backupHints.length;
-            return Array.from({ length: total }, (_, j) => j).filter(j => demoIprf(block, j) === offset);
-        }
-
-        function initHintInit() {
-            currentDbIndex = 0;
-            lastHints = [];
-            lastUpdated = [];
-            regularHints = Array(8).fill(null).map((_, i) => ({
-                blocks: generateRandomSubset(numBlocks, Math.floor(numBlocks/2) + 1, i),
-                parity: 0
-            }));
-            backupHints = Array(4).fill(null).map((_, i) => ({
-                blocks: generateRandomSubset(numBlocks, Math.floor(numBlocks/2), i + 100),
-                parityIn: 0,
-                parityOut: 0
-            }));
-            renderHintInit();
-        }
-
-        function generateRandomSubset(total, size, seed) {
-            const subset = new Set();
-            let attempts = 0;
-            while (subset.size < size && attempts < 100) {
-                subset.add(hash(seed, attempts) % total);
-                attempts++;
-            }
-            return Array.from(subset);
-        }
-
-        function renderHintInit() {
-            // Database stream
-            const stream = document.getElementById('db-stream');
-            stream.innerHTML = '';
-            for (let i = 0; i < dbSize; i++) {
-                const value = hash(123, i) % 256;
-                let className = 'db-entry';
-                if (i === currentDbIndex) className += ' current';
-                else if (i < currentDbIndex) className += ' processed';
-                stream.innerHTML += `<div class="${className}">${value}</div>`;
-            }
-            
-            // Regular hints
-            const regHints = document.getElementById('regular-hints');
-            regHints.innerHTML = '';
-            regularHints.forEach((h, i) => {
-                const state = lastUpdated.includes(i) ? 'active' : lastHints.includes(i) ? 'skipped' : '';
-                regHints.innerHTML += `
-                    <div class="hint-cell regular ${state}">
-                        H[${i}]<br>
-                        <small>p=${h.parity}</small>
+                    <div>
+                        <h3>Regular hints</h3>
+                        <div class="hints" id="init-regular"></div>
+                        <h3>Backup hints (in, out)</h3>
+                        <div class="hints" id="init-backup"></div>
                     </div>
-                `;
-            });
-            
-            // Backup hints
-            const bkpHints = document.getElementById('backup-hints');
-            bkpHints.innerHTML = '';
-            backupHints.forEach((h, i) => {
-                const state = lastUpdated.includes(regularHints.length + i) ? 'active' : '';
-                bkpHints.innerHTML += `
-                    <div class="hint-cell backup ${state}">
-                        T[${i}]<br>
-                        <small>in=${h.parityIn}<br>out=${h.parityOut}</small>
+                </div>
+            </div>
+            <div class="controls">
+                <button class="plain" type="button" id="init-next">Read the next record</button>
+                <button class="plain" type="button" id="init-all">Read all records</button>
+                <button class="plain" type="button" id="init-reset">Start again</button>
+            </div>
+            <figcaption>
+                <span class="readout" id="init-readout" aria-live="polite"></span>
+                <span class="note" id="init-hint-note"></span>
+                <div class="key">
+                    <span><span class="cell took"></span>hint took the record</span>
+                    <span><span class="cell skipped"></span>regular hint without this block</span>
+                    <span><span class="cell is-held"></span>record of the selected hint</span>
+                    <span><span class="cell is-out"></span>record of the out parity</span>
+                </div>
+            </figcaption>
+        </figure>
+    </section>
+
+    <section class="part">
+        <h2>A query spends one hint, and an update repairs a few</h2>
+        <div>
+            <p>To read record i in block b, the client needs a hint that holds i. One iPRF inverse gives the
+               candidates. The client takes block b out of the subset of the hint and sends the other blocks
+               with their offsets, next to a second subset of the same size. The server returns one parity for
+               each subset. The parity of the hint and the parity from the server differ by exactly record i.</p>
+            <p>A hint that was sent is not used again: a second use would show the server what the two queries
+               have in common. A backup hint takes its place, with record i as its extra record.</p>
+            <p>When a record changes, the client gets the index and the XOR of the old and the new value. One
+               iPRF inverse gives the hints that hold the record, and the client corrects their parities. It
+               reads no other hint.</p>
+        </div>
+        <aside>
+            <h3>This figure and plinko-rs</h3>
+            <table>
+                <tr><th></th><th>Figure</th><th>plinko-rs</th></tr>
+                <tr><td>Choice of the hint</td><td>first candidate</td><td>candidates in random order</td></tr>
+                <tr><td>No hint holds the index</td><td>some indices</td><td>probability about e^(-lambda/2) for an index</td></tr>
+                <tr><td>Query message</td><td>6 bits and 3 offsets</td><td>c bits and c/2 offsets</td></tr>
+                <tr><td>Queries before a new HintInit</td><td>8</td><td>the number of backup hints</td></tr>
+            </table>
+        </aside>
+        <figure>
+            <div class="controls" style="padding: 0 0 0.9rem">
+                <div class="switch" role="group" aria-label="Action">
+                    <button type="button" data-mode="query" aria-pressed="true">Read a record</button>
+                    <button type="button" data-mode="change" aria-pressed="false">Change a record</button>
+                </div>
+                <button class="plain" type="button" id="online-reset">Run HintInit again</button>
+            </div>
+            <div class="plot padded">
+                <div class="bench">
+                    <div>
+                        <h3>Database of the server</h3>
+                        <div class="db" id="online-db"></div>
                     </div>
-                `;
-            });
-            
-            // Highlight current line
-            document.querySelectorAll('.code-line').forEach(l => l.classList.remove('highlight'));
-            if (currentDbIndex === 0) {
-                document.getElementById('hint-line-0')?.classList.add('highlight');
-            } else if (currentDbIndex <= dbSize) {
-                [10, 11, 12].forEach(n => document.getElementById(`hint-line-${n}`)?.classList.add('highlight'));
+                    <div>
+                        <h3>Hints of the client</h3>
+                        <div class="hints" id="online-regular"></div>
+                        <h3>Backup hints (in, out)</h3>
+                        <div class="hints" id="online-backup"></div>
+                    </div>
+                </div>
+            </div>
+            <figcaption>
+                <span class="readout" id="online-readout" aria-live="polite"></span>
+                <ol class="steps" id="online-steps"></ol>
+                <span class="note" id="online-check"></span>
+                <div class="key">
+                    <span><span class="cell is-now"></span>the record of the action</span>
+                    <span><span class="cell is-s0"></span>subset 0 of the message</span>
+                    <span><span class="cell is-s1"></span>subset 1 of the message</span>
+                    <span><span class="cell is-known">ab</span>record that the client has</span>
+                    <span><span class="cell took"></span>hint of the action</span>
+                    <span><span class="cell promoted"></span>backup hint in use as a hint</span>
+                </div>
+            </figcaption>
+        </figure>
+    </section>
+
+    <section class="closing">
+        <h2>What each step costs</h2>
+        <table>
+            <tr><th>Step</th><th>Work</th></tr>
+            <tr><td>HintInit (client)</td><td>One iPRF inverse for each record of the database: 2 * lambda candidate hints on average</td></tr>
+            <tr><td>Find a <span class="hint">hint</span> for an index</td><td>One iPRF inverse</td></tr>
+            <tr><td>Query (client)</td><td>c/2 iPRF forward calls, one for each block of the hint</td></tr>
+            <tr><td>Query message</td><td>c/8 bytes of block mask and c/2 offsets of 4 bytes</td></tr>
+            <tr><td>Answer (server)</td><td>XOR of c records into two parities</td></tr>
+            <tr><td>Update (client)</td><td>One iPRF inverse for each changed record</td></tr>
+            <tr><td>Query limit</td><td>One backup hint for each query; then a new HintInit</td></tr>
+        </table>
+        <p style="max-width: 40rem; margin-top: 1.2rem">plinko-rs is a library for a database of fixed-size records.
+           Each client downloads the database and runs HintInit. The full Ethereum state is not a target: at that
+           size the download is 73.4 GB and HintInit needs about 300 core-hours (extrapolated).</p>
+    </section>
+
+    <footer>
+        Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs,
+        <a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>.
+        Code and documents: <a href="https://github.com/igor53627/plinko-rs">github.com/igor53627/plinko-rs</a>.
+    </footer>
+</div>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Toy primitives. A 32-bit mixing function is in place of AES; it gives no
+// security. All figures use these functions.
+// ---------------------------------------------------------------------------
+
+function mix(a) {
+    a = Math.imul(a ^ (a >>> 16), 0x7feb352d);
+    a = Math.imul(a ^ (a >>> 15), 0x846ca68b);
+    return (a ^ (a >>> 16)) >>> 0;
+}
+
+function prf(key, ...parts) {
+    let h = mix(key ^ 0x9e3779b9);
+    for (const part of parts) h = mix(h ^ mix((part + 0x85ebca6b) | 0));
+    return h;
+}
+
+// Swap-or-Not shuffle on [0, size).
+const PRP_ROUNDS = 8;
+
+function prpRound(key, size, round, x) {
+    const roundKey = prf(key, 1, round) % size;
+    const partner = (roundKey + size - x) % size;
+    const coin = prf(key, 2, round, Math.max(x, partner)) & 1;
+    return { roundKey, partner, coin, out: coin ? partner : x };
+}
+
+function prpForward(key, size, x) {
+    for (let round = 0; round < PRP_ROUNDS; round++) x = prpRound(key, size, round, x).out;
+    return x;
+}
+
+function prpInverse(key, size, y) {
+    for (let round = PRP_ROUNDS - 1; round >= 0; round--) y = prpRound(key, size, round, y).out;
+    return y;
+}
+
+// Sampler (PMNS). The left child of a node gets the number of set bits among
+// `count` keystream bits of the node: a Binomial(count, 1/2) sample.
+function binomialHalf(key, low, high, count) {
+    let ones = 0;
+    for (let i = 0; i < count; i++) ones += (prf(key, low, high, i >>> 5) >>> (31 - (i & 31))) & 1;
+    return ones;
+}
+
+function pmnsTree(key, balls, bins) {
+    return (function build(low, high, count, start) {
+        const node = { low, high, count, start };
+        if (low < high) {
+            const mid = (low + high) >> 1;
+            const left = binomialHalf(key, low, high, count);
+            node.left = build(low, mid, left, start);
+            node.right = build(mid + 1, high, count - left, start + left);
+        }
+        return node;
+    })(0, bins - 1, balls, 0);
+}
+
+function pmnsLeaves(tree) {
+    const leaves = [];
+    (function walk(node) {
+        if (node.low === node.high) leaves.push(node);
+        else { walk(node.left); walk(node.right); }
+    })(tree);
+    return leaves;
+}
+
+function pmnsForward(tree, ball) {
+    let node = tree;
+    while (node.low < node.high) node = ball < node.right.start ? node.left : node.right;
+    return node.low;
+}
+
+// iPRF: the permutation, then the sampler.
+function makeIprf(key, domain, range) {
+    const prpKey = prf(key, 10);
+    const tree = pmnsTree(prf(key, 11), domain, range);
+    const leaves = pmnsLeaves(tree);
+    return {
+        domain, range, prpKey, tree, leaves,
+        permute: x => prpForward(prpKey, domain, x),
+        forward: x => pmnsForward(tree, prpForward(prpKey, domain, x)),
+        inverse: y => Array.from({ length: leaves[y].count }, (_, i) => prpInverse(prpKey, domain, leaves[y].start + i))
+            .sort((a, b) => a - b),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// The protocol of the figures: 24 records in 6 blocks of 4.
+// ---------------------------------------------------------------------------
+
+const BLOCKS = 6;
+const BLOCK_SIZE = 4;
+const RECORDS = BLOCKS * BLOCK_SIZE;
+const REGULAR = 16;
+const BACKUP = 8;
+const HINTS = REGULAR + BACKUP;
+const ALL_BLOCKS = Array.from({ length: BLOCKS }, (_, k) => k);
+
+const blockOf = index => Math.floor(index / BLOCK_SIZE);
+const offsetOf = index => index % BLOCK_SIZE;
+
+// The blocks with the smallest PRF values. plinko-rs stores the same subset as
+// one cutoff value.
+function subsetOf(selectKey, hint, size) {
+    return new Set([...ALL_BLOCKS]
+        .sort((a, b) => prf(selectKey, hint, a) - prf(selectKey, hint, b) || a - b)
+        .slice(0, size));
+}
+
+function makeWorld(master) {
+    const selectKey = prf(master, 22);
+    return {
+        master,
+        db: Array.from({ length: RECORDS }, (_, i) => prf(master, 20, i) & 0xff),
+        iprfs: ALL_BLOCKS.map(k => makeIprf(prf(master, 21, k), HINTS, BLOCK_SIZE)),
+        subsets: Array.from({ length: HINTS }, (_, j) => subsetOf(selectKey, j, j < REGULAR ? BLOCKS / 2 + 1 : BLOCKS / 2)),
+    };
+}
+
+function emptyHints() {
+    return Array.from({ length: HINTS }, (_, j) => (j < REGULAR ? { parity: 0 } : { parityIn: 0, parityOut: 0 }));
+}
+
+// One step of HintInit: record `index` goes into the hints that hold it.
+function hintInitStep(world, hints, index, value) {
+    const block = blockOf(index);
+    const candidates = world.iprfs[block].inverse(offsetOf(index));
+    const took = [];
+    for (const j of candidates) {
+        const inSubset = world.subsets[j].has(block);
+        if (j < REGULAR) {
+            if (!inSubset) continue;
+            hints[j].parity ^= value;
+        } else if (inSubset) {
+            hints[j].parityIn ^= value;
+        } else {
+            hints[j].parityOut ^= value;
+        }
+        took.push(j);
+    }
+    return { candidates, took };
+}
+
+// The records that hint `hint` reads in the given blocks.
+function cellsOf(world, hint, blocks) {
+    return [...blocks].sort((a, b) => a - b).map(block => {
+        const offset = world.iprfs[block].forward(hint);
+        return { block, offset, index: block * BLOCK_SIZE + offset };
+    });
+}
+
+const xorOf = (db, cells) => cells.reduce((parity, cell) => parity ^ db[cell.index], 0);
+const otherBlocks = blocks => ALL_BLOCKS.filter(block => !blocks.has(block));
+
+// Client state after a complete HintInit.
+function makeClient(world, db) {
+    const table = emptyHints();
+    db.forEach((value, index) => hintInitStep(world, table, index, value));
+    return {
+        slots: table.map((hint, j) => (j < REGULAR
+            ? { state: 'regular', blocks: world.subsets[j], extra: null, parity: hint.parity }
+            : { state: 'backup', parityIn: hint.parityIn, parityOut: hint.parityOut })),
+        cache: new Map(),
+        queries: 0,
+    };
+}
+
+const isLive = slot => slot.state === 'regular' || slot.state === 'promoted';
+const backupsLeft = client => client.slots.filter(slot => slot.state === 'backup').length;
+
+// The records of a live hint. `skip` leaves one block out before the iPRF calls.
+function slotCells(world, j, slot, skip = -1) {
+    const cells = cellsOf(world, j, [...slot.blocks].filter(block => block !== skip));
+    if (slot.extra && slot.extra.block !== skip) cells.push(slot.extra);
+    return cells.sort((a, b) => a.block - b.block);
+}
+
+// One iPRF inverse, then the first live hint that has the block of the index.
+function findHint(world, client, index) {
+    const block = blockOf(index);
+    const candidates = world.iprfs[block].inverse(offsetOf(index));
+    return { candidates, hintId: candidates.find(j => isLive(client.slots[j]) && client.slots[j].blocks.has(block)) };
+}
+
+function serverAnswer(db, mask, offsets) {
+    const parities = [0, 0];
+    const rank = [0, 0];
+    mask.forEach((first, block) => {
+        const subset = first ? 0 : 1;
+        parities[subset] ^= db[block * BLOCK_SIZE + offsets[rank[subset]++]];
+    });
+    return parities;
+}
+
+function clientQuery(world, client, server, wanted) {
+    if (backupsLeft(client) === 0) return { error: 'no-backup', wanted };
+
+    // An index that the client has goes out as a decoy query for another index.
+    // The client draws decoys until one has a hint.
+    let index = wanted;
+    const decoy = client.cache.has(wanted);
+    const cachedValue = decoy ? client.cache.get(wanted).value : null;
+    if (decoy) {
+        const free = Array.from({ length: RECORDS }, (_, i) => i).filter(i => !client.cache.has(i))
+            .sort((a, b) => prf(world.master, 30, client.queries, a) - prf(world.master, 30, client.queries, b));
+        if (free.length === 0) return { error: 'no-decoy', wanted, cachedValue };
+        const withHint = free.find(i => findHint(world, client, i).hintId !== undefined);
+        index = withHint === undefined ? free[0] : withHint;
+    }
+
+    const block = blockOf(index);
+    const offset = offsetOf(index);
+    const { candidates, hintId } = findHint(world, client, index);
+    if (hintId === undefined) return { error: 'no-hint', wanted, index, decoy, cachedValue, block, offset, candidates };
+
+    // Message: the hint without the block of the index, and the other blocks.
+    const slot = client.slots[hintId];
+    const real = slotCells(world, hintId, slot, block);
+    const offsets = real.map(cell => cell.offset);
+    const realBlocks = new Set(real.map(cell => cell.block));
+    const dummy = otherBlocks(realBlocks).map((dummyBlock, i) => (
+        { block: dummyBlock, offset: offsets[i], index: dummyBlock * BLOCK_SIZE + offsets[i] }));
+    const realIsFirst = (prf(world.master, 31, client.queries) & 1) === 0;
+    const mask = ALL_BLOCKS.map(k => realBlocks.has(k) === realIsFirst);
+
+    const answer = serverAnswer(server.db, mask, offsets);
+    const hintParity = slot.parity;
+    const record = answer[realIsFirst ? 0 : 1] ^ hintParity;
+
+    // The used hint goes away. A backup hint takes its place: the half without
+    // the block of the index, and the record as an extra.
+    const backupId = client.slots.findIndex(candidate => candidate.state === 'backup');
+    const backup = client.slots[backupId];
+    const inSubset = world.subsets[backupId].has(block);
+    const half = inSubset ? new Set(otherBlocks(world.subsets[backupId])) : world.subsets[backupId];
+    client.slots[backupId] = {
+        state: 'promoted',
+        blocks: half,
+        extra: { block, offset, index },
+        parity: (inSubset ? backup.parityOut : backup.parityIn) ^ record,
+    };
+    slot.state = 'used';
+    client.cache.set(index, { value: record, hintId: backupId });
+    client.queries += 1;
+
+    return {
+        wanted, index, decoy, cachedValue, block, offset, candidates, hintId, real, dummy, offsets, mask, realIsFirst,
+        answer, hintParity, record, backupId, usedOutHalf: inSubset, half: [...half].sort((a, b) => a - b),
+    };
+}
+
+function applyChange(world, client, server, index, value) {
+    const block = blockOf(index);
+    const old = server.db[index];
+    const change = old ^ value;
+    server.db[index] = value;
+
+    const candidates = world.iprfs[block].inverse(offsetOf(index));
+    const touched = [];
+    for (const j of candidates) {
+        const slot = client.slots[j];
+        if (isLive(slot) && slot.blocks.has(block)) {
+            slot.parity ^= change;
+            touched.push({ hint: j, part: 'parity' });
+        } else if (slot.state === 'backup') {
+            const part = world.subsets[j].has(block) ? 'parityIn' : 'parityOut';
+            slot[part] ^= change;
+            touched.push({ hint: j, part });
+        }
+    }
+    const cached = client.cache.get(index);
+    if (cached) {
+        cached.value ^= change;
+        if (client.slots[cached.hintId].state === 'promoted') {
+            client.slots[cached.hintId].parity ^= change;
+            touched.push({ hint: cached.hintId, part: 'extra' });
+        }
+    }
+    return { index, block, offset: offsetOf(index), old, value, change, candidates, touched, cached: Boolean(cached) };
+}
+
+// Compares each parity of the client with its definition.
+function checkClient(world, client, server) {
+    let checked = 0;
+    let wrong = 0;
+    client.slots.forEach((slot, j) => {
+        if (isLive(slot)) {
+            checked += 1;
+            if (slot.parity !== xorOf(server.db, slotCells(world, j, slot))) wrong += 1;
+        } else if (slot.state === 'backup') {
+            checked += 2;
+            const subset = world.subsets[j];
+            if (slot.parityIn !== xorOf(server.db, cellsOf(world, j, subset))) wrong += 1;
+            if (slot.parityOut !== xorOf(server.db, cellsOf(world, j, otherBlocks(subset)))) wrong += 1;
+        }
+    });
+    for (const [index, entry] of client.cache) {
+        checked += 1;
+        if (entry.value !== server.db[index]) wrong += 1;
+    }
+    return { checked, wrong };
+}
+
+// ---------------------------------------------------------------------------
+// Figures
+// ---------------------------------------------------------------------------
+
+const SVG = 'http://www.w3.org/2000/svg';
+const $ = id => document.getElementById(id);
+const hex = value => value.toString(16).padStart(2, '0');
+const words = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+function svgEl(name, attrs = {}, text) {
+    const element = document.createElementNS(SVG, name);
+    for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+    if (text !== undefined) element.textContent = text;
+    return element;
+}
+
+function htmlEl(name, attrs = {}, content) {
+    const element = document.createElement(name);
+    for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+    if (content !== undefined) element.innerHTML = content;
+    return element;
+}
+
+function onActivate(element, action) {
+    element.addEventListener('click', action);
+    element.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            action();
+        }
+    });
+}
+
+// A render builds its controls again. The control that had the focus gets it back.
+function keepFocus(draw) {
+    const active = document.activeElement;
+    const key = active && active.getAttribute ? active.getAttribute('data-focus') : null;
+    draw();
+    if (key && !active.isConnected) {
+        const next = document.querySelector(`[data-focus="${key}"]`);
+        if (next) next.focus();
+    }
+}
+
+const narrow = window.matchMedia('(max-width: 40rem)');
+const state = {
+    master: 0x51ed270b,
+    world: null,
+    ball: 13,
+    pickedBin: null,
+    prpInput: 5,
+    iprfPick: { kind: 'input', value: 7 },
+    init: null,
+    online: null,
+};
+
+// Sampler tree -------------------------------------------------------------
+
+const TREE_BALLS = 32;
+const TREE_BINS = 8;
+
+const renderTree = () => keepFocus(drawTree);
+
+function drawTree() {
+    const shape = narrow.matches
+        ? { width: 360, height: 318, pitch: 45, first: 22.5, radius: 13, top: 24, gap: 52, mouth: 196, base: 284, bar: 34, tall: 62, font: 13, small: 12, label: bin => `${bin}` }
+        : { width: 720, height: 384, pitch: 90, first: 45, radius: 17, top: 34, gap: 64, mouth: 248, base: 348, bar: 60, tall: 76, font: 15, small: 13, label: bin => `bin ${bin}` };
+    const binX = bin => shape.first + bin * shape.pitch;
+    const nodeX = node => (binX(node.low) + binX(node.high)) / 2;
+
+    const svg = $('tree');
+    svg.setAttribute('viewBox', `0 0 ${shape.width} ${shape.height}`);
+    svg.replaceChildren();
+    const tree = pmnsTree(prf(state.master, 40), TREE_BALLS, TREE_BINS);
+    const leaves = pmnsLeaves(tree);
+    const landed = leaves[pmnsForward(tree, state.ball)];
+    const edges = svgEl('g');
+    const nodes = svgEl('g');
+    const bins = svgEl('g');
+
+    (function walk(node, depth, onPath) {
+        if (node.low === node.high) return;
+        const x = nodeX(node);
+        const y = shape.top + depth * shape.gap;
+        for (const child of [node.left, node.right]) {
+            const childOn = onPath && state.ball >= child.start && state.ball < child.start + child.count;
+            const leaf = child.low === child.high;
+            if (child.count > 0) {
+                edges.append(svgEl('line', {
+                    x1: x, y1: y, x2: nodeX(child), y2: leaf ? shape.mouth : shape.top + (depth + 1) * shape.gap,
+                    class: `edge${childOn ? ' on' : ''}`,
+                    'stroke-width': 1.5 + 9 * (child.count / TREE_BALLS) * (shape.width / 720),
+                }));
             }
+            walk(child, depth + 1, childOn);
         }
+        const group = svgEl('g', { class: `node${onPath ? ' on' : ''}` });
+        group.append(
+            svgEl('circle', { cx: x, cy: y, r: shape.radius }),
+            svgEl('text', { x, y: y + shape.font / 3, 'font-size': shape.font }, node.count));
+        nodes.append(group);
+    })(tree, 0, true);
 
-        function stepHintInit() {
-            if (currentDbIndex >= dbSize) return;
-            
-            const value = hash(123, currentDbIndex) % 256;
-            const block = Math.floor(currentDbIndex / blockSize);
-            const offset = currentDbIndex % blockSize;
-            
-            // iPRF inverse of the offset, with the key of the block: the candidate hints of this entry.
-            // A regular hint takes the entry only if its subset has the block; a backup hint always takes it.
-            lastHints = demoIprfInverse(block, offset);
-            lastUpdated = lastHints.filter(j => j >= regularHints.length || regularHints[j].blocks.includes(block));
-            lastUpdated.forEach(j => {
-                if (j < regularHints.length) {
-                    regularHints[j].parity ^= value;
-                } else {
-                    const h = backupHints[j - regularHints.length];
-                    if (h.blocks.includes(block)) h.parityIn ^= value;
-                    else h.parityOut ^= value;
-                }
-            });
-            
-            currentDbIndex++;
-            renderHintInit();
-        }
-
-        let hintInitInterval = null;
-        
-        function runHintInit() {
-            if (isRunning) return;
-            isRunning = true;
-            
-            hintInitInterval = setInterval(() => {
-                if (currentDbIndex >= dbSize) {
-                    clearInterval(hintInitInterval);
-                    hintInitInterval = null;
-                    isRunning = false;
-                    return;
-                }
-                stepHintInit();
-            }, 200);
-        }
-
-        function resetHintInit() {
-            if (hintInitInterval) {
-                clearInterval(hintInitInterval);
-                hintInitInterval = null;
-            }
-            isRunning = false;
-            initHintInit();
-        }
-
-        // Initialize all visualizations
-        document.addEventListener('DOMContentLoaded', () => {
-            if (window.Matter) {
-                initPlinko();
-            } else {
-                document.getElementById('plinko-container').textContent =
-                    'The physics library did not load. The board is not available.';
-            }
-            initSwapOrNot();
-            initHintInit();
-            updateIPRFInput();
+    const most = Math.max(...leaves.map(leaf => leaf.count), 1);
+    for (const leaf of leaves) {
+        const x = binX(leaf.low);
+        const height = shape.tall * leaf.count / most;
+        const on = state.pickedBin === null ? leaf === landed : state.pickedBin === leaf.low;
+        const group = svgEl('g', {
+            class: `bin${on ? ' on' : ''}`, tabindex: 0, role: 'button', 'data-focus': `tree-bin-${leaf.low}`,
+            'aria-label': `Bin ${leaf.low}, ${plural(leaf.count, 'ball')}`,
         });
-    </script>
+        group.append(
+            svgEl('rect', { class: 'bar', x: x - shape.bar / 2, y: shape.base - height, width: shape.bar, height }),
+            svgEl('text', { class: 'count', x, y: shape.base - height - 6, 'font-size': shape.font }, leaf.count),
+            svgEl('text', { class: 'index', x, y: shape.base + 20, 'font-size': shape.small }, shape.label(leaf.low)),
+            svgEl('rect', { class: 'hit', x: x - shape.pitch / 2, y: shape.mouth, width: shape.pitch, height: shape.height - shape.mouth }));
+        onActivate(group, () => { state.pickedBin = leaf.low; renderTree(); });
+        bins.append(group);
+    }
+    svg.append(edges, svgEl('line', { class: 'base', x1: 0, y1: shape.base, x2: shape.width, y2: shape.base }), bins, nodes);
+
+    const shown = state.pickedBin === null ? landed : leaves[state.pickedBin];
+    const held = shown.count === 0 ? 'holds no ball'
+        : shown.count === 1 ? `holds ball ${shown.start}`
+        : `holds balls ${shown.start} to ${shown.start + shown.count - 1}`;
+    $('tree-readout').textContent = `Ball ${state.ball} lands in bin ${landed.low}. Bin ${shown.low} ${held}. `;
+    $('ball-out').textContent = state.ball;
+}
+
+// Permutation --------------------------------------------------------------
+
+const renderPrp = () => keepFocus(drawPrp);
+
+function drawPrp() {
+    const key = state.world.iprfs[0].prpKey;
+    const x = state.prpInput;
+    const strip = $('perm');
+    strip.replaceChildren(htmlEl('span', { class: 'label' }, 'x'));
+    for (let i = 0; i < HINTS; i++) strip.append(htmlEl('span', { class: `box${i === x ? ' on' : ''}` }, i));
+    strip.append(htmlEl('span', { class: 'label' }, 'P(x)'));
+    for (let i = 0; i < HINTS; i++) strip.append(htmlEl('span', { class: `box${i === x ? ' on' : ''}` }, prpForward(key, HINTS, i)));
+
+    const rounds = $('rounds');
+    rounds.replaceChildren(htmlEl('tr', {}, '<th>Round</th><th>Round key</th><th>Value</th><th>Partner</th><th>Coin</th><th>Result</th>'));
+    let value = x;
+    for (let round = 0; round < PRP_ROUNDS; round++) {
+        const step = prpRound(key, HINTS, round, value);
+        rounds.append(htmlEl('tr', {},
+            `<td>${round}</td><td>${step.roundKey}</td><td>${value}</td><td>${step.partner}</td>` +
+            `<td>${step.coin}</td><td class="${step.coin ? 'swap' : ''}">${step.coin ? `swap: ${step.out}` : `stay: ${step.out}`}</td>`));
+        value = step.out;
+    }
+    $('prp-readout').textContent = `P(${x}) = ${value}, and the rounds in the opposite order give P^-1(${value}) = ${prpInverse(key, HINTS, value)}. `;
+    $('prp-x-out').textContent = x;
+}
+
+// iPRF ---------------------------------------------------------------------
+
+const renderIprf = () => keepFocus(drawIprf);
+
+function drawIprf() {
+    const iprf = state.world.iprfs[0];
+    const pick = state.iprfPick;
+    const svg = $('iprf');
+    svg.replaceChildren();
+    const at = position => 76 + position * 27;
+    const output = pick.kind === 'input' ? iprf.forward(pick.value) : pick.value;
+    const inputs = pick.kind === 'input' ? [pick.value] : iprf.inverse(pick.value);
+    const balls = new Set(inputs.map(iprf.permute));
+
+    svg.append(
+        svgEl('text', { class: 'rowname', x: 4, y: 40 }, 'hint j'),
+        svgEl('text', { class: 'rowname', x: 4, y: 136 }, 'ball P(j)'),
+        svgEl('text', { class: 'rowname', x: 4, y: 174 }, 'offset'));
+
+    const wires = svgEl('g');
+    const quiet = [];
+    const loud = [];
+    for (let j = 0; j < HINTS; j++) {
+        const on = inputs.includes(j);
+        (on ? loud : quiet).push(svgEl('line', {
+            class: `wire${on ? ' on' : ''}`, x1: at(j), y1: 48, x2: at(iprf.permute(j)), y2: 120,
+        }));
+    }
+    wires.append(...quiet, ...loud);
+    svg.append(wires);
+
+    for (let j = 0; j < HINTS; j++) {
+        const on = inputs.includes(j);
+        const group = svgEl('g', { class: `slot in pick${on ? ' on' : ''}`, tabindex: 0, role: 'button', 'data-focus': `iprf-hint-${j}`, 'aria-label': `Hint ${j}` });
+        group.append(
+            svgEl('rect', { x: at(j) - 12, y: 24, width: 24, height: 24 }),
+            svgEl('text', { x: at(j), y: 41 }, j));
+        onActivate(group, () => { state.iprfPick = { kind: 'input', value: j }; renderIprf(); });
+        svg.append(group);
+
+        const ball = svgEl('g', { class: `slot ball${balls.has(j) ? ' on' : ''}` });
+        ball.append(
+            svgEl('rect', { x: at(j) - 12, y: 120, width: 24, height: 24 }),
+            svgEl('text', { x: at(j), y: 137 }, j));
+        svg.append(ball);
+    }
+
+    let emptyRight = 0;
+    for (const leaf of iprf.leaves) {
+        const on = leaf.low === output;
+        const empty = leaf.count === 0;
+        const left = at(leaf.start) - 12;
+        const width = empty ? 0 : leaf.count * 27 - 3;
+        const group = svgEl('g', {
+            class: `range pick${on ? ' on' : ''}${empty ? ' empty' : ''}`, tabindex: 0, role: 'button', 'data-focus': `iprf-offset-${leaf.low}`,
+            'aria-label': `Offset ${leaf.low}, ${plural(leaf.count, 'hint')}`,
+        });
+        if (empty) {
+            const x = Math.min(Math.max(left - 2, emptyRight + 36, 100), 700);
+            emptyRight = x + 36;
+            group.append(
+                svgEl('rect', { class: 'hit', x: x - 34, y: 188, width: 68, height: 22 }),
+                svgEl('text', { x, y: 204 }, `${leaf.low}: no ball`));
+        } else {
+            group.append(
+                svgEl('rect', { x: left, y: 156, width, height: 26 }),
+                svgEl('text', { x: left + width / 2, y: 174 }, leaf.low));
+        }
+        onActivate(group, () => { state.iprfPick = { kind: 'bin', value: leaf.low }; renderIprf(); });
+        svg.append(group);
+    }
+
+    const leaf = iprf.leaves[output];
+    if (pick.kind === 'input') {
+        $('iprf-readout').textContent =
+            `F(K[0], ${pick.value}) = ${output}: the permutation sends hint ${pick.value} to ball ${iprf.permute(pick.value)}, ` +
+            `and that ball is in the bin of offset ${output}. Hint ${pick.value} reads offset ${output} of block 0. `;
+    } else if (leaf.count === 0) {
+        $('iprf-readout').textContent = `The inverse of offset ${output} is empty: its bin has no ball. No hint reads offset ${output} of block 0. `;
+    } else {
+        $('iprf-readout').textContent =
+            `The inverse of offset ${output}: the bin holds ${leaf.count === 1 ? `ball ${leaf.start}` : `balls ${leaf.start} to ${leaf.start + leaf.count - 1}`}, ` +
+            `and the inverse permutation gives ${leaf.count === 1 ? 'hint' : 'hints'} ${words(inputs)}. `;
+    }
+}
+
+// Database and hint tables ---------------------------------------------------
+
+function renderDb(container, db, classOf, onPick) {
+    container.replaceChildren(htmlEl('span'));
+    for (let offset = 0; offset < BLOCK_SIZE; offset++) container.append(htmlEl('span', { class: 'head' }, `offset ${offset}`));
+    for (let block = 0; block < BLOCKS; block++) {
+        container.append(htmlEl('span', { class: 'side' }, `block ${block}`));
+        for (let offset = 0; offset < BLOCK_SIZE; offset++) {
+            const index = block * BLOCK_SIZE + offset;
+            const cell = htmlEl(onPick ? 'button' : 'span', { class: `cell ${classOf(index)}` }, hex(db[index]));
+            if (onPick) {
+                cell.type = 'button';
+                cell.setAttribute('data-focus', `${container.id}-${index}`);
+                cell.setAttribute('aria-label', `Record ${index}, block ${block}, offset ${offset}, value ${hex(db[index])}`);
+                cell.addEventListener('click', () => onPick(index));
+            }
+            container.append(cell);
+        }
+    }
+}
+
+function renderHints(regular, backup, count, describe, onPick) {
+    regular.replaceChildren();
+    backup.replaceChildren();
+    for (let j = 0; j < count; j++) {
+        const { text, classes } = describe(j);
+        const cell = htmlEl(onPick ? 'button' : 'span', { class: `cell ${classes}` }, `<strong>${j}</strong>${text}`);
+        if (onPick) {
+            cell.type = 'button';
+            cell.setAttribute('data-focus', `${regular.id}-${j}`);
+            cell.addEventListener('click', () => onPick(j));
+        }
+        (j < REGULAR ? regular : backup).append(cell);
+    }
+}
+
+// HintInit ------------------------------------------------------------------
+
+function resetInit() {
+    state.init = { next: 0, hints: emptyHints(), last: null, picked: null };
+}
+
+function stepInit() {
+    const init = state.init;
+    if (init.next >= RECORDS) return;
+    init.last = { index: init.next, ...hintInitStep(state.world, init.hints, init.next, state.world.db[init.next]) };
+    init.next += 1;
+}
+
+const renderInit = () => keepFocus(drawInit);
+
+function drawInit() {
+    const { world, init } = state;
+    const picked = init.picked;
+    const inCells = picked === null ? [] : cellsOf(world, picked, world.subsets[picked]);
+    const outCells = picked === null || picked < REGULAR ? [] : cellsOf(world, picked, otherBlocks(world.subsets[picked]));
+    const held = new Set(inCells.map(cell => cell.index));
+    const out = new Set(outCells.map(cell => cell.index));
+
+    renderDb($('init-db'), world.db, index => [
+        index >= init.next ? 'is-waiting' : '',
+        init.last && init.last.index === index ? 'is-now' : '',
+        held.has(index) ? 'is-held' : '',
+        out.has(index) ? 'is-out' : '',
+    ].join(' '));
+
+    renderHints($('init-regular'), $('init-backup'), HINTS, j => {
+        const hint = init.hints[j];
+        const took = init.last && init.last.took.includes(j);
+        const skipped = init.last && !took && init.last.candidates.includes(j);
+        return {
+            text: j < REGULAR ? hex(hint.parity) : `${hex(hint.parityIn)}, ${hex(hint.parityOut)}`,
+            classes: `${took ? 'took' : ''} ${skipped ? 'skipped' : ''} ${picked === j ? 'picked' : ''}`,
+        };
+    }, j => { init.picked = init.picked === j ? null : j; renderInit(); });
+
+    $('init-next').disabled = init.next >= RECORDS;
+    $('init-all').disabled = init.next >= RECORDS;
+
+    if (!init.last) {
+        $('init-readout').textContent = 'No record is read yet. All parities are 00. ';
+    } else {
+        const { index, candidates, took } = init.last;
+        const skipped = candidates.filter(j => !took.includes(j));
+        const base = `Record ${index} (${hex(world.db[index])}) is block ${blockOf(index)}, offset ${offsetOf(index)}. `;
+        const found = candidates.length === 0
+            ? 'The iPRF inverse is empty: no hint reads this offset. '
+            : `The iPRF inverse gives ${candidates.length === 1 ? 'hint' : 'hints'} ${words(candidates)}. ` +
+              (took.length ? `${took.length === 1 ? 'Hint' : 'Hints'} ${words(took)} ${took.length === 1 ? 'takes' : 'take'} the record. ` : 'No hint takes the record. ') +
+              (skipped.length ? `${skipped.length === 1 ? 'Hint' : 'Hints'} ${words(skipped)} ${skipped.length === 1 ? 'does' : 'do'} not have block ${blockOf(index)}. ` : '');
+        $('init-readout').textContent = base + found + (init.next >= RECORDS ? 'HintInit is complete. ' : '');
+    }
+
+    if (picked === null) {
+        $('init-hint-note').textContent = 'Select a hint to see its records in the database.';
+    } else {
+        const seen = cells => cells.filter(cell => cell.index < init.next);
+        const sum = cells => (seen(cells).length ? `${seen(cells).map(cell => hex(world.db[cell.index])).join(' xor ')} = ${hex(xorOf(world.db, seen(cells)))}` : '00');
+        const blocks = words([...world.subsets[picked]].sort((a, b) => a - b));
+        $('init-hint-note').textContent = picked < REGULAR
+            ? `Hint ${picked} has blocks ${blocks}. Its parity from the records read so far: ${sum(inCells)}.`
+            : `Backup hint ${picked} has blocks ${blocks}. In parity so far: ${sum(inCells)}. Out parity, from the other blocks: ${sum(outCells)}.`;
+    }
+}
+
+// Query and update -----------------------------------------------------------
+
+// `keepServer` runs HintInit again on the database as it is now.
+function resetOnline(keepServer) {
+    const server = keepServer ? state.online.server : { db: [...state.world.db] };
+    state.online = {
+        mode: state.online ? state.online.mode : 'query',
+        server,
+        client: makeClient(state.world, server.db),
+        last: null,
+    };
+}
+
+function actOnline(index) {
+    const { world, online } = state;
+    if (online.mode === 'query') {
+        online.last = { kind: 'query', ...clientQuery(world, online.client, online.server, index) };
+    } else {
+        const value = (online.server.db[index] ^ ((prf(world.master, 32, index, online.server.db[index]) % 255) + 1)) & 0xff;
+        online.last = { kind: 'change', ...applyChange(world, online.client, online.server, index, value) };
+    }
+    renderOnline();
+}
+
+const renderOnline = () => keepFocus(drawOnline);
+
+function drawOnline() {
+    const { world, online } = state;
+    const { client, server, last } = online;
+    const query = last && last.kind === 'query' && !last.error ? last : null;
+    const subset = [new Set(), new Set()];
+    if (query) {
+        query.real.forEach(cell => subset[query.realIsFirst ? 0 : 1].add(cell.index));
+        query.dummy.forEach(cell => subset[query.realIsFirst ? 1 : 0].add(cell.index));
+    }
+    const focus = last && last.index !== undefined ? last.index : null;
+
+    renderDb($('online-db'), server.db, index => [
+        focus === index ? 'is-now' : '',
+        subset[0].has(index) ? 'is-s0' : '',
+        subset[1].has(index) ? 'is-s1' : '',
+        client.cache.has(index) ? 'is-known' : '',
+    ].join(' '), actOnline);
+
+    const touched = new Set(last && last.kind === 'change' ? last.touched.map(entry => entry.hint) : []);
+    renderHints($('online-regular'), $('online-backup'), HINTS, j => {
+        const slot = client.slots[j];
+        const text = slot.state === 'backup' ? `${hex(slot.parityIn)}, ${hex(slot.parityOut)}` : hex(slot.parity);
+        const marked = touched.has(j) || (query && (query.hintId === j || query.backupId === j));
+        return { text, classes: `${slot.state === 'used' ? 'used' : ''} ${slot.state === 'promoted' ? 'promoted' : ''} ${marked ? 'took' : ''}` };
+    });
+
+    for (const button of document.querySelectorAll('[data-mode]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.mode === online.mode));
+    }
+
+    const steps = $('online-steps');
+    steps.replaceChildren();
+    const add = text => steps.append(htmlEl('li', {}, text));
+    const left = backupsLeft(client);
+    const where = result => `block ${result.block}, offset ${result.offset}`;
+    const lookup = result => (result.candidates.length
+        ? `The iPRF inverse gives ${result.candidates.length === 1 ? 'hint' : 'hints'} ${words(result.candidates)}.`
+        : 'The iPRF inverse is empty.');
+
+    if (!last) {
+        $('online-readout').textContent = online.mode === 'query'
+            ? 'Select a record of the database to read it privately. '
+            : 'Select a record of the database to change it. ';
+    } else if (last.error === 'no-backup') {
+        $('online-readout').textContent = 'No backup hint is left, so the client sends nothing. It must run HintInit again. ';
+    } else if (last.error === 'no-decoy') {
+        $('online-readout').textContent = `The client has record ${last.wanted} from an earlier query: ${hex(last.cachedValue)}. ` +
+            'It has all records, so no index is left for a decoy query. ';
+    } else if (last.error === 'no-hint') {
+        $('online-readout').textContent = (last.decoy
+            ? `The client has record ${last.wanted} from an earlier query: ${hex(last.cachedValue)}. No hint holds a record for a decoy query`
+            : `No hint holds record ${last.index}`) + ', so the client sends nothing. ';
+        add(`Record ${last.index} is ${where(last)}. ${lookup(last)}`);
+        add(`None of them is a hint with block ${last.block} in its subset. With lambda = 128 this occurs with a probability of about e^(-64) for an index.`);
+    } else if (query) {
+        $('online-readout').textContent = query.decoy
+            ? `The client has record ${query.wanted} from an earlier query: ${hex(query.cachedValue)}. It sends a decoy query for record ${query.index}, so that the server sees a query each time. `
+            : `The client reads record ${query.index}: ${hex(query.record)}. `;
+        const blocksOf = cells => words(cells.map(cell => cell.block));
+        const first = query.realIsFirst ? query.real : query.dummy;
+        const second = query.realIsFirst ? query.dummy : query.real;
+        add(`Record ${query.index} is ${where(query)}. ${lookup(query)} Hint ${query.hintId} is the first one that has block ${query.block}.`);
+        add(`Message: mask <code>${query.mask.map(bit => (bit ? 1 : 0)).join('')}</code>, offsets <code>${query.offsets.join(', ')}</code>. ` +
+            `Subset 0 is blocks ${blocksOf(first)}, and subset 1 is blocks ${blocksOf(second)}. The k-th block of a subset reads the k-th offset.` +
+            (query.dummy.some(cell => cell.index === query.index)
+                ? ` By chance, subset ${query.realIsFirst ? 1 : 0} reads record ${query.index} itself. The server cannot tell this from a query for another record.`
+                : ` Record ${query.index} is in neither subset.`));
+        add(`Answer: parity of subset 0 is <code>${hex(query.answer[0])}</code>, parity of subset 1 is <code>${hex(query.answer[1])}</code>. ` +
+            `The server cannot tell that subset ${query.realIsFirst ? 0 : 1} is the one from the hint.`);
+        add(`Record = <code>${hex(query.answer[query.realIsFirst ? 0 : 1])} xor ${hex(query.hintParity)} = ${hex(query.record)}</code>: ` +
+            `the answer for subset ${query.realIsFirst ? 0 : 1}, and the parity of hint ${query.hintId}.`);
+        add(`Hint ${query.hintId} is spent. Backup hint ${query.backupId} takes its place: its ${query.usedOutHalf ? 'out' : 'in'} half ` +
+            `(blocks ${words(query.half)}) and record ${query.index}. ${plural(left, 'backup hint')} left.`);
+    } else {
+        $('online-readout').textContent = `Record ${last.index} changes from ${hex(last.old)} to ${hex(last.value)}. The client gets the index and the change ${hex(last.change)}. `;
+        add(`Record ${last.index} is ${where(last)}. ${lookup(last)}`);
+        const describe = entry => (entry.part === 'parity' ? `hint ${entry.hint}`
+            : entry.part === 'extra' ? `hint ${entry.hint} (the record is its extra record)`
+            : `backup hint ${entry.hint} (${entry.part === 'parityIn' ? 'in' : 'out'} parity)`);
+        add(last.touched.length
+            ? `The client XORs <code>${hex(last.change)}</code> into ${words(last.touched.map(describe))}.`
+            : 'No hint holds the record. No parity changes.');
+        add(`The client reads ${plural(last.candidates.length, 'hint')} of ${HINTS}.` +
+            (last.cached ? ` It also corrects its copy of record ${last.index}.` : ''));
+    }
+
+    const check = checkClient(world, client, server);
+    $('online-check').textContent = check.wrong === 0
+        ? `Check of the figure: all ${check.checked} parities and records of the client agree with the database of the server.`
+        : `Check of the figure: ${check.wrong} of ${check.checked} values of the client do not agree with the database. This is a defect of the page.`;
+}
+
+// Start ------------------------------------------------------------------------
+
+function renderAll() {
+    renderTree();
+    renderPrp();
+    renderIprf();
+    renderInit();
+    renderOnline();
+}
+
+function rekey(master) {
+    state.master = master;
+    state.world = makeWorld(master);
+    state.pickedBin = null;
+    resetInit();
+    resetOnline(false);
+}
+
+function setTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    for (const button of document.querySelectorAll('[data-set-theme]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.setTheme === theme));
+    }
+}
+
+$('ball').addEventListener('input', event => { state.ball = Number(event.target.value); state.pickedBin = null; renderTree(); });
+$('rekey').addEventListener('click', () => { rekey(mix(state.master + 0x6d2b79f5)); renderAll(); });
+$('prp-x').addEventListener('input', event => { state.prpInput = Number(event.target.value); renderPrp(); });
+$('init-next').addEventListener('click', () => { stepInit(); renderInit(); });
+$('init-all').addEventListener('click', () => { while (state.init.next < RECORDS) stepInit(); renderInit(); });
+$('init-reset').addEventListener('click', () => { resetInit(); renderInit(); });
+$('online-reset').addEventListener('click', () => { resetOnline(true); renderOnline(); });
+for (const button of document.querySelectorAll('[data-mode]')) {
+    button.addEventListener('click', () => { state.online.mode = button.dataset.mode; state.online.last = null; renderOnline(); });
+}
+for (const button of document.querySelectorAll('[data-set-theme]')) {
+    button.addEventListener('click', () => {
+        setTheme(button.dataset.setTheme);
+        try { localStorage.setItem('plinko-theme', button.dataset.setTheme); } catch (error) { /* storage is not available */ }
+    });
+}
+narrow.addEventListener('change', renderTree);
+
+try {
+    const saved = localStorage.getItem('plinko-theme');
+    if (saved === 'paper' || saved === 'slate') setTheme(saved);
+} catch (error) { /* storage is not available */ }
+
+rekey(state.master);
+renderAll();
+</script>
 </body>
 </html>

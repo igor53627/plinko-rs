@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - `README.md` header. The title is `plinko-rs`, the name of the repository; before, it was `Plinko RS`. The `Ask DeepWiki` badge uses a static shields.io image, because `deepwiki.com/badge.svg` answers the image proxy of GitHub with HTTP 429 and the badge showed as a broken image. New badges: CI status, license and paper. The demo badge links to the root of the GitHub Pages site.
 - The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`) publishes only the protocol demo, `docs/protocol-visualization.html`, as `index.html` and under its own name. Before, it published the whole `docs/` directory, with the PDF of the paper and the transcript of the talk, and it failed on each push because GitHub Pages was not enabled. It runs only when the demo or the workflow changes.
+- `docs/protocol-visualization.html` is written again as an article with five figures, after the fixes below. All figures use one toy model: a keyed hash, a Swap-or-Not permutation, the PMNS tree, the iPRF, and the hints of a database of 24 records. A tree of the sampler replaces the physics board, so the page loads no external file and has no sound. The last figure is new and has two actions: a query with its answer and the promotion of a backup hint, and the update of a record. The page has a light theme and a dark theme.
 
 ### Fixed
 
