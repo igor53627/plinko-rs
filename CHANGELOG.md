@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- `docs/protocol-visualization.html` has a Russian version in the same file. A switch `English / Русский` beside the theme switch changes the text of the article and the text that the figures make. The page takes the language from the address (`?lang=ru` or `?lang=en`), then from the saved choice (`localStorage` key `plinko-lang`), then from the language of the browser. Pseudocode, formulas and the names `iPRF`, `HintInit` and `lambda` stay in English. The English text and the figures do not change. The two switches are now in a row of their own below the introduction, because they do not fit beside the title.
+- `docs/protocol-visualization.html` has a Russian version in the same file. A switch `English / Русский` beside the theme switch changes the text of the article and the text that the figures make. The page takes the language from the address (`?lang=ru` or `?lang=en`), then from the saved choice (`localStorage` key `plinko-lang`), then from the language of the browser. Pseudocode (but not its comments), formulas and the names `iPRF`, `HintInit` and `lambda` stay in English. The English text and the figures do not change. The two switches are now in a row of their own below the introduction, because they do not fit beside the title.
 
 ### Changed
 
