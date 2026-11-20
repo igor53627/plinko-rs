@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `README.md` header. The title is `plinko-rs`, the name of the repository; before, it was `Plinko RS`. The `Ask DeepWiki` badge uses a static shields.io image, because `deepwiki.com/badge.svg` answers the image proxy of GitHub with HTTP 429 and the badge showed as a broken image. New badges: CI status, license and paper.
+
 ### Removed
 
 - The workflow `Deploy to GitHub Pages` (`.github/workflows/pages.yml`). GitHub Pages is not in use for the repository, and the workflow failed on each push to `main` that changed `docs/`. The protocol demo is not hosted: the badge with the `igor53627.github.io` link is removed from `README.md`, and `docs/README.md` says to open `docs/protocol-visualization.html` from a clone in a browser.

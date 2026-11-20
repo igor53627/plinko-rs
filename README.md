@@ -1,6 +1,9 @@
-# Plinko RS
+# plinko-rs
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/plinko-rs)
+[![CI](https://github.com/igor53627/plinko-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/igor53627/plinko-rs/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Paper: ePrint 2024/318](https://img.shields.io/badge/paper-ePrint%202024%2F318-blue.svg)](https://eprint.iacr.org/2024/318)
+[![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-ask-blue.svg)](https://deepwiki.com/igor53627/plinko-rs)
 
 Rust implementation of [Plinko](https://eprint.iacr.org/2024/318) single-server PIR for a database of fixed-size records: invertible PRF (iPRF) primitives, hint generation by the client, the online protocol, hint updates, and Rocq models.
 
