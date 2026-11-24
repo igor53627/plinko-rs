@@ -191,6 +191,7 @@ fn sr_num_stages(n0: u64) -> usize {
 /// - Each stage gets ε/p error budget
 /// - Per Eq. (2), t_N = ceil(7.23 lg N + 4.82 lg(p/ε))
 ///   = ceil(7.23 lg N + 4.82 lg p + 4.82 λ)
+#[cfg(any(feature = "tee", test))]
 fn sr_t_rounds_with_security(n: u64, n0: u64, lambda: u32) -> usize {
     let num_stages = sr_num_stages(n0);
     sr_t_rounds_with_params(n, num_stages, lambda)
@@ -198,6 +199,7 @@ fn sr_t_rounds_with_security(n: u64, n0: u64, lambda: u32) -> usize {
 
 /// Stage sizes of the Sometimes-Recurse shuffle: `domain`, then its halves,
 /// while the size is above 1. Stage `l` permutes the values below `sizes[l]`.
+#[cfg(feature = "tee")]
 fn sr_level_sizes(domain: u64, max_levels: usize) -> Vec<u64> {
     let mut sizes: Vec<u64> = Vec::with_capacity(max_levels);
     let mut n: u64 = domain;
@@ -230,6 +232,7 @@ fn reduce_below(r: u128, n: u64) -> u64 {
 /// `x -> 1 - x`, and the swap bit of its one round alone decides the order of
 /// the two values. With key 0 the round never swaps, so a random key gives a
 /// swap with probability 1/4 and not 1/2.
+#[cfg(any(feature = "tee", test))]
 fn sr_round_key(cipher: &Aes128, level: usize, round: usize, n: u64) -> u64 {
     if n == 2 {
         return 1;
@@ -250,6 +253,102 @@ fn sr_swap_prefix(level: usize, round: usize) -> [u8; 8] {
     (((level as u64) << 32) | (round as u64) | 0x80000000).to_be_bytes()
 }
 
+/// Number of round keys derived per `encrypt_blocks` call in [`SwapOrNotSr`].
+const SR_KEY_BATCH: usize = 16;
+
+/// Derives round keys for rounds `first_round..first_round + out.len()` of stage
+/// `(level, n)` in one batched AES call.
+///
+/// Matches [`sr_round_key`] for every round. `out.len()` must not exceed
+/// [`SR_KEY_BATCH`].
+#[inline]
+fn sr_round_keys_batch(cipher: &Aes128, level: usize, first_round: usize, n: u64, out: &mut [u64]) {
+    debug_assert!(out.len() <= SR_KEY_BATCH);
+    if n == 2 {
+        out.fill(1);
+        return;
+    }
+    let level_hi: u64 = (level as u64) << 32;
+    let n_be: [u8; 8] = n.to_be_bytes();
+    let mut blocks: [Block; SR_KEY_BATCH] = [Block::default(); SR_KEY_BATCH];
+    for (i, block) in blocks.iter_mut().enumerate().take(out.len()) {
+        let combined: u64 = level_hi | ((first_round + i) as u64);
+        block[0..8].copy_from_slice(&combined.to_be_bytes());
+        block[8..16].copy_from_slice(&n_be);
+    }
+    cipher.encrypt_blocks(&mut blocks[..out.len()]);
+    for (key_slot, block) in out.iter_mut().zip(blocks.iter()) {
+        *key_slot = reduce_below(u128::from_be_bytes((*block).into()), n);
+    }
+}
+
+/// Applies one branchless Swap-or-Not round to `val` (with `val < n` and `k_i < n`).
+#[inline]
+fn sr_round_step(cipher: &Aes128, level: usize, round: usize, n: u64, k_i: u64, val: u64) -> u64 {
+    // val < n and k_i < n, so this is (k_i - val) mod n without division or overflow.
+    let wrap: u64 = n & u64::from(k_i < val).wrapping_neg();
+    let partner: u64 = k_i.wrapping_sub(val).wrapping_add(wrap);
+    let canonical: u64 = val.max(partner);
+
+    let mut block: Block = Block::default();
+    block[0..8].copy_from_slice(&sr_swap_prefix(level, round));
+    block[8..16].copy_from_slice(&canonical.to_be_bytes());
+    cipher.encrypt_block(&mut block);
+
+    let swap: u64 = u64::from(block[0] & 1).wrapping_neg();
+    val ^ (swap & (val ^ partner))
+}
+
+/// Runs `t` forward Swap-or-Not rounds of stage `(level, n)` for `L` independent
+/// PRPs in lockstep so hardware AES pipelines overlap across lanes.
+#[inline]
+fn forward_stage_lanes<const L: usize>(
+    prps: &[&SwapOrNotSr],
+    ids: &[usize; L],
+    level: usize,
+    n: u64,
+    t: usize,
+    vals: &mut [u64],
+) {
+    let ciphers: [&Aes128; L] = std::array::from_fn(|l| &prps[ids[l]].cipher);
+    let mut lane_vals: [u64; L] = std::array::from_fn(|l| vals[ids[l]]);
+    let mut lane_keys: [[u64; SR_KEY_BATCH]; L] = [[0u64; SR_KEY_BATCH]; L];
+    let mut partners: [u64; L] = [0u64; L];
+    let mut swap_blocks: [Block; L] = [Block::default(); L];
+
+    let mut start: usize = 0;
+    while start < t {
+        let batch_len: usize = (t - start).min(SR_KEY_BATCH);
+        for l in 0..L {
+            sr_round_keys_batch(ciphers[l], level, start, n, &mut lane_keys[l][..batch_len]);
+        }
+        for round in start..start + batch_len {
+            let r_off: usize = round - start;
+            let prefix: [u8; 8] = sr_swap_prefix(level, round);
+            for l in 0..L {
+                let val: u64 = lane_vals[l];
+                let k_i: u64 = lane_keys[l][r_off];
+                let wrap: u64 = n & u64::from(k_i < val).wrapping_neg();
+                let partner: u64 = k_i.wrapping_sub(val).wrapping_add(wrap);
+                partners[l] = partner;
+                swap_blocks[l][0..8].copy_from_slice(&prefix);
+                swap_blocks[l][8..16].copy_from_slice(&val.max(partner).to_be_bytes());
+            }
+            for l in 0..L {
+                ciphers[l].encrypt_block(&mut swap_blocks[l]);
+            }
+            for l in 0..L {
+                let swap: u64 = u64::from(swap_blocks[l][0] & 1).wrapping_neg();
+                lane_vals[l] ^= swap & (lane_vals[l] ^ partners[l]);
+            }
+        }
+        start += batch_len;
+    }
+    for l in 0..L {
+        vals[ids[l]] = lane_vals[l];
+    }
+}
+
 /// Sometimes-Recurse PRP wrapper (Morris-Rogaway Fig. 1)
 ///
 /// Provides full-domain security: secure even when adversary queries all N elements.
@@ -265,6 +364,7 @@ pub struct SwapOrNotSr {
     cipher: Aes128,
     domain: u64,
     max_levels: usize,
+    num_stages: usize,
     security_bits: u32,
 }
 
@@ -281,57 +381,46 @@ impl SwapOrNotSr {
         } else {
             (domain as f64).log2().ceil() as usize
         };
+        let num_stages = sr_num_stages(domain);
 
         Self {
             cipher,
             domain,
             max_levels,
+            num_stages,
             security_bits,
         }
     }
 
-    fn derive_round_key(&self, level: usize, round: usize, n: u64) -> u64 {
-        sr_round_key(&self.cipher, level, round, n)
-    }
-
-    fn prf_bit(&self, level: usize, round: usize, canonical: u64, _n: u64) -> bool {
-        let mut input = [0u8; 16];
-        let combined = ((level as u64) << 32) | (round as u64) | 0x80000000;
-        input[0..8].copy_from_slice(&combined.to_be_bytes());
-        input[8..16].copy_from_slice(&canonical.to_be_bytes());
-
-        let mut block = GenericArray::from(input);
-        self.cipher.encrypt_block(&mut block);
-
-        (block[0] & 1) == 1
-    }
-
-    fn round(&self, level: usize, round_num: usize, n: u64, x: u64) -> u64 {
-        let k_i = self.derive_round_key(level, round_num, n);
-        let partner = sub_mod(k_i, x % n, n);
-        let canonical = x.max(partner);
-
-        if self.prf_bit(level, round_num, canonical, n) {
-            partner
-        } else {
-            x
-        }
-    }
-
     fn apply_rounds_forward(&self, level: usize, n: u64, x: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+        let t = sr_t_rounds_with_params(n, self.num_stages, self.security_bits);
         let mut val = x;
-        for r in 0..t {
-            val = self.round(level, r, n, val);
+        let mut keys: [u64; SR_KEY_BATCH] = [0u64; SR_KEY_BATCH];
+        let mut start: usize = 0;
+        while start < t {
+            let len: usize = (t - start).min(SR_KEY_BATCH);
+            sr_round_keys_batch(&self.cipher, level, start, n, &mut keys[..len]);
+            for (i, &k_i) in keys[..len].iter().enumerate() {
+                val = sr_round_step(&self.cipher, level, start + i, n, k_i, val);
+            }
+            start += len;
         }
         val
     }
 
     fn apply_rounds_inverse(&self, level: usize, n: u64, y: u64) -> u64 {
-        let t = sr_t_rounds_with_security(n, self.domain, self.security_bits);
+        let t = sr_t_rounds_with_params(n, self.num_stages, self.security_bits);
         let mut val = y;
-        for r in (0..t).rev() {
-            val = self.round(level, r, n, val);
+        let mut keys: [u64; SR_KEY_BATCH] = [0u64; SR_KEY_BATCH];
+        let mut end: usize = t;
+        while end > 0 {
+            let start: usize = end.saturating_sub(SR_KEY_BATCH);
+            let len: usize = end - start;
+            sr_round_keys_batch(&self.cipher, level, start, n, &mut keys[..len]);
+            for i in (0..len).rev() {
+                val = sr_round_step(&self.cipher, level, start + i, n, keys[i], val);
+            }
+            end = start;
         }
         val
     }
@@ -355,16 +444,98 @@ impl SwapOrNotSr {
         val
     }
 
+    /// Evaluates [`SwapOrNotSr::forward`] at `x` for every PRP in `prps`.
+    ///
+    /// Element `i` of the result equals `prps[i].forward(x)`. All PRPs must
+    /// share the same domain and security parameter.
+    ///
+    /// Interleaving independent PRPs in 8-way batches lets CPUs with pipelined
+    /// AES units overlap their independent encryptions on a single core while
+    /// producing outputs bit-identical to calling [`SwapOrNotSr::forward`] on
+    /// each PRP.
+    ///
+    /// # Panics
+    /// Panics if `x` is not below the domain or if any PRP in `prps` has a
+    /// different domain or security parameter from `prps[0]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::SwapOrNotSr;
+    ///
+    /// let prps: Vec<SwapOrNotSr> = (0u8..10)
+    ///     .map(|k| SwapOrNotSr::with_security([k; 16], 1000, 16))
+    ///     .collect();
+    /// let refs: Vec<&SwapOrNotSr> = prps.iter().collect();
+    /// let batch: Vec<u64> = SwapOrNotSr::forward_many(&refs, 123);
+    /// let scalar: Vec<u64> = prps.iter().map(|p| p.forward(123)).collect();
+    /// assert_eq!(batch, scalar);
+    /// ```
+    pub fn forward_many(prps: &[&Self], x: u64) -> Vec<u64> {
+        const LANES: usize = 8;
+
+        if prps.is_empty() {
+            return Vec::new();
+        }
+        let domain: u64 = prps[0].domain;
+        let max_levels: usize = prps[0].max_levels;
+        let num_stages: usize = prps[0].num_stages;
+        let security_bits: u32 = prps[0].security_bits;
+        assert!(x < domain, "x must be < domain");
+        for prp in &prps[1..] {
+            assert_eq!(prp.domain, domain, "all PRPs must share the same domain");
+            assert_eq!(
+                prp.security_bits, security_bits,
+                "all PRPs must share the same security_bits"
+            );
+        }
+
+        let mut vals: Vec<u64> = vec![x; prps.len()];
+        let mut active: Vec<usize> = (0..prps.len()).collect();
+        let mut n: u64 = domain;
+
+        for level in 0..max_levels {
+            if n <= 1 || active.is_empty() {
+                break;
+            }
+            let t: usize = sr_t_rounds_with_params(n, num_stages, security_bits);
+            let mut chunks = active.chunks_exact(LANES);
+            for chunk in chunks.by_ref() {
+                let ids: [usize; LANES] = chunk.try_into().expect("chunks_exact(LANES)");
+                forward_stage_lanes::<LANES>(prps, &ids, level, n, t, &mut vals);
+            }
+            let rem: &[usize] = chunks.remainder();
+            if rem.len() >= 4 {
+                let ids: [usize; 4] = rem[..4].try_into().expect("len >= 4");
+                forward_stage_lanes::<4>(prps, &ids, level, n, t, &mut vals);
+                for &idx in &rem[4..] {
+                    vals[idx] = prps[idx].apply_rounds_forward(level, n, vals[idx]);
+                }
+            } else {
+                for &idx in rem {
+                    vals[idx] = prps[idx].apply_rounds_forward(level, n, vals[idx]);
+                }
+            }
+
+            let half: u64 = n / 2;
+            active.retain(|&idx| vals[idx] < half);
+            n = half;
+        }
+        vals
+    }
+
     pub fn inverse(&self, y: u64) -> u64 {
         assert!(y < self.domain, "y must be < domain");
 
-        let mut sizes = Vec::with_capacity(self.max_levels);
+        let mut sizes: [u64; 64] = [0u64; 64];
+        let mut num_levels: usize = 0;
         let mut n = self.domain;
         for _ in 0..self.max_levels {
             if n <= 1 {
                 break;
             }
-            sizes.push(n);
+            sizes[num_levels] = n;
+            num_levels += 1;
             let half = n / 2;
             if y >= half {
                 break;
@@ -373,8 +544,8 @@ impl SwapOrNotSr {
         }
 
         let mut val = y;
-        for (level, &n) in sizes.iter().enumerate().rev() {
-            val = self.apply_rounds_inverse(level, n, val);
+        for level in (0..num_levels).rev() {
+            val = self.apply_rounds_inverse(level, sizes[level], val);
         }
         val
     }
@@ -403,35 +574,56 @@ impl SwapOrNotSr {
     /// ```
     pub fn inverse_range(&self, balls: Range<u64>) -> Vec<u64> {
         assert!(balls.end <= self.domain, "balls must be < domain");
+        if balls.is_empty() {
+            return Vec::new();
+        }
         let mut vals: Vec<u64> = balls.clone().collect();
         let mut partners: Vec<u64> = vec![0u64; vals.len()];
         let mut blocks: Vec<Block> = vec![Block::default(); vals.len()];
+        let mut keys: [u64; SR_KEY_BATCH] = [0u64; SR_KEY_BATCH];
 
-        let sizes: Vec<u64> = sr_level_sizes(self.domain, self.max_levels);
-        for (level, &n) in sizes.iter().enumerate().rev() {
+        let mut sizes: [u64; 64] = [0u64; 64];
+        let mut num_levels: usize = 0;
+        let mut size_n: u64 = self.domain;
+        while size_n > 1 && num_levels < self.max_levels {
+            sizes[num_levels] = size_n;
+            num_levels += 1;
+            size_n /= 2;
+        }
+
+        for level in (0..num_levels).rev() {
+            let n: u64 = sizes[level];
             let active: usize = n.saturating_sub(balls.start).min(vals.len() as u64) as usize;
             if active == 0 {
                 continue;
             }
-            let t: usize = sr_t_rounds_with_security(n, self.domain, self.security_bits);
-            for round in (0..t).rev() {
-                let k_i: u64 = self.derive_round_key(level, round, n);
-                let prefix: [u8; 8] = sr_swap_prefix(level, round);
+            let t: usize = sr_t_rounds_with_params(n, self.num_stages, self.security_bits);
+            let mut end: usize = t;
+            while end > 0 {
+                let start: usize = end.saturating_sub(SR_KEY_BATCH);
+                let len: usize = end - start;
+                sr_round_keys_batch(&self.cipher, level, start, n, &mut keys[..len]);
+                for k_idx in (0..len).rev() {
+                    let round: usize = start + k_idx;
+                    let k_i: u64 = keys[k_idx];
+                    let prefix: [u8; 8] = sr_swap_prefix(level, round);
 
-                // The swap bits are random, so both loops use masks, not branches.
-                for i in 0..active {
-                    // vals[i] < n and k_i < n, so this is (k_i - vals[i]) mod n.
-                    let wrap: u64 = n & u64::from(k_i < vals[i]).wrapping_neg();
-                    let partner: u64 = k_i.wrapping_sub(vals[i]).wrapping_add(wrap);
-                    partners[i] = partner;
-                    blocks[i][0..8].copy_from_slice(&prefix);
-                    blocks[i][8..16].copy_from_slice(&vals[i].max(partner).to_be_bytes());
+                    // The swap bits are random, so both loops use masks, not branches.
+                    for i in 0..active {
+                        // vals[i] < n and k_i < n, so this is (k_i - vals[i]) mod n.
+                        let wrap: u64 = n & u64::from(k_i < vals[i]).wrapping_neg();
+                        let partner: u64 = k_i.wrapping_sub(vals[i]).wrapping_add(wrap);
+                        partners[i] = partner;
+                        blocks[i][0..8].copy_from_slice(&prefix);
+                        blocks[i][8..16].copy_from_slice(&vals[i].max(partner).to_be_bytes());
+                    }
+                    self.cipher.encrypt_blocks(&mut blocks[..active]);
+                    for i in 0..active {
+                        let swap: u64 = u64::from(blocks[i][0] & 1).wrapping_neg();
+                        vals[i] ^= swap & (vals[i] ^ partners[i]);
+                    }
                 }
-                self.cipher.encrypt_blocks(&mut blocks[..active]);
-                for i in 0..active {
-                    let swap: u64 = u64::from(blocks[i][0] & 1).wrapping_neg();
-                    vals[i] ^= swap & (vals[i] ^ partners[i]);
-                }
+                end = start;
             }
         }
         vals
@@ -537,6 +729,46 @@ impl Iprf {
         // Apply PRP first, then PMNS
         let permuted = self.prp.forward(x);
         self.trace_ball(permuted, self.domain, self.range)
+    }
+
+    /// Evaluates [`Iprf::forward`] at `x` for every iPRF in `iprfs`.
+    ///
+    /// Element `i` of the result equals `iprfs[i].forward(x)`. All iPRFs must
+    /// have the same domain.
+    ///
+    /// # Panics
+    /// Panics if `x` is not in `[0, domain)` or if the iPRFs do not share the
+    /// same domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use plinko::iprf::Iprf;
+    ///
+    /// let iprfs: Vec<Iprf> = (0u8..10)
+    ///     .map(|k| Iprf::new([k; 16], 4096, 64))
+    ///     .collect();
+    /// let refs: Vec<&Iprf> = iprfs.iter().collect();
+    /// let batch: Vec<u64> = Iprf::forward_many(&refs, 123);
+    /// let scalar: Vec<u64> = iprfs.iter().map(|f| f.forward(123)).collect();
+    /// assert_eq!(batch, scalar);
+    /// ```
+    pub fn forward_many(iprfs: &[&Self], x: u64) -> Vec<u64> {
+        if iprfs.is_empty() {
+            return Vec::new();
+        }
+        let domain: u64 = iprfs[0].domain;
+        assert!(
+            x < domain,
+            "Iprf::forward_many: x={x} is outside the domain [0, {domain})"
+        );
+        let prps: Vec<&SwapOrNotSr> = iprfs.iter().map(|iprf| &iprf.prp).collect();
+        let permuted: Vec<u64> = SwapOrNotSr::forward_many(&prps, x);
+        iprfs
+            .iter()
+            .zip(permuted)
+            .map(|(iprf, p)| iprf.trace_ball(p, iprf.domain, iprf.range))
+            .collect()
     }
 
     /// Compute all input values `x` in the domain that map to the given output `y`.
@@ -1506,5 +1738,77 @@ mod tests {
             swaps += image as u32;
         }
         assert!((1800..=2200).contains(&swaps), "swaps: {swaps}");
+    }
+
+    #[test]
+    fn test_sr_round_keys_batch_matches_scalar_sr_round_key() {
+        let cipher: Aes128 = Aes128::new(&GenericArray::from([0xA5u8; 16]));
+        for n in [2u64, 3, 100, u64::MAX] {
+            for level in [0usize, 1, 5] {
+                for first_round in [0usize, 1, 15, 16, 17] {
+                    for len in [1usize, 7, 15, SR_KEY_BATCH] {
+                        let mut batch = vec![0u64; len];
+                        sr_round_keys_batch(&cipher, level, first_round, n, &mut batch);
+                        let scalar: Vec<u64> = (first_round..first_round + len)
+                            .map(|r| sr_round_key(&cipher, level, r, n))
+                            .collect();
+                        assert_eq!(
+                            batch, scalar,
+                            "n={n} level={level} first_round={first_round} len={len}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_sr_forward_many_matches_scalar_across_domains_and_batch_sizes() {
+        for domain in [1u64, 2, 3, 4, 5, 7, 16, 17, 100] {
+            let max_count: usize = 19;
+            let prps: Vec<SwapOrNotSr> = (0..max_count)
+                .map(|i| {
+                    let mut key: PrfKey128 = [0x3Cu8; 16];
+                    key[0] = i as u8;
+                    key[15] = (domain & 0xFF) as u8;
+                    SwapOrNotSr::with_security(key, domain, 16)
+                })
+                .collect();
+
+            let xs: Vec<u64> = vec![0, domain / 2, domain - 1];
+            for count in [0usize, 1, 2, 3, 4, 5, 7, 8, 9, 12, 13, 16, 19] {
+                let refs: Vec<&SwapOrNotSr> = prps[..count].iter().collect();
+                for &x in &xs {
+                    let batch: Vec<u64> = SwapOrNotSr::forward_many(&refs, x);
+                    let scalar: Vec<u64> = refs.iter().map(|p| p.forward(x)).collect();
+                    assert_eq!(batch, scalar, "domain={domain} count={count} x={x}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "all PRPs must share the same domain")]
+    fn test_sr_forward_many_rejects_mismatched_domain() {
+        let p0: SwapOrNotSr = SwapOrNotSr::with_security([1u8; 16], 10, 16);
+        let p1: SwapOrNotSr = SwapOrNotSr::with_security([2u8; 16], 12, 16);
+        let _ = SwapOrNotSr::forward_many(&[&p0, &p1], 3);
+    }
+
+    #[test]
+    fn test_iprf_forward_many_matches_scalar() {
+        let domain: u64 = 512;
+        let range: u64 = 32;
+        for cached_levels in [0u32, 3] {
+            let iprfs: Vec<Iprf> = (0..13u8)
+                .map(|k| Iprf::with_cached_levels([k; 16], domain, range, cached_levels))
+                .collect();
+            let refs: Vec<&Iprf> = iprfs.iter().collect();
+            for x in [0u64, 1, 127, 256, 511] {
+                let batch: Vec<u64> = Iprf::forward_many(&refs, x);
+                let scalar: Vec<u64> = iprfs.iter().map(|f| f.forward(x)).collect();
+                assert_eq!(batch, scalar, "cached_levels={cached_levels} x={x}");
+            }
+        }
     }
 }
