@@ -29,6 +29,7 @@ pub mod gpu;
 pub mod hint_init;
 pub mod hints;
 pub mod iprf;
+pub mod multilevel;
 pub mod protocol;
 pub mod schema40;
 pub mod subsets;
