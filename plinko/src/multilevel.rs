@@ -35,9 +35,21 @@ const FORMAT_VERSION: u32 = 1;
 /// Maximum levels accepted when decoding a serialized hint set.
 const MAX_LEVELS: usize = 16;
 
+/// Default maximum decoded byte budget accepted by [`MultiLevelClient::read_hints`]
+/// (512 MiB) to bound memory allocation on untrusted checkpoints.
+const MAX_CHECKPOINT_BYTES: usize = 512 * 1024 * 1024;
+
 /// Maximum supported block size `w_i` (`2^31`, since `FlatAes` uses bit 31 as the color bit
 /// for `u32` words and query offsets are stored as `u32`).
 const MAX_BLOCK_SIZE: usize = 1usize << 31;
+
+/// Process-unique monotonic session ID counter so pending queries cannot cross clients
+/// or survive reloads even when two clients share a seed and parameters.
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_session_id() -> u64 {
+    NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Sentinel value in `hint_id_to_slot` indicating a hint is not in the active primary table.
 const NO_SLOT: u32 = u32::MAX;
@@ -338,10 +350,15 @@ impl MultiLevelParams {
         }
         let sqrt_n: usize = (num_entries as f64).sqrt().ceil() as usize;
         let w0: usize = (sqrt_n / 2).max(2).next_power_of_two();
-        let ratio: usize = kappa.next_power_of_two();
-        if w0 < 2 * ratio {
+        let ratio: usize =
+            kappa
+                .checked_next_power_of_two()
+                .ok_or(MultiLevelError::InvalidParams(
+                    "kappa power-of-two overflow",
+                ))?;
+        if ratio > w0 / 2 {
             return Err(MultiLevelError::InvalidParams(
-                "database too small for 2-level kappa (need w0 >= 2 * kappa_pow2)",
+                "database too small for 2-level kappa (need ratio <= w0 / 2)",
             ));
         }
         let w1: usize = w0 / ratio;
@@ -350,14 +367,39 @@ impl MultiLevelParams {
 
         let ln_k: f64 = (kappa as f64).ln();
         let m0: usize = ((2.0 * w0 as f64 * ln_k).ceil() as usize).max(1);
-        let m1: usize = (2 * w1 * kappa).max(1);
+        let m1: usize = w1
+            .checked_mul(2)
+            .and_then(|v| v.checked_mul(kappa))
+            .ok_or(MultiLevelError::InvalidParams(
+                "level-1 primary count overflow",
+            ))?
+            .max(1);
 
         let p0_fail: f64 = (-(m0 as f64) / (2.0 * w0 as f64)).exp();
         // Level 0 runs on every query; Lemma 10 guarantees 3*Q backups suffice.
-        let q0: usize = (3 * query_budget).max(64);
+        let q0: usize = query_budget
+            .checked_mul(3)
+            .ok_or(MultiLevelError::InvalidParams(
+                "level-0 backup budget overflow",
+            ))?
+            .max(64);
         // Level 1 runs only on level 0 failure (~Q * p0_fail times), with generous safety margin.
         let expected_l1_calls: f64 = query_budget as f64 * p0_fail;
-        let q1: usize = ((3.0 * expected_l1_calls).ceil() as usize + 4 * kappa).max(64);
+        let scaled_l1: f64 = (3.0 * expected_l1_calls).ceil();
+        if !scaled_l1.is_finite() || scaled_l1 > usize::MAX as f64 {
+            return Err(MultiLevelError::InvalidParams(
+                "level-1 backup budget overflow",
+            ));
+        }
+        let margin_l1: usize = kappa.checked_mul(4).ok_or(MultiLevelError::InvalidParams(
+            "level-1 backup margin overflow",
+        ))?;
+        let q1: usize = (scaled_l1 as usize)
+            .checked_add(margin_l1)
+            .ok_or(MultiLevelError::InvalidParams(
+                "level-1 backup budget overflow",
+            ))?
+            .max(64);
 
         let b0: LevelBackend = match variant {
             BackendVariant::HybridA { iprf_levels } if iprf_levels >= 1 => LevelBackend::Iprf,
@@ -436,11 +478,21 @@ impl MultiLevelParams {
             let expected_calls: f64 = query_budget as f64 * cum_exec_prob;
             let expected_backups_per_call: f64 = 1.0 + (cov_i as f64) * fail_i;
             let q_i: usize = if i == 0 {
-                (3 * query_budget).max(128)
+                query_budget
+                    .checked_mul(3)
+                    .ok_or(MultiLevelError::InvalidParams(
+                        "level-0 backup budget overflow",
+                    ))?
+                    .max(128)
             } else {
-                let raw: usize =
-                    (3.0 * expected_calls * expected_backups_per_call).ceil() as usize + 128;
-                raw.max(128)
+                let scaled: f64 = (3.0 * expected_calls * expected_backups_per_call).ceil();
+                if !scaled.is_finite() || scaled > usize::MAX as f64 {
+                    return Err(MultiLevelError::InvalidParams("backup budget overflow"));
+                }
+                (scaled as usize)
+                    .checked_add(128)
+                    .ok_or(MultiLevelError::InvalidParams("backup budget overflow"))?
+                    .max(128)
             };
 
             let backend: LevelBackend = match variant {
@@ -500,8 +552,10 @@ struct PrimarySlot {
     selector: u8,
     /// Optional single-chunk overwrite from `PromoteIn` or `PromoteOut`.
     override_entry: Option<SlotOverride>,
-    /// True while reserved by an in-flight query or retired after an aborted/mismatched query.
+    /// True while reserved by an in-flight query.
     reserved: bool,
+    /// True once permanently retired (abandoned/mismatched query); never reused for queries.
+    retired: bool,
 }
 
 /// Per-level runtime state held by the client.
@@ -516,11 +570,16 @@ struct LevelState {
     slots: Vec<PrimarySlot>,
     /// Flat primary parities (length `spec.num_primary * record_size`).
     primary_parities: Vec<u8>,
-    /// Flat backup parities for color 0 (length `spec.num_backup * record_size`).
+    /// Flat backup parities for color 0, starting at backup index `backup_offset`
+    /// (length `(spec.num_backup - backup_offset) * record_size`).
     backup_parities_0: Vec<u8>,
-    /// Flat backup parities for color 1 (length `spec.num_backup * record_size`).
+    /// Flat backup parities for color 1, starting at backup index `backup_offset`
+    /// (length `(spec.num_backup - backup_offset) * record_size`).
     backup_parities_1: Vec<u8>,
-    /// Next unused backup index in `0..spec.num_backup`.
+    /// First backup index stored in `backup_parities_{0,1}` (`0` after HintInit,
+    /// `next_backup` after loading a checkpoint so consumed backups take zero memory).
+    backup_offset: usize,
+    /// Next unused backup index in `backup_offset..=spec.num_backup`.
     next_backup: usize,
     /// Maps `hint_id -> active slot index` in `0..spec.num_primary`, or [`NO_SLOT`].
     hint_id_to_slot: Vec<u32>,
@@ -548,6 +607,7 @@ impl LevelState {
                 selector,
                 override_entry: None,
                 reserved: false,
+                retired: false,
             });
             *slot_ref = j as u32;
         }
@@ -561,6 +621,7 @@ impl LevelState {
             primary_parities: vec![0u8; spec.num_primary * record_size],
             backup_parities_0: vec![0u8; spec.num_backup * record_size],
             backup_parities_1: vec![0u8; spec.num_backup * record_size],
+            backup_offset: 0,
             next_backup: 0,
             hint_id_to_slot,
             override_index: HashMap::new(),
@@ -650,7 +711,7 @@ impl LevelState {
                 continue;
             }
             let slot: &PrimarySlot = &self.slots[slot_idx as usize];
-            if slot.reserved {
+            if slot.reserved || slot.retired {
                 continue;
             }
             if let Some(ov) = slot.override_entry {
@@ -666,7 +727,7 @@ impl LevelState {
         if let Some(ov_slots) = self.override_index.get(&(block as u32, offset)) {
             for &slot_idx in ov_slots {
                 let slot: &PrimarySlot = &self.slots[slot_idx as usize];
-                if slot.reserved {
+                if slot.reserved || slot.retired {
                     continue;
                 }
                 if let Some(ov) = slot.override_entry {
@@ -726,14 +787,15 @@ impl LevelState {
         }
         let b: usize = self.next_backup;
         self.next_backup += 1;
+        let local_b: usize = b - self.backup_offset;
         let hint_id: u32 = (self.spec.num_primary + b) as u32;
         let (s_old, _delta_old) = self.forward(x_block as usize, hint_id);
         let new_color: u8 = 1 - s_old;
         let r: usize = self.record_size;
         let base_parity: &[u8] = if new_color == 0 {
-            &self.backup_parities_0[b * r..(b + 1) * r]
+            &self.backup_parities_0[local_b * r..(local_b + 1) * r]
         } else {
-            &self.backup_parities_1[b * r..(b + 1) * r]
+            &self.backup_parities_1[local_b * r..(local_b + 1) * r]
         };
         let mut parity: Vec<u8> = base_parity.to_vec();
         xor_bytes(&mut parity, value);
@@ -746,6 +808,7 @@ impl LevelState {
                 color: new_color,
             }),
             reserved: false,
+            retired: false,
         };
         Ok((slot, parity))
     }
@@ -767,6 +830,7 @@ impl LevelState {
         }
         let b: usize = self.next_backup;
         self.next_backup += 1;
+        let local_b: usize = b - self.backup_offset;
         let hint_id: u32 = (self.spec.num_primary + b) as u32;
         let (s_old, delta_old) = self.forward(x_block as usize, hint_id);
 
@@ -799,15 +863,16 @@ impl LevelState {
 
         let r: usize = self.record_size;
         let base_parity: &[u8] = if selector == 0 {
-            &self.backup_parities_0[b * r..(b + 1) * r]
+            &self.backup_parities_0[local_b * r..(local_b + 1) * r]
         } else {
-            &self.backup_parities_1[b * r..(b + 1) * r]
+            &self.backup_parities_1[local_b * r..(local_b + 1) * r]
         };
         let slot: PrimarySlot = PrimarySlot {
             hint_id,
             selector,
             override_entry,
             reserved: false,
+            retired: false,
         };
         Ok((slot, base_parity.to_vec()))
     }
@@ -837,10 +902,11 @@ impl LevelState {
             } else if h >= self.spec.num_primary {
                 let b: usize = h - self.spec.num_primary;
                 if b >= self.next_backup {
+                    let local_b: usize = b - self.backup_offset;
                     let target: &mut [u8] = if color_old == 0 {
-                        &mut self.backup_parities_0[b * r..(b + 1) * r]
+                        &mut self.backup_parities_0[local_b * r..(local_b + 1) * r]
                     } else {
-                        &mut self.backup_parities_1[b * r..(b + 1) * r]
+                        &mut self.backup_parities_1[local_b * r..(local_b + 1) * r]
                     };
                     xor_bytes(target, delta);
                 }
@@ -1103,6 +1169,8 @@ pub struct MultiLevelAnswer {
 /// Client-side state for an in-flight query before [`MultiLevelClient::finish_query`].
 #[derive(Debug, Clone)]
 pub struct PendingMultiLevelQuery {
+    /// Session identity of the [`MultiLevelClient`] that created this handle.
+    pub session_id: u64,
     /// Unique reservation ID tying this query to its reserved primary slot.
     pub query_id: u64,
     /// Queried database index.
@@ -1131,6 +1199,8 @@ struct InFlightReservation {
 pub struct MultiLevelClient {
     params: MultiLevelParams,
     levels: Vec<LevelState>,
+    /// Unique per-instance session identity (renewed on reload) binding pending queries.
+    session_id: u64,
     /// Monotonically incremented whenever deltas mutate the client's parities.
     epoch: u64,
     /// Next unique ID for `PendingMultiLevelQuery` reservations.
@@ -1152,6 +1222,7 @@ impl MultiLevelClient {
         Self {
             params,
             levels,
+            session_id: next_session_id(),
             epoch: 0,
             next_query_id: 1,
             in_flight: HashMap::new(),
@@ -1165,7 +1236,10 @@ impl MultiLevelClient {
         database: &[u8],
         threads: usize,
     ) -> Result<Self, MultiLevelError> {
-        let expected: usize = params.num_entries * params.record_size;
+        let expected: usize = params
+            .num_entries
+            .checked_mul(params.record_size)
+            .ok_or(MultiLevelError::InvalidParams("database size overflow"))?;
         if database.len() != expected {
             return Err(MultiLevelError::DatabaseLengthMismatch {
                 expected,
@@ -1181,19 +1255,26 @@ impl MultiLevelClient {
         Ok(client)
     }
 
-    /// Runs `HintInit` on the first `sample_blocks` blocks of level `level_idx` using a
-    /// synthetic `sample_blocks * block_size * record_size` slice. Used to measure real
-    /// per-block `HintInit` throughput at massive scales (such as Ethereum mainnet scale).
+    /// Runs `HintInit` on the first `sample_blocks` blocks of level `level_idx` using an
+    /// isolated scratch `LevelState` so no live client hint state is mutated, and returns
+    /// only the elapsed fill duration (excluding scratch-state allocation and setup). Used to
+    /// measure real per-block `HintInit` throughput at massive scales (such as Ethereum scale).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn bench_level_blocks(
-        &mut self,
+        params: &MultiLevelParams,
+        seed: &[u8; 32],
         level_idx: usize,
         sample_db: &[u8],
         sample_blocks: usize,
         threads: usize,
-    ) {
-        let level: &mut LevelState = &mut self.levels[level_idx];
-        let num_entries: usize = sample_blocks * level.spec.block_size;
-        level.fill_parities_range(sample_db, num_entries, 0, sample_blocks, threads);
+    ) -> std::time::Duration {
+        let spec: LevelSpec = params.levels[level_idx];
+        let mut scratch: LevelState =
+            LevelState::new_zeroed(spec, params.record_size, seed, level_idx);
+        let num_entries: usize = sample_blocks * spec.block_size;
+        let t0: std::time::Instant = std::time::Instant::now();
+        scratch.fill_parities_range(sample_db, num_entries, 0, sample_blocks, threads);
+        t0.elapsed()
     }
 
     /// Returns the protocol parameters.
@@ -1217,22 +1298,17 @@ impl MultiLevelClient {
     }
 
     /// Serializes this client's multi-level hint set (parameters, active primary slots,
-    /// overrides, primary parities, and remaining unused backup parities) in versioned
-    /// binary format (`PLNKMLH1`) with a trailing 32-byte BLAKE3 checksum.
+    /// overrides, retired flags, primary parities, and remaining unused backup parities) in
+    /// versioned binary format (`PLNKMLH1`) with a trailing 32-byte BLAKE3 checksum.
     ///
     /// Fails with [`MultiLevelError::QueryInFlight`] if any prepared query has not been
-    /// completed via [`MultiLevelClient::finish_query`], or if any slot was permanently
-    /// retired after an aborted/exhausted query.
+    /// completed via [`MultiLevelClient::finish_query`] or aborted via
+    /// [`MultiLevelClient::abort_query`].
     ///
     /// The master seed is never written; callers must provide the same `seed` to
     /// [`MultiLevelClient::read_hints`] or [`MultiLevelClient::from_bytes`].
     pub fn write_hints<W: Write>(&self, writer: W) -> Result<(), MultiLevelError> {
-        if !self.in_flight.is_empty()
-            || self
-                .levels
-                .iter()
-                .any(|lvl| lvl.slots.iter().any(|s| s.reserved))
-        {
+        if !self.in_flight.is_empty() {
             return Err(MultiLevelError::QueryInFlight);
         }
         if self.levels.len() > MAX_LEVELS || self.params.record_size > u32::MAX as usize {
@@ -1277,6 +1353,9 @@ impl MultiLevelClient {
                     flags |= (ov.color & 1) << 2;
                     overrides.push((slot_idx as u32, ov.block, ov.offset));
                 }
+                if slot.retired {
+                    flags |= 1 << 3;
+                }
                 slot_meta.push(flags);
             }
             out.write_hashed(&slot_meta)?;
@@ -1293,7 +1372,7 @@ impl MultiLevelClient {
             }
 
             out.write_hashed(&level.primary_parities)?;
-            let bak_start: usize = level.next_backup * r;
+            let bak_start: usize = (level.next_backup - level.backup_offset) * r;
             out.write_hashed(&level.backup_parities_0[bak_start..])?;
             out.write_hashed(&level.backup_parities_1[bak_start..])?;
         }
@@ -1303,8 +1382,20 @@ impl MultiLevelClient {
     }
 
     /// Deserializes a multi-level hint set written by [`MultiLevelClient::write_hints`]
-    /// and verifies structural invariants and the trailing BLAKE3 checksum.
+    /// using the default decoded memory budget (`512 MiB`), verifying structural invariants
+    /// and the trailing BLAKE3 checksum.
     pub fn read_hints<R: Read>(reader: R, seed: &[u8; 32]) -> Result<Self, MultiLevelError> {
+        Self::read_hints_with_limit(reader, seed, MAX_CHECKPOINT_BYTES)
+    }
+
+    /// Deserializes a multi-level hint set while enforcing `max_alloc_bytes` across all
+    /// decoded structures and using fallible allocations so truncated or untrusted headers
+    /// cannot exhaust memory.
+    pub fn read_hints_with_limit<R: Read>(
+        reader: R,
+        seed: &[u8; 32],
+        max_alloc_bytes: usize,
+    ) -> Result<Self, MultiLevelError> {
         let mut inp: HashingReader<R> = HashingReader::new(reader);
 
         let mut header: [u8; 28] = [0u8; 28];
@@ -1325,6 +1416,23 @@ impl MultiLevelClient {
 
         let mut specs: Vec<LevelSpec> = Vec::with_capacity(num_levels);
         let mut levels: Vec<LevelState> = Vec::with_capacity(num_levels);
+        let mut budget_used: usize = 0;
+
+        let mut charge_budget = |bytes: usize| -> Result<(), MultiLevelError> {
+            let next: usize =
+                budget_used
+                    .checked_add(bytes)
+                    .ok_or(MultiLevelError::InvalidFormat(
+                        "checkpoint size limit exceeded",
+                    ))?;
+            if next > max_alloc_bytes {
+                return Err(MultiLevelError::InvalidFormat(
+                    "checkpoint size limit exceeded",
+                ));
+            }
+            budget_used = next;
+            Ok(())
+        };
 
         for level_idx in 0..num_levels {
             let mut lvl_hdr: [u8; 36] = [0u8; 36];
@@ -1363,6 +1471,7 @@ impl MultiLevelClient {
                 return Err(MultiLevelError::InvalidFormat("next_backup > num_backup"));
             }
             let total_hints: usize = spec.total_hints();
+            let remaining_backups: usize = num_backup - next_backup;
 
             let meta_len: usize =
                 num_primary
@@ -1370,18 +1479,60 @@ impl MultiLevelClient {
                     .ok_or(MultiLevelError::InvalidFormat(
                         "slot metadata size overflow",
                     ))?;
-            let mut slot_meta: Vec<u8> = vec![0u8; meta_len];
+            let id_map_bytes: usize = total_hints.checked_mul(std::mem::size_of::<u32>()).ok_or(
+                MultiLevelError::InvalidFormat("hint_id_to_slot size overflow"),
+            )?;
+            let slot_vec_bytes: usize = num_primary
+                .checked_mul(std::mem::size_of::<PrimarySlot>())
+                .ok_or(MultiLevelError::InvalidFormat("slots size overflow"))?;
+            let primary_bytes: usize = num_primary
+                .checked_mul(record_size)
+                .ok_or(MultiLevelError::InvalidFormat("primary parity overflow"))?;
+            let rem_backup_bytes: usize = remaining_backups
+                .checked_mul(record_size)
+                .ok_or(MultiLevelError::InvalidFormat("backup parity overflow"))?;
+            let level_alloc: usize = meta_len
+                .checked_add(id_map_bytes)
+                .and_then(|v| v.checked_add(slot_vec_bytes))
+                .and_then(|v| v.checked_add(primary_bytes))
+                .and_then(|v| v.checked_add(rem_backup_bytes))
+                .and_then(|v| v.checked_add(rem_backup_bytes))
+                .ok_or(MultiLevelError::InvalidFormat("level allocation overflow"))?;
+            charge_budget(level_alloc)?;
+
+            let mut slot_meta: Vec<u8> = try_alloc_zeroed(meta_len)?;
             inp.read_hashed(&mut slot_meta)?;
 
-            let mut slots: Vec<PrimarySlot> = Vec::with_capacity(num_primary);
-            let mut hint_id_to_slot: Vec<u32> = vec![NO_SLOT; total_hints];
+            let mut slots: Vec<PrimarySlot> = Vec::new();
+            slots
+                .try_reserve_exact(num_primary)
+                .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
+            let mut hint_id_to_slot: Vec<u32> = try_alloc_filled(total_hints, NO_SLOT)?;
             let mut expected_overrides: Vec<(u32, u8)> = Vec::new();
+            let mut override_flag_count: usize = 0;
+            for slot_idx in 0..num_primary {
+                let flags: u8 = slot_meta[slot_idx * 5 + 4];
+                if (flags & (1 << 1)) != 0 {
+                    override_flag_count += 1;
+                }
+            }
+            if override_flag_count > 0 {
+                let exp_ov_bytes: usize = override_flag_count
+                    .checked_mul(std::mem::size_of::<(u32, u8)>())
+                    .ok_or(MultiLevelError::InvalidFormat(
+                        "override metadata size overflow",
+                    ))?;
+                charge_budget(exp_ov_bytes)?;
+                expected_overrides
+                    .try_reserve_exact(override_flag_count)
+                    .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
+            }
 
             for slot_idx in 0..num_primary {
                 let base: usize = slot_idx * 5;
                 let hint_id: u32 = u32_at(&slot_meta, base);
                 let flags: u8 = slot_meta[base + 4];
-                if (flags & !0b111) != 0 {
+                if (flags & !0b1111) != 0 {
                     return Err(MultiLevelError::InvalidFormat("invalid slot flags"));
                 }
                 let h: usize = hint_id as usize;
@@ -1401,6 +1552,7 @@ impl MultiLevelClient {
                 let selector: u8 = flags & 1;
                 let has_override: bool = (flags & (1 << 1)) != 0;
                 let ov_color: u8 = (flags >> 2) & 1;
+                let retired: bool = (flags & (1 << 3)) != 0;
                 if !has_override && ov_color != 0 {
                     return Err(MultiLevelError::InvalidFormat(
                         "override color set without has_override flag",
@@ -1414,6 +1566,7 @@ impl MultiLevelClient {
                     selector,
                     override_entry: None,
                     reserved: false,
+                    retired,
                 });
             }
 
@@ -1425,13 +1578,26 @@ impl MultiLevelClient {
                     "override count does not match slot flags",
                 ));
             }
-            let mut override_index: HashMap<(u32, u32), Vec<u32>> =
-                HashMap::with_capacity(ov_count);
+            let mut override_index: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
             if ov_count > 0 {
                 let ov_bytes_len: usize = ov_count
                     .checked_mul(12)
                     .ok_or(MultiLevelError::InvalidFormat("override buffer overflow"))?;
-                let mut ov_buf: Vec<u8> = vec![0u8; ov_bytes_len];
+                // Account for the HashMap bucket table, per-key Vec header, and per-override u32 payload.
+                let per_ov_index_bytes: usize =
+                    std::mem::size_of::<((u32, u32), Vec<u32>)>() + std::mem::size_of::<u32>() + 16;
+                let ov_index_bytes: usize = ov_count
+                    .checked_mul(per_ov_index_bytes)
+                    .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
+                charge_budget(
+                    ov_bytes_len
+                        .checked_add(ov_index_bytes)
+                        .ok_or(MultiLevelError::InvalidFormat("override budget overflow"))?,
+                )?;
+                override_index
+                    .try_reserve(ov_count)
+                    .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
+                let mut ov_buf: Vec<u8> = try_alloc_zeroed(ov_bytes_len)?;
                 inp.read_hashed(&mut ov_buf)?;
 
                 for (i, &(expected_slot_idx, ov_color)) in expected_overrides.iter().enumerate() {
@@ -1454,34 +1620,22 @@ impl MultiLevelClient {
                         offset,
                         color: ov_color,
                     });
-                    override_index
-                        .entry((block, offset))
-                        .or_default()
-                        .push(slot_idx);
+                    let entry: &mut Vec<u32> = override_index.entry((block, offset)).or_default();
+                    entry
+                        .try_reserve(1)
+                        .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
+                    entry.push(slot_idx);
                 }
             }
 
-            let primary_bytes: usize = num_primary
-                .checked_mul(record_size)
-                .ok_or(MultiLevelError::InvalidFormat("primary parity overflow"))?;
-            let backup_bytes: usize = num_backup
-                .checked_mul(record_size)
-                .ok_or(MultiLevelError::InvalidFormat("backup parity overflow"))?;
-            let bak_start: usize =
-                next_backup
-                    .checked_mul(record_size)
-                    .ok_or(MultiLevelError::InvalidFormat(
-                        "next_backup offset overflow",
-                    ))?;
-
-            let mut primary_parities: Vec<u8> = vec![0u8; primary_bytes];
+            let mut primary_parities: Vec<u8> = try_alloc_zeroed(primary_bytes)?;
             inp.read_hashed(&mut primary_parities)?;
 
-            let mut backup_parities_0: Vec<u8> = vec![0u8; backup_bytes];
-            inp.read_hashed(&mut backup_parities_0[bak_start..])?;
+            let mut backup_parities_0: Vec<u8> = try_alloc_zeroed(rem_backup_bytes)?;
+            inp.read_hashed(&mut backup_parities_0)?;
 
-            let mut backup_parities_1: Vec<u8> = vec![0u8; backup_bytes];
-            inp.read_hashed(&mut backup_parities_1[bak_start..])?;
+            let mut backup_parities_1: Vec<u8> = try_alloc_zeroed(rem_backup_bytes)?;
+            inp.read_hashed(&mut backup_parities_1)?;
 
             specs.push(spec);
             levels.push(LevelState {
@@ -1493,6 +1647,7 @@ impl MultiLevelClient {
                 primary_parities,
                 backup_parities_0,
                 backup_parities_1,
+                backup_offset: next_backup,
                 next_backup,
                 hint_id_to_slot,
                 override_index,
@@ -1510,6 +1665,7 @@ impl MultiLevelClient {
         Ok(Self {
             params,
             levels,
+            session_id: next_session_id(),
             epoch: 0,
             next_query_id: 1,
             in_flight: HashMap::new(),
@@ -1523,9 +1679,20 @@ impl MultiLevelClient {
         Ok(buf)
     }
 
-    /// Deserializes a client hint set from an in-memory byte slice.
+    /// Deserializes a client hint set from an in-memory byte slice using the default decoded
+    /// memory budget (`512 MiB`).
     pub fn from_bytes(bytes: &[u8], seed: &[u8; 32]) -> Result<Self, MultiLevelError> {
         Self::read_hints(bytes, seed)
+    }
+
+    /// Deserializes a client hint set from an in-memory byte slice while enforcing
+    /// `max_alloc_bytes` across decoded structures.
+    pub fn from_bytes_with_limit(
+        bytes: &[u8],
+        seed: &[u8; 32],
+        max_alloc_bytes: usize,
+    ) -> Result<Self, MultiLevelError> {
+        Self::read_hints_with_limit(bytes, seed, max_alloc_bytes)
     }
 
     /// Prepares a private query for `index` by probing levels `0..d` locally until one matches.
@@ -1597,6 +1764,7 @@ impl MultiLevelClient {
             );
 
             return Ok(PendingMultiLevelQuery {
+                session_id: self.session_id,
                 query_id,
                 index,
                 level: level_idx,
@@ -1613,10 +1781,43 @@ impl MultiLevelClient {
         Err(MultiLevelError::AllLevelsFailed { index })
     }
 
+    /// Aborts an abandoned in-flight query (for example after a network timeout) without
+    /// releasing its exposed primary slot back into circulation.
+    ///
+    /// The slot is permanently marked `retired` so no future query can reuse the hint
+    /// that may have reached the server, while removing the in-flight reservation so
+    /// subsequent [`MultiLevelClient::write_hints`] checkpoints succeed.
+    pub fn abort_query(&mut self, pending: PendingMultiLevelQuery) -> Result<(), MultiLevelError> {
+        if pending.session_id != self.session_id {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
+        let Some(&res) = self.in_flight.get(&pending.query_id) else {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        };
+        if res.index != pending.index
+            || res.level != pending.level
+            || res.slot_idx != pending.slot_idx
+            || res.selector != pending.selector
+        {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
+        self.in_flight.remove(&pending.query_id);
+        let slot: &mut PrimarySlot = &mut self.levels[res.level].slots[res.slot_idx as usize];
+        slot.reserved = false;
+        slot.retired = true;
+        Ok(())
+    }
+
     /// Reconstructs `DB[index]` from the server's answer and runs failure-private `Refresh`
     /// (Fig. 3, Lemma 9) on all failed levels `0..pending.level` and on `pending.level`.
     ///
-    /// Validates answer parity lengths, reservation binding, snapshot epoch, and backup
+    /// Validates answer parity lengths, session/reservation binding, snapshot epoch, and backup
     /// availability across all affected levels before mutating any hint slot.
     pub fn finish_query<R: Rng + ?Sized>(
         &mut self,
@@ -1632,6 +1833,11 @@ impl MultiLevelClient {
             });
         }
 
+        if pending.session_id != self.session_id {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
         let Some(&res) = self.in_flight.get(&pending.query_id) else {
             return Err(MultiLevelError::UnknownPendingQuery {
                 query_id: pending.query_id,
@@ -1647,8 +1853,11 @@ impl MultiLevelClient {
             });
         }
         if res.epoch != self.epoch {
-            // Retire reservation without releasing the slot: the wire query may have been sent.
+            // Retire the slot permanently: the wire query may have been sent.
             self.in_flight.remove(&pending.query_id);
+            let slot: &mut PrimarySlot = &mut self.levels[res.level].slots[res.slot_idx as usize];
+            slot.reserved = false;
+            slot.retired = true;
             return Err(MultiLevelError::SnapshotMismatch {
                 query_epoch: res.epoch,
                 current_epoch: self.epoch,
@@ -1672,12 +1881,19 @@ impl MultiLevelClient {
             let p_in: f64 = 1.0 / (2.0 * level.spec.block_size as f64);
             let k: usize = sample_binomial_exact(level.spec.num_primary, p_in, rng);
             let avail_slots: Vec<u32> = (0..level.spec.num_primary as u32)
-                .filter(|&pos| !level.slots[pos as usize].reserved)
+                .filter(|&pos| {
+                    let slot: &PrimarySlot = &level.slots[pos as usize];
+                    !slot.reserved && !slot.retired
+                })
                 .collect();
             let chosen: Vec<u32> = sample_distinct_from(&avail_slots, k, rng);
             let remaining: usize = level.spec.num_backup.saturating_sub(level.next_backup);
             if chosen.len() > remaining {
                 self.in_flight.remove(&pending.query_id);
+                let slot: &mut PrimarySlot =
+                    &mut self.levels[res.level].slots[res.slot_idx as usize];
+                slot.reserved = false;
+                slot.retired = true;
                 return Err(MultiLevelError::BackupExhausted {
                     level: lvl_idx,
                     recovered: Some(value),
@@ -1709,6 +1925,9 @@ impl MultiLevelClient {
             .saturating_sub(self.levels[res.level].next_backup);
         if needed_succ_backups > succ_remaining {
             self.in_flight.remove(&pending.query_id);
+            let slot: &mut PrimarySlot = &mut self.levels[res.level].slots[res.slot_idx as usize];
+            slot.reserved = false;
+            slot.retired = true;
             return Err(MultiLevelError::BackupExhausted {
                 level: res.level,
                 recovered: Some(value),
@@ -1816,47 +2035,55 @@ impl MultiLevelClient {
             let block_key_cipher: &Aes128 = &level.block_key_cipher;
             let color_cipher: &Aes128 = &level.color_cipher;
 
+            let compute_chunk = |base: usize, chunk: &[(usize, Vec<u8>)]| -> Vec<UpdateHits> {
+                let mut results: Vec<UpdateHits> = Vec::with_capacity(chunk.len());
+                for (local_i, &(entry_idx, _)) in chunk.iter().enumerate() {
+                    let block: usize = entry_idx / spec.block_size;
+                    let offset: u32 = (entry_idx % spec.block_size) as u32;
+                    let key: PrfKey128 = derive_block_key_with(block_key_cipher, block);
+                    let mut hits: Vec<(u32, u8)> = Vec::new();
+                    match spec.backend {
+                        LevelBackend::Iprf => {
+                            let iprf: Iprf =
+                                Iprf::new(key, spec.total_hints() as u64, spec.block_size as u64);
+                            for h in iprf.inverse(offset as u64) {
+                                let c: u8 = iprf_color_bit_with(color_cipher, block, h as u32);
+                                hits.push((h as u32, c));
+                            }
+                        }
+                        LevelBackend::FlatAes => {
+                            let cipher: Aes128 = Aes128::new(&GenericArray::from(key));
+                            flat_aes_inverse(
+                                &cipher,
+                                spec.block_size,
+                                spec.total_hints(),
+                                offset,
+                                &mut hits,
+                            );
+                        }
+                    }
+                    results.push((base + local_i, hits));
+                }
+                results
+            };
+            let compute_chunk_ref = &compute_chunk;
+
             let per_chunk: Vec<Vec<UpdateHits>> = std::thread::scope(|s| {
                 let mut handles = Vec::new();
+                let mut inline_results: Vec<Vec<UpdateHits>> = Vec::new();
                 for (chunk_idx, chunk) in updates.chunks(chunk_size).enumerate() {
                     let base: usize = chunk_idx * chunk_size;
-                    handles.push(s.spawn(move || {
-                        let mut results: Vec<UpdateHits> = Vec::with_capacity(chunk.len());
-                        for (local_i, &(entry_idx, _)) in chunk.iter().enumerate() {
-                            let block: usize = entry_idx / spec.block_size;
-                            let offset: u32 = (entry_idx % spec.block_size) as u32;
-                            let key: PrfKey128 = derive_block_key_with(block_key_cipher, block);
-                            let mut hits: Vec<(u32, u8)> = Vec::new();
-                            match spec.backend {
-                                LevelBackend::Iprf => {
-                                    let iprf: Iprf = Iprf::new(
-                                        key,
-                                        spec.total_hints() as u64,
-                                        spec.block_size as u64,
-                                    );
-                                    for h in iprf.inverse(offset as u64) {
-                                        let c: u8 =
-                                            iprf_color_bit_with(color_cipher, block, h as u32);
-                                        hits.push((h as u32, c));
-                                    }
-                                }
-                                LevelBackend::FlatAes => {
-                                    let cipher: Aes128 = Aes128::new(&GenericArray::from(key));
-                                    flat_aes_inverse(
-                                        &cipher,
-                                        spec.block_size,
-                                        spec.total_hints(),
-                                        offset,
-                                        &mut hits,
-                                    );
-                                }
-                            }
-                            results.push((base + local_i, hits));
-                        }
-                        results
-                    }));
+                    match std::thread::Builder::new()
+                        .spawn_scoped(s, move || compute_chunk_ref(base, chunk))
+                    {
+                        Ok(handle) => handles.push(handle),
+                        Err(_) => inline_results.push(compute_chunk_ref(base, chunk)),
+                    }
                 }
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
+                for h in handles {
+                    inline_results.push(h.join().unwrap());
+                }
+                inline_results
             });
 
             let r: usize = level.record_size;
@@ -1883,10 +2110,11 @@ impl MultiLevelClient {
                         } else if h >= spec.num_primary {
                             let b: usize = h - spec.num_primary;
                             if b >= level.next_backup {
+                                let local_b: usize = b - level.backup_offset;
                                 let target: &mut [u8] = if color_old == 0 {
-                                    &mut level.backup_parities_0[b * r..(b + 1) * r]
+                                    &mut level.backup_parities_0[local_b * r..(local_b + 1) * r]
                                 } else {
-                                    &mut level.backup_parities_1[b * r..(b + 1) * r]
+                                    &mut level.backup_parities_1[local_b * r..(local_b + 1) * r]
                                 };
                                 xor_bytes(target, delta);
                             }
@@ -2208,8 +2436,9 @@ fn sample_binomial_exact<R: Rng + ?Sized>(n: usize, p: f64, rng: &mut R) -> usiz
     count
 }
 
-/// Samples `Bernoulli(exp(-neg_log_p))` accurately even for tiny tail probabilities
-/// below `2^-53` (where `rng.gen::<f64>()` would floor to `0.0`).
+/// Approximately samples `Bernoulli(exp(-neg_log_p))` with 32-bit tail-chunking so tiny
+/// probabilities below `2^-53` (where a bare `f64` draw would floor to `0.0`) remain
+/// accurately represented down to machine floating-point precision on the final chunk.
 fn sample_bernoulli_neg_exp<R: Rng + ?Sized>(mut neg_log_p: f64, rng: &mut R) -> bool {
     if neg_log_p <= 0.0 {
         return true;
@@ -2328,6 +2557,22 @@ fn effective_threads(threads: usize, work_items: usize) -> usize {
     }
 }
 
+fn try_alloc_zeroed(len: usize) -> Result<Vec<u8>, MultiLevelError> {
+    let mut v: Vec<u8> = Vec::new();
+    v.try_reserve_exact(len)
+        .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
+    v.resize(len, 0);
+    Ok(v)
+}
+
+fn try_alloc_filled(len: usize, val: u32) -> Result<Vec<u32>, MultiLevelError> {
+    let mut v: Vec<u32> = Vec::new();
+    v.try_reserve_exact(len)
+        .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
+    v.resize(len, val);
+    Ok(v)
+}
+
 fn run_scoped_workers<T: Send, F: Fn() -> T + Sync>(workers: usize, f: F) -> Vec<T> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -2341,8 +2586,18 @@ fn run_scoped_workers<T: Send, F: Fn() -> T + Sync>(workers: usize, f: F) -> Vec
         }
         std::thread::scope(|s| {
             let f_ref: &F = &f;
-            let handles: Vec<_> = (0..workers).map(|_| s.spawn(f_ref)).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            let mut handles = Vec::with_capacity(workers);
+            let mut results: Vec<T> = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                match std::thread::Builder::new().spawn_scoped(s, f_ref) {
+                    Ok(handle) => handles.push(handle),
+                    Err(_) => results.push(f_ref()),
+                }
+            }
+            for h in handles {
+                results.push(h.join().unwrap());
+            }
+            results
         })
     }
 }
@@ -2434,13 +2689,14 @@ mod tests {
                 );
             }
             for b in level.next_backup..level.spec.num_backup {
+                let local_b: usize = b - level.backup_offset;
                 assert_eq!(
-                    &level.backup_parities_0[b * r..(b + 1) * r],
+                    &level.backup_parities_0[local_b * r..(local_b + 1) * r],
                     &exp_bak0[b][..],
                     "backup0 parity mismatch at level {lvl_idx} backup {b}"
                 );
                 assert_eq!(
-                    &level.backup_parities_1[b * r..(b + 1) * r],
+                    &level.backup_parities_1[local_b * r..(local_b + 1) * r],
                     &exp_bak1[b][..],
                     "backup1 parity mismatch at level {lvl_idx} backup {b}"
                 );
@@ -2860,6 +3116,140 @@ mod tests {
                 level: 0,
                 recovered: Some(expected_rec),
             })
+        );
+    }
+
+    #[test]
+    fn abort_query_retires_slot_survives_reload_and_rejects_cross_session_pending() {
+        let num_entries: usize = 256;
+        let record_size: usize = 40;
+        let seed: [u8; 32] = [0xAB; 32];
+        let db: Vec<u8> = make_db(num_entries, record_size, 1234);
+        let params: MultiLevelParams =
+            small_three_level_params(num_entries, record_size, BackendVariant::FlatB);
+        let mut client: MultiLevelClient =
+            MultiLevelClient::hint_init(params.clone(), &seed, &db, 1).unwrap();
+        let mut rng: ChaCha20Rng = ChaCha20Rng::seed_from_u64(5678);
+
+        // 1. Reserve a slot, abort it, verify checkpointing works again and the retired slot
+        //    is never selected again (even after serialization/reload).
+        let abandoned: PendingMultiLevelQuery = client.prepare_query(11, &mut rng).unwrap();
+        assert_eq!(
+            client.to_bytes().err(),
+            Some(MultiLevelError::QueryInFlight)
+        );
+        let (ab_lvl, ab_slot) = (abandoned.level, abandoned.slot_idx);
+        client.abort_query(abandoned.clone()).unwrap();
+        assert!(client.levels[ab_lvl].slots[ab_slot as usize].retired);
+        assert!(!client.levels[ab_lvl].slots[ab_slot as usize].reserved);
+
+        // Double abort or finishing an aborted query must fail cleanly.
+        assert_eq!(
+            client.abort_query(abandoned.clone()),
+            Err(MultiLevelError::UnknownPendingQuery {
+                query_id: abandoned.query_id,
+            })
+        );
+        let ans_ab: MultiLevelAnswer =
+            MultiLevelServer::answer(&db, &params, &abandoned.query).unwrap();
+        assert_eq!(
+            client.finish_query(abandoned.clone(), &ans_ab, &mut rng),
+            Err(MultiLevelError::UnknownPendingQuery {
+                query_id: abandoned.query_id,
+            })
+        );
+
+        // Serialization now succeeds and preserves the retired bit across reload.
+        let bytes: Vec<u8> = client.to_bytes().unwrap();
+        let mut reloaded: MultiLevelClient = MultiLevelClient::from_bytes(&bytes, &seed).unwrap();
+        assert!(reloaded.levels[ab_lvl].slots[ab_slot as usize].retired);
+
+        // Even when two sessions mint identical query_id/slot_idx for the same index,
+        // `reloaded` rejects a pending query from another session (different session_id).
+        let mut rng_a: ChaCha20Rng = ChaCha20Rng::seed_from_u64(9001);
+        let mut rng_b: ChaCha20Rng = ChaCha20Rng::seed_from_u64(9001);
+        let mut fresh_copy: MultiLevelClient = MultiLevelClient::from_bytes(&bytes, &seed).unwrap();
+        let p_other: PendingMultiLevelQuery = fresh_copy.prepare_query(12, &mut rng_a).unwrap();
+        let p_live: PendingMultiLevelQuery = reloaded.prepare_query(12, &mut rng_b).unwrap();
+        assert_eq!(p_other.query_id, p_live.query_id);
+        assert_eq!(p_other.slot_idx, p_live.slot_idx);
+        let ans_other: MultiLevelAnswer =
+            MultiLevelServer::answer(&db, &params, &p_other.query).unwrap();
+        assert_eq!(
+            reloaded.finish_query(p_other.clone(), &ans_other, &mut rng),
+            Err(MultiLevelError::UnknownPendingQuery {
+                query_id: p_other.query_id,
+            })
+        );
+        assert_eq!(
+            reloaded.abort_query(p_other.clone()),
+            Err(MultiLevelError::UnknownPendingQuery {
+                query_id: p_other.query_id,
+            })
+        );
+        // `reloaded`'s own reservation `p_live` is still intact and finishes cleanly.
+        let ans_live: MultiLevelAnswer =
+            MultiLevelServer::answer(&db, &params, &p_live.query).unwrap();
+        let got_live: Vec<u8> = reloaded.finish_query(p_live, &ans_live, &mut rng).unwrap();
+        assert_eq!(&got_live[..], &db[12 * record_size..13 * record_size]);
+
+        // Reloaded client can still serve queries and never picks the retired slot.
+        for _ in 0..10 {
+            let p: PendingMultiLevelQuery = reloaded.prepare_query(11, &mut rng).unwrap();
+            assert_ne!((p.level, p.slot_idx), (ab_lvl, ab_slot));
+            let a: MultiLevelAnswer = MultiLevelServer::answer(&db, &params, &p.query).unwrap();
+            let got: Vec<u8> = reloaded.finish_query(p, &a, &mut rng).unwrap();
+            assert_eq!(&got[..], &db[11 * record_size..12 * record_size]);
+        }
+    }
+
+    #[test]
+    fn read_hints_with_limit_rejects_oversized_checkpoint_and_param_overflows() {
+        let num_entries: usize = 256;
+        let record_size: usize = 40;
+        let seed: [u8; 32] = [0x99; 32];
+        let db: Vec<u8> = make_db(num_entries, record_size, 321);
+        let params: MultiLevelParams =
+            small_three_level_params(num_entries, record_size, BackendVariant::FlatB);
+        let client: MultiLevelClient =
+            MultiLevelClient::hint_init(params.clone(), &seed, &db, 1).unwrap();
+        let valid: Vec<u8> = client.to_bytes().unwrap();
+
+        assert_eq!(
+            MultiLevelClient::from_bytes_with_limit(&valid, &seed, 1024).err(),
+            Some(MultiLevelError::InvalidFormat(
+                "checkpoint size limit exceeded"
+            ))
+        );
+
+        // Overflowing kappa or query_budget in constructors must return the specific InvalidParams error, not panic.
+        assert_eq!(
+            MultiLevelParams::two_level(256, 40, usize::MAX, 16, BackendVariant::FlatB).err(),
+            Some(MultiLevelError::InvalidParams(
+                "kappa power-of-two overflow"
+            ))
+        );
+        assert_eq!(
+            MultiLevelParams::two_level(65_536, 40, 32, usize::MAX, BackendVariant::FlatB).err(),
+            Some(MultiLevelError::InvalidParams(
+                "level-0 backup budget overflow"
+            ))
+        );
+        assert_eq!(
+            MultiLevelParams::waterfall(256, 40, 2, usize::MAX, BackendVariant::FlatB).err(),
+            Some(MultiLevelError::InvalidParams(
+                "level-0 backup budget overflow"
+            ))
+        );
+        // Overflowing num_entries * record_size in hint_init must return InvalidParams, not panic.
+        let huge_params: MultiLevelParams = MultiLevelParams {
+            num_entries: usize::MAX,
+            record_size: 40,
+            levels: params.levels.clone(),
+        };
+        assert_eq!(
+            MultiLevelClient::hint_init(huge_params, &seed, &[], 1).err(),
+            Some(MultiLevelError::InvalidParams("database size overflow"))
         );
     }
 }

@@ -461,14 +461,20 @@ fn run_ethereum_scale(label: &str, params: MultiLevelParams, threads: usize) {
             LevelBackend::Iprf => 2.min(sample_blocks).max(1),
             LevelBackend::FlatAes => (sample_blocks / 4).max(1).min(sample_blocks),
         };
-        let t1: Instant = Instant::now();
-        client.bench_level_blocks(lvl_idx, &sample_db, sample_1t, 1);
-        let dt_1t: f64 = t1.elapsed().as_secs_f64();
+        let dt_1t: f64 =
+            MultiLevelClient::bench_level_blocks(&params, &seed, lvl_idx, &sample_db, sample_1t, 1)
+                .as_secs_f64();
         let level_core_secs: f64 = dt_1t * (spec.num_blocks as f64 / sample_1t as f64);
 
-        let tm: Instant = Instant::now();
-        client.bench_level_blocks(lvl_idx, &sample_db, sample_blocks, eff_threads);
-        let dt_mt: f64 = tm.elapsed().as_secs_f64();
+        let dt_mt: f64 = MultiLevelClient::bench_level_blocks(
+            &params,
+            &seed,
+            lvl_idx,
+            &sample_db,
+            sample_blocks,
+            eff_threads,
+        )
+        .as_secs_f64();
         let level_wall_secs: f64 = dt_mt * (spec.num_blocks as f64 / sample_blocks as f64);
 
         total_core_secs += level_core_secs;
