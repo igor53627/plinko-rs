@@ -11,7 +11,7 @@ This project does not use runtime feature flags. Behavior is controlled via CLI 
 
 Default features (`cli`, `logging`) build the `plinko` library and its CLI
 binaries (`plinko_hints`, `cost_estimate`, `gen_synthetic`,
-`protocol_scenario`). They contain only the code of the
+`protocol_scenario`, `bench_multilevel`). They contain only the code of the
 [trust model](trust_model.md): the client runs HintInit. Worker threads of
 `plinko_hints` (`--threads`) and of `protocol::compute_hints` need no feature.
 
@@ -21,7 +21,7 @@ with no CLI or memory-map dependencies, including `wasm32-unknown-unknown`
 
 | Feature    | Default | Adds                                                                                                                                                                                                                                                                                                       |
 |------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `cli`      | yes     | CLI binaries (`plinko_hints`, `cost_estimate`, `gen_synthetic`, `protocol_scenario`), `plinko::db::Database40` (memory-mapped file helper), and `clap`/`eyre`/`indicatif`/`memmap2`/`serde` dependencies                                                                                                   |
+| `cli`      | yes     | CLI binaries (`plinko_hints`, `cost_estimate`, `gen_synthetic`, `protocol_scenario`, `bench_multilevel`), `plinko::db::Database40` (memory-mapped file helper), and `clap`/`eyre`/`indicatif`/`memmap2`/`serde` dependencies |
 | `logging`  | yes     | `tracing` and `tracing-subscriber` (required by `plinko_hints` and `gen_synthetic`)                                                                                                                                                                                                                        |
 | `tee`      | no      | Experimental, outside the trust model: `plinko::constant_time`, `IprfTee`, `SwapOrNotSrTee`, `SwapOrNotTee`, `coin_binomial_ct` (`plinko/src/iprf/tee.rs`), `subsets::find_cutoff_ct`, `SubsetPrf::cutoff_ct`, `hint_init::hint_cutoffs_ct` and `hint_init::fill_parities_ct` (`plinko/src/hint_init/tee.rs`), and `plinko_hints --constant-time` |
 | `gpu`      | no      | Experimental, outside the trust model: `plinko::gpu` and the `bench_gpu_hints` binary (with `cli`) with its CPU baseline (a throughput benchmark, not Plinko hints)                                                                                                                                        |

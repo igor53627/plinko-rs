@@ -15,7 +15,7 @@ The full Ethereum state is not a target: each client must download the database 
 | Path | Role |
 |------|------|
 | `src/main.rs` | **Extractor** — reads Reth on-disk DB via `reth-db` (MDBX-backed); writes flat `database.bin` + mappings |
-| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, HintInit (`src/hint_init.rs`, binary `plinko_hints`), protocol client and server model, optional CUDA |
+| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, HintInit (`src/hint_init.rs`, binary `plinko_hints`), 1-level protocol client/server (`src/protocol.rs`), experimental multi-level PIR prototype (`src/multilevel.rs`, binary `bench_multilevel`), `wasm32-unknown-unknown` support (`--no-default-features`), optional CUDA |
 | `plinko/formal/` | **Rocq** models of the algorithms and proofs about the models, not about the Rust code (`plinko/formal/README.md`) |
 | `docs/` | Protocol, data format, benchmarks, verification |
 | `tee-test/` | SEV-SNP TEE benchmark notes (historical) |
@@ -113,8 +113,9 @@ Layout and last published mainnet v3 counts: [`docs/data_format.md`](docs/data_f
 
 ## Core primitives (`plinko` crate)
 
-- **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs))
+- **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs)), with 8-way interleaved `forward_many`
 - **Binomial / PMNS**: integer-only `Binomial(count, 1/2)` sampler, the bit count of an AES-128 counter keystream per tree node (exact for a uniform keystream) ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)); the iPRF range `w` must be a power of two
+- **Multi-level PIR (experimental)**: 2-level and `d`-level waterfall prototype based on [ePrint 2026/1273](https://eprint.iacr.org/2026/1273) with dynamic `UpdateHint`, failure-private `Refresh`, `PLNKMLH1` checkpoints, and zero-import `wasm32` support ([`plinko/src/multilevel.rs`](plinko/src/multilevel.rs), [`docs/multilevel_pir.md`](docs/multilevel_pir.md), `./scripts/test_wasm_multilevel.sh`)
 - **TEE** (opt-in feature `tee`): `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md)); experimental, not part of the [trust model](docs/trust_model.md#tee-mode)
 - **GPU** (opt-in features `gpu`, `cuda`): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md); a throughput benchmark, not Plinko hints ([trust model](docs/trust_model.md#gpu-path))
 
@@ -148,6 +149,7 @@ The record size is a parameter (`plinko_hints --record-size`); runs with 32-byte
 | Trust model | [`docs/trust_model.md`](docs/trust_model.md) |
 | Integrity (what the client must trust) | [`docs/integrity.md`](docs/integrity.md) |
 | Online protocol | [`docs/online_protocol.md`](docs/online_protocol.md) |
+| Multi-level PIR prototype (experimental) | [`docs/multilevel_pir.md`](docs/multilevel_pir.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
 | Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |
 | Updates | [`docs/update_strategy.md`](docs/update_strategy.md) |
@@ -172,6 +174,7 @@ The record size is a parameter (`plinko_hints --record-size`); runs with 32-byte
 
 - [Plinko: Single-Server PIR with Efficient Updates](https://vitalik.eth.limo/general/2025/11/25/plinko.html) — Vitalik Buterin's overview  
 - [Plinko (ePrint 2024/318)](https://eprint.iacr.org/2024/318) — Hoover, Patel, Persiano, Yeo  
+- [Multi-level PIR (ePrint 2026/1273)](https://eprint.iacr.org/2026/1273) — basis of the experimental `plinko::multilevel` prototype  
 - [Morris–Rogaway 2013](https://eprint.iacr.org/2013/560.pdf) — Swap-or-Not PRP  
 - [rms24-plinko-spec](https://github.com/keewoolee/rms24-plinko-spec) — readable Python reference (RMS24 + Plinko)  
 - [Alex Hoover — Plinko talk (YouTube)](https://www.youtube.com/watch?v=okJaBn7ZXnc)
