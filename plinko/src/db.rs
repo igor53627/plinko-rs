@@ -1,14 +1,21 @@
 use crate::schema40::ENTRY_SIZE as ENTRY_SIZE_V3;
+#[cfg(feature = "cli")]
 use eyre::{ensure, Result};
+#[cfg(feature = "cli")]
 use memmap2::MmapMut;
+#[cfg(feature = "cli")]
 use std::fs::OpenOptions;
+#[cfg(feature = "cli")]
 use std::path::Path;
 
 /// Database entry size for v3 schema (40 bytes).
 pub const DB_ENTRY_SIZE_V3: usize = ENTRY_SIZE_V3;
 pub const DB_ENTRY_U64_COUNT_V3: usize = 5; // 40 bytes = 5 * u64
 
-/// 40-byte entry database (v3 schema).
+/// 40-byte entry database (v3 schema), backed by a memory-mapped file.
+///
+/// Requires the `cli` feature.
+#[cfg(feature = "cli")]
 pub struct Database40 {
     pub mmap: MmapMut,
     pub num_entries: u64,
@@ -16,6 +23,7 @@ pub struct Database40 {
     pub set_size: u64,
 }
 
+#[cfg(feature = "cli")]
 impl Database40 {
     /// Loads a 40-byte entry database file into memory.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -135,8 +143,10 @@ fn isqrt(n: u64) -> u64 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    #[cfg(feature = "cli")]
     use std::io::Write;
 
+    #[cfg(feature = "cli")]
     #[test]
     fn load_rejects_empty_database_file() {
         let path =
@@ -150,6 +160,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cli")]
     #[test]
     fn load_rejects_non_multiple_size() {
         let path =

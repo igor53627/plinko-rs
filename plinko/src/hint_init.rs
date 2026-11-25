@@ -38,10 +38,19 @@ const PROGRESS_STEP: usize = 1024;
 pub type HintCutoffs = (Vec<u32>, Vec<u32>);
 
 /// Returns the number of available cores, or 1 if the system does not tell.
+///
+/// On `wasm32` targets this always returns 1.
 pub fn available_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1)
+    #[cfg(target_arch = "wasm32")]
+    {
+        1
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+    }
 }
 
 /// Computes the cutoff of the block subset of each hint on `threads` workers.
@@ -131,7 +140,24 @@ fn cutoffs_into(
     if cutoffs.is_empty() {
         return;
     }
-    let workers: usize = threads.clamp(1, cutoffs.len());
+    let workers: usize = if cfg!(target_arch = "wasm32") {
+        1
+    } else {
+        threads.clamp(1, cutoffs.len())
+    };
+    if workers == 1 {
+        let mut scratch: Vec<u32> = Vec::with_capacity(num_blocks);
+        for (k, cutoff) in cutoffs.iter_mut().enumerate() {
+            *cutoff = cutoff_of(
+                subset_prf,
+                first_hint_id + k as u64,
+                num_blocks,
+                subset_size,
+                &mut scratch,
+            );
+        }
+        return;
+    }
     let part_len: usize = cutoffs.len().div_ceil(workers);
     std::thread::scope(|scope| {
         for (part_idx, part) in cutoffs.chunks_mut(part_len).enumerate() {
@@ -314,13 +340,24 @@ where
     P: Fn(usize) + Sync,
     B: Fn(usize, &dyn Fn(usize)) + Sync,
 {
-    let workers: usize = threads.clamp(1, num_blocks.max(1));
-    let next_block = AtomicUsize::new(0);
+    let workers: usize = if cfg!(target_arch = "wasm32") {
+        1
+    } else {
+        threads.clamp(1, num_blocks.max(1))
+    };
     let done = AtomicUsize::new(0);
     let report = |entries: usize| {
         progress_callback(done.fetch_add(entries, Ordering::Relaxed) + entries);
     };
 
+    if workers == 1 {
+        for block in 0..num_blocks {
+            process_block(block, &report);
+        }
+        return;
+    }
+
+    let next_block = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| loop {

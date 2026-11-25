@@ -52,6 +52,7 @@ pub struct PmnsNode {
 }
 
 /// Returns keystream blocks `first_block..first_block + BATCH_BLOCKS` of `node`.
+#[cfg(any(feature = "tee", test))]
 fn keystream_batch(cipher: &Aes128, node: PmnsNode, first_block: u64) -> [u128; BATCH_BLOCKS] {
     let mut blocks = [GenericArray::from([0u8; 16]); BATCH_BLOCKS];
     for (i, block) in blocks.iter_mut().enumerate() {
@@ -93,17 +94,27 @@ pub fn coin_binomial(cipher: &Aes128, node: PmnsNode, count: u64) -> u64 {
     let mut ones: u64 = 0;
     let mut remaining: u64 = count;
     let mut next_block: u64 = 0;
+    let mut blocks = [GenericArray::from([0u8; 16]); BATCH_BLOCKS];
 
     while remaining > 0 {
-        for word in keystream_batch(cipher, node, next_block) {
+        let needed: usize = remaining.div_ceil(BLOCK_BITS).min(BATCH_BLOCKS as u64) as usize;
+        for (i, block) in blocks.iter_mut().enumerate().take(needed) {
+            block[0..4].copy_from_slice(&node.low.to_be_bytes());
+            block[4..8].copy_from_slice(&node.high.to_be_bytes());
+            block[8..16].copy_from_slice(&(next_block + i as u64).to_be_bytes());
+        }
+        if needed == 1 {
+            cipher.encrypt_block(&mut blocks[0]);
+        } else {
+            cipher.encrypt_blocks(&mut blocks[..needed]);
+        }
+        for block in blocks.iter().take(needed) {
+            let word: u128 = u128::from_be_bytes((*block).into());
             let kept: u64 = remaining.min(BLOCK_BITS);
-            if kept == 0 {
-                break;
-            }
             ones += u64::from((word >> (BLOCK_BITS - kept)).count_ones());
             remaining -= kept;
         }
-        next_block += BATCH_BLOCKS as u64;
+        next_block += needed as u64;
     }
 
     ones

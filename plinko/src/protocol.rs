@@ -606,6 +606,21 @@ impl PreparedQuery {
     }
 }
 
+/// Minimum number of real blocks in a query before [`Client::prepare_query`]
+/// distributes iPRF forward calls across worker threads.
+const PARALLEL_QUERY_MIN_BLOCKS: usize = 64;
+
+/// Minimum blocks assigned to each worker thread in [`Client::prepare_query`].
+const PARALLEL_QUERY_BLOCKS_PER_WORKER: usize = 32;
+
+/// Minimum number of changed records in a delta before [`Client::apply_delta`]
+/// distributes iPRF inverse calls across worker threads.
+const PARALLEL_DELTA_MIN_CHANGES: usize = 8;
+
+/// Maximum number of delta changes whose iPRF inverses are held in memory at
+/// once during parallel [`Client::apply_delta`].
+const PARALLEL_DELTA_BATCH_SIZE: usize = 256;
+
 /// Client for the in-memory protocol model.
 pub struct Client {
     params: ProtocolParams,
@@ -618,6 +633,10 @@ pub struct Client {
     slots: Vec<Option<HintSlot>>,
     /// `false` after promotion, and for a backup hint with no valid cutoff.
     backup_available: Vec<bool>,
+    /// Number of `true` entries in `backup_available`.
+    remaining_backups: usize,
+    /// Lowest index in `backup_available` that is `true`, or `backup_available.len()`.
+    next_backup_hint: usize,
     cache: HashMap<usize, CacheEntry>,
     rng: ChaCha20Rng,
     /// Each query in flight, under its queried index.
@@ -627,6 +646,8 @@ pub struct Client {
     /// `true` after the first query was built. The hint set then holds state
     /// that the hint file cannot store.
     queried: bool,
+    /// Worker threads used by [`Client::prepare_query`] and [`Client::apply_delta`].
+    threads: usize,
 }
 
 impl Client {
@@ -706,6 +727,11 @@ impl Client {
             .iter()
             .map(|&cutoff| cutoff != INVALID_CUTOFF)
             .collect();
+        let remaining_backups: usize = backup_available.iter().filter(|&&free| free).count();
+        let next_backup_hint: usize = backup_available
+            .iter()
+            .position(|&free| free)
+            .unwrap_or(backup_available.len());
 
         Ok(Self {
             iprfs: block_iprfs(&params, &master_seed),
@@ -714,12 +740,36 @@ impl Client {
             hints,
             slots,
             backup_available,
+            remaining_backups,
+            next_backup_hint,
             cache: HashMap::new(),
             rng: ChaCha20Rng::from_seed(query_rng_seed),
             in_flight: HashMap::new(),
             retired_backups: BTreeSet::new(),
             queried: false,
+            threads: hint_init::available_threads(),
         })
+    }
+
+    /// Returns the worker thread count used for [`Client::prepare_query`] and
+    /// [`Client::apply_delta`].
+    ///
+    /// Defaults to [`crate::hint_init::available_threads`] (always 1 on `wasm32`).
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
+    /// Sets the worker thread count used for [`Client::prepare_query`] and
+    /// [`Client::apply_delta`].
+    ///
+    /// A value of `0` counts as `1`. On `wasm32` targets this is always clamped
+    /// to `1`. Outputs do not depend on the thread count.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = if cfg!(target_arch = "wasm32") {
+            1
+        } else {
+            threads.max(1)
+        };
     }
 
     /// Version of the database that the hints belong to.
@@ -856,7 +906,7 @@ impl Client {
         }
         check_record_len(&self.params, &response.parity_0)?;
         check_record_len(&self.params, &response.parity_1)?;
-        if !self.backup_available.contains(&true) {
+        if self.remaining_backups == 0 {
             return Err(ProtocolError::NoBackupHintsLeft);
         }
 
@@ -933,9 +983,53 @@ impl Client {
             });
         }
 
-        // An index of the delta is below `num_entries`, which is a `usize`.
-        for (index, change) in delta.changes() {
-            self.apply_change(index as usize, change);
+        let workers: usize = if cfg!(target_arch = "wasm32") {
+            1
+        } else {
+            self.threads.max(1)
+        };
+        if workers > 1 && delta.len() >= PARALLEL_DELTA_MIN_CHANGES {
+            let mut changes_iter = delta
+                .changes()
+                .map(|(index, change)| (index as usize, change));
+            let mut batch: Vec<(usize, &[u8])> = Vec::with_capacity(PARALLEL_DELTA_BATCH_SIZE);
+            loop {
+                batch.clear();
+                batch.extend(changes_iter.by_ref().take(PARALLEL_DELTA_BATCH_SIZE));
+                if batch.is_empty() {
+                    break;
+                }
+                let worker_count: usize = workers.min(batch.len());
+                let chunk_len: usize = batch.len().div_ceil(worker_count);
+                let mut batch_hints: Vec<Vec<u64>> = vec![Vec::new(); batch.len()];
+                let iprfs: &[Iprf] = &self.iprfs;
+                let params: &ProtocolParams = &self.params;
+
+                std::thread::scope(|scope| {
+                    for (change_chunk, out_chunk) in batch
+                        .chunks(chunk_len)
+                        .zip(batch_hints.chunks_mut(chunk_len))
+                    {
+                        scope.spawn(move || {
+                            for (&(index, _), out) in change_chunk.iter().zip(out_chunk.iter_mut())
+                            {
+                                let block: usize = params.block_of(index);
+                                let offset: usize = params.offset_in_block(index);
+                                *out = iprfs[block].inverse(offset as u64);
+                            }
+                        });
+                    }
+                });
+
+                for (&(index, change), hint_indices) in batch.iter().zip(batch_hints.iter()) {
+                    self.apply_change_with_hints(index, change, hint_indices);
+                }
+            }
+        } else {
+            // An index of the delta is below `num_entries`, which is a `usize`.
+            for (index, change) in delta.changes() {
+                self.apply_change(index as usize, change);
+            }
         }
         self.hints.set_database_version(header.to_version);
         Ok(())
@@ -947,8 +1041,13 @@ impl Client {
         let block = self.params.block_of(index);
         let offset = self.params.offset_in_block(index);
         let hint_indices = self.iprfs[block].inverse(offset as u64);
+        self.apply_change_with_hints(index, change, &hint_indices);
+    }
 
-        for hint_idx in hint_indices {
+    fn apply_change_with_hints(&mut self, index: usize, change: &[u8], hint_indices: &[u64]) {
+        let block = self.params.block_of(index);
+
+        for &hint_idx in hint_indices {
             let j = hint_idx as usize;
             if j >= self.params.num_total_hints {
                 continue;
@@ -985,10 +1084,26 @@ impl Client {
     /// Returns the number of backup hints that an answer can still promote:
     /// those that are not promoted, not retired, and have a valid cutoff.
     pub fn remaining_backup_hints(&self) -> usize {
-        self.backup_available
-            .iter()
-            .filter(|&&available| available)
-            .count()
+        self.remaining_backups
+    }
+
+    /// Marks `backup_idx` as unavailable and updates the availability counters.
+    ///
+    /// Returns `true` if the backup hint was available before this call.
+    fn consume_backup(&mut self, backup_idx: usize) -> bool {
+        if !self.backup_available[backup_idx] {
+            return false;
+        }
+        self.backup_available[backup_idx] = false;
+        self.remaining_backups -= 1;
+        if backup_idx == self.next_backup_hint {
+            while self.next_backup_hint < self.backup_available.len()
+                && !self.backup_available[self.next_backup_hint]
+            {
+                self.next_backup_hint += 1;
+            }
+        }
+        true
     }
 
     /// Parity of hint slot `hint_idx`; see the `hints` field.
@@ -1082,9 +1197,7 @@ impl Client {
     ) -> Option<Query> {
         let queried_block = self.params.block_of(queried_index);
         let half = self.params.num_blocks / 2;
-        let mut offsets = Vec::with_capacity(half);
         let mut mask = vec![0u8; self.params.num_blocks.div_ceil(8)];
-        let mut real_count = 0usize;
 
         let extra_block = slot.extra_index.map(|idx| self.params.block_of(idx));
         let extra_offset = slot.extra_index.map(|idx| self.params.offset_in_block(idx));
@@ -1093,21 +1206,21 @@ impl Client {
         self.subset_prf
             .select_values(hint_idx as u64, self.params.num_blocks, &mut select_values);
 
+        let mut query_iprfs: Vec<&Iprf> = Vec::with_capacity(half);
+        let mut extra_pos: Option<usize> = None;
+        let mut real_count = 0usize;
+
         for (block, &select_value) in select_values.iter().enumerate() {
             let in_subset = (select_value < slot.cutoff) ^ slot.complemented;
             let is_real = block != queried_block && (in_subset || extra_block == Some(block));
 
             if is_real {
-                real_count += 1;
-                let offset = if extra_block == Some(block) {
-                    extra_offset.expect("paired with extra_block")
+                if extra_block == Some(block) {
+                    extra_pos = Some(real_count);
                 } else {
-                    self.iprfs[block].forward(hint_idx as u64) as usize
-                };
-                if offset >= self.params.block_size {
-                    return None;
+                    query_iprfs.push(&self.iprfs[block]);
                 }
-                offsets.push(offset as u32);
+                real_count += 1;
             }
 
             if is_real == real_is_first {
@@ -1117,6 +1230,49 @@ impl Client {
 
         if real_count != half {
             return None;
+        }
+
+        let x: u64 = hint_idx as u64;
+        let workers: usize =
+            if cfg!(target_arch = "wasm32") || query_iprfs.len() < PARALLEL_QUERY_MIN_BLOCKS {
+                1
+            } else {
+                self.threads.clamp(
+                    1,
+                    (query_iprfs.len() / PARALLEL_QUERY_BLOCKS_PER_WORKER).max(1),
+                )
+            };
+
+        let forward_offsets: Vec<u64> = if workers == 1 {
+            Iprf::forward_many(&query_iprfs, x)
+        } else {
+            let chunk_len: usize = query_iprfs.len().div_ceil(workers);
+            let mut out: Vec<u64> = vec![0u64; query_iprfs.len()];
+            std::thread::scope(|scope| {
+                for (iprf_chunk, out_chunk) in
+                    query_iprfs.chunks(chunk_len).zip(out.chunks_mut(chunk_len))
+                {
+                    scope.spawn(move || {
+                        let chunk_offsets: Vec<u64> = Iprf::forward_many(iprf_chunk, x);
+                        out_chunk.copy_from_slice(&chunk_offsets);
+                    });
+                }
+            });
+            out
+        };
+
+        let mut offsets = Vec::with_capacity(half);
+        let mut forward_iter = forward_offsets.into_iter();
+        for pos in 0..half {
+            let offset: usize = if extra_pos == Some(pos) {
+                extra_offset.expect("paired with extra_block")
+            } else {
+                forward_iter.next().expect("matches query_iprfs length") as usize
+            };
+            if offset >= self.params.block_size {
+                return None;
+            }
+            offsets.push(offset as u32);
         }
 
         Some(Query { mask, offsets })
@@ -1135,13 +1291,11 @@ impl Client {
         queried_index: usize,
         queried_entry: &[u8],
     ) -> Result<usize, ProtocolError> {
-        let Some(backup_idx) = self
-            .backup_available
-            .iter()
-            .position(|&available| available)
-        else {
+        if self.next_backup_hint >= self.backup_available.len() {
             return Err(ProtocolError::NoBackupHintsLeft);
-        };
+        }
+        let backup_idx: usize = self.next_backup_hint;
+        debug_assert!(self.backup_available[backup_idx]);
 
         let queried_block = self.params.block_of(queried_index);
         let promoted_idx = self.params.num_regular_hints + backup_idx;
@@ -1158,7 +1312,7 @@ impl Client {
                 .copy_from_slice(&parity_out);
         }
         xor_entry(self.hints.backup_parity_in_mut(backup_idx), queried_entry);
-        self.backup_available[backup_idx] = false;
+        self.consume_backup(backup_idx);
 
         self.slots[promoted_idx] = Some(HintSlot {
             cutoff,

@@ -9,6 +9,10 @@
 //! - `delta`: Changes between two database versions and their on-disk format
 //! - `hint_init`: HintInit (cutoffs and parities of a hint set) on worker threads
 //!
+//! Default build features enable the CLI binaries (`cli`) and tracing output
+//! (`logging`). Disable default features (`default-features = false`) for a
+//! library-only build, including `wasm32-unknown-unknown`.
+//!
 //! Two opt-in features add experimental code that is not part of the trust
 //! model (`docs/trust_model.md`):
 //! - `tee`: `constant_time` and the constant-time PRP and iPRF variants

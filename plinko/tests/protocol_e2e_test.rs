@@ -1485,3 +1485,156 @@ fn a_wrong_answer_gives_a_wrong_record_and_the_same_later_messages() {
     assert!(queries >= 40, "{queries} queries");
     assert_eq!(wrong_records, 3, "the error spreads through promoted hints");
 }
+
+#[test]
+fn parallel_query_and_delta_match_single_thread() {
+    // 144 blocks -> 72 real blocks per query (>= PARALLEL_QUERY_MIN_BLOCKS = 64),
+    // exercising the multi-threaded path of `prepare_query`.
+    let num_entries: usize = 144 * 4;
+    let params: ProtocolParams =
+        ProtocolParams::new(num_entries, RECORD_SIZE, Some(4), 16, Some(32)).expect("params");
+    assert_eq!(params.num_blocks, 144);
+
+    let db: Vec<u8> = make_db(num_entries);
+    let master_seed: [u8; 32] = [0x31u8; 32];
+    let query_seed: [u8; 32] = [0x74u8; 32];
+    let hints: HintSet = compute_hints(&params, &master_seed, 0, &db).expect("hints");
+
+    let mut server: Server = Server::new(params.clone(), 0, &db).expect("server");
+    let mut client_1t: Client =
+        Client::from_hints(params.clone(), master_seed, query_seed, hints.clone()).expect("1t");
+    let mut client_4t: Client =
+        Client::from_hints(params.clone(), master_seed, query_seed, hints).expect("4t");
+    client_1t.set_threads(1);
+    client_4t.set_threads(4);
+    assert_eq!(client_1t.threads(), 1);
+    assert_eq!(client_4t.threads(), 4);
+
+    // Run real queries and decoy queries (repeated indices) before the delta.
+    for index in [0usize, 5, 17, 5, 100, 311, 17, 575] {
+        let p1: PreparedQuery = client_1t.prepare_query(index).expect("prepare 1t");
+        let p4: PreparedQuery = client_4t.prepare_query(index).expect("prepare 4t");
+        assert_eq!(p1.query, p4.query, "query mismatch for index {index}");
+        assert_eq!(p1.hint_index(), p4.hint_index());
+
+        let resp: Response = server.answer(&p1.query).expect("answer");
+        let v1: Vec<u8> = client_1t
+            .reconstruct_and_replenish(&p1, &resp)
+            .expect("recon 1t");
+        let v4: Vec<u8> = client_4t
+            .reconstruct_and_replenish(&p4, &resp)
+            .expect("recon 4t");
+        assert_eq!(v1, record(&db, index));
+        assert_eq!(v1, v4);
+    }
+
+    // Apply a 270-entry delta (> PARALLEL_DELTA_BATCH_SIZE = 256) to exercise
+    // multi-batch parallel `apply_delta`, including cached indices (5, 17).
+    let updates: Vec<(usize, Vec<u8>)> = (0..270usize)
+        .map(|i| {
+            let idx: usize = match i {
+                0 => 5,
+                1 => 17,
+                _ => (i * 2) % num_entries,
+            };
+            (idx, make_entry(10_000 + i as u64))
+        })
+        .collect();
+    let delta: Delta = server.apply_updates(&updates).expect("apply updates");
+
+    client_1t.apply_delta(&delta).expect("delta 1t");
+    client_4t.apply_delta(&delta).expect("delta 4t");
+
+    let mut state_1t: Vec<u8> = Vec::new();
+    let mut state_4t: Vec<u8> = Vec::new();
+    client_1t.write_state(&mut state_1t).expect("write 1t");
+    client_4t.write_state(&mut state_4t).expect("write 4t");
+    assert_eq!(
+        state_1t, state_4t,
+        "client states must be byte-identical after parallel queries and delta"
+    );
+
+    // Query updated records (both cached and uncached) after the delta.
+    for &(idx, ref expected) in &updates[..6] {
+        let p1: PreparedQuery = client_1t.prepare_query(idx).expect("post-delta 1t");
+        let p4: PreparedQuery = client_4t.prepare_query(idx).expect("post-delta 4t");
+        assert_eq!(p1.query, p4.query);
+        let resp: Response = server.answer(&p1.query).expect("post-delta answer");
+        let v1: Vec<u8> = client_1t
+            .reconstruct_and_replenish(&p1, &resp)
+            .expect("post-delta recon 1t");
+        let v4: Vec<u8> = client_4t
+            .reconstruct_and_replenish(&p4, &resp)
+            .expect("post-delta recon 4t");
+        assert_eq!(&v1, expected);
+        assert_eq!(v1, v4);
+    }
+}
+
+#[test]
+fn backup_availability_tracks_promotions_and_retirements() {
+    let num_entries: usize = 64;
+    let params: ProtocolParams =
+        ProtocolParams::new(num_entries, RECORD_SIZE, Some(8), 16, Some(4)).expect("params");
+    let db: Vec<u8> = make_db(num_entries);
+    let master_seed: [u8; 32] = [0x44u8; 32];
+    let query_seed: [u8; 32] = [0x55u8; 32];
+    let hints: HintSet = compute_hints(&params, &master_seed, 0, &db).expect("hints");
+
+    let server: Server = Server::new(params.clone(), 0, &db).expect("server");
+    let mut client: Client =
+        Client::from_hints(params.clone(), master_seed, query_seed, hints).expect("client");
+
+    let initial_backups: usize = client.remaining_backup_hints();
+    assert_eq!(initial_backups, 4);
+
+    let first_backup_id: usize = params.num_regular_hints;
+    // Retire a middle backup (backup index 1) and the lowest backup (backup index 0).
+    client
+        .retire_hints(&[first_backup_id + 1])
+        .expect("retire middle backup");
+    assert_eq!(client.remaining_backup_hints(), 3);
+
+    // Retiring the same backup a second time must be a no-op (no underflow).
+    client
+        .retire_hints(&[first_backup_id + 1])
+        .expect("retire already-retired backup");
+    assert_eq!(client.remaining_backup_hints(), 3);
+
+    // First query promotes backup 0; next_backup_hint must then skip retired backup 1 to 2.
+    let p0: PreparedQuery = client.prepare_query(0).expect("query 0");
+    let r0: Response = server.answer(&p0.query).expect("answer 0");
+    assert_eq!(
+        client.reconstruct_and_replenish(&p0, &r0).expect("recon 0"),
+        record(&db, 0)
+    );
+    assert_eq!(client.remaining_backup_hints(), 2);
+
+    // Retiring an already-promoted backup must not decrement remaining_backup_hints.
+    client
+        .retire_hints(&[first_backup_id])
+        .expect("retire promoted backup");
+    assert_eq!(client.remaining_backup_hints(), 2);
+
+    // Roundtrip through client state and exhaust the remaining 2 backups (indices 2 and 3).
+    let mut state: Vec<u8> = Vec::new();
+    client.write_state(&mut state).expect("write state");
+    let (mut restored, pending) =
+        Client::read_state(master_seed, [0x66u8; 32], state.as_slice()).expect("read state");
+    assert!(pending.is_empty());
+    assert_eq!(restored.remaining_backup_hints(), 2);
+
+    for idx in [1usize, 2] {
+        let p: PreparedQuery = restored.prepare_query(idx).expect("query");
+        let r: Response = server.answer(&p.query).expect("answer");
+        assert_eq!(
+            restored.reconstruct_and_replenish(&p, &r).expect("recon"),
+            record(&db, idx)
+        );
+    }
+    assert_eq!(restored.remaining_backup_hints(), 0);
+    assert_eq!(
+        restored.prepare_query(3).err(),
+        Some(ProtocolError::NoBackupHintsLeft)
+    );
+}

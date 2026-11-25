@@ -496,6 +496,11 @@ impl Client {
 
         let queried: bool =
             any_sent || !cache.is_empty() || !in_flight.is_empty() || !retired_backups.is_empty();
+        let remaining_backups: usize = backup_available.iter().filter(|&&free| free).count();
+        let next_backup_hint: usize = backup_available
+            .iter()
+            .position(|&free| free)
+            .unwrap_or(backup_available.len());
         let client = Self {
             iprfs: block_iprfs(&params, &master_seed),
             subset_prf: SubsetPrf::new(&master_seed),
@@ -503,11 +508,14 @@ impl Client {
             hints,
             slots,
             backup_available,
+            remaining_backups,
+            next_backup_hint,
             cache,
             rng: ChaCha20Rng::from_seed(query_rng_seed),
             in_flight,
             retired_backups,
             queried,
+            threads: crate::hint_init::available_threads(),
         };
 
         // A message is a function of its hint, so the client builds each
@@ -587,8 +595,7 @@ impl Client {
         for &hint_idx in hint_indices {
             let mut removed: bool = self.slots[hint_idx].take().is_some();
             if let Some(backup_idx) = hint_idx.checked_sub(self.params.num_regular_hints) {
-                if self.backup_available[backup_idx] {
-                    self.backup_available[backup_idx] = false;
+                if self.consume_backup(backup_idx) {
                     self.retired_backups.insert(backup_idx);
                     removed = true;
                 }

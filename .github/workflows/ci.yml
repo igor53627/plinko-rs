@@ -27,6 +27,9 @@ jobs:
       - name: Run plinko tests
         run: cargo test --manifest-path plinko/Cargo.toml
 
+      - name: Run plinko tests without default features
+        run: cargo test --manifest-path plinko/Cargo.toml --no-default-features
+
       - name: Run plinko tests with the experimental features
         run: cargo test --manifest-path plinko/Cargo.toml --features tee,gpu
 
@@ -37,6 +40,27 @@ jobs:
           python3 -m json.tool /tmp/cost_estimate_entries.json > /dev/null
           cargo run --manifest-path plinko/Cargo.toml --bin cost_estimate -- --mainnet --json > /tmp/cost_estimate_mainnet.json
           python3 -m json.tool /tmp/cost_estimate_mainnet.json > /dev/null
+
+  wasm:
+    name: WebAssembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plinko
+
+      - name: Check plinko library for wasm32-unknown-unknown
+        run: |
+          cargo check --manifest-path plinko/Cargo.toml --lib --no-default-features --target wasm32-unknown-unknown
+          cargo check --manifest-path plinko/Cargo.toml --lib --no-default-features --features tee --target wasm32-unknown-unknown
 
   clippy:
     name: Clippy

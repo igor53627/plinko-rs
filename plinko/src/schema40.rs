@@ -404,17 +404,23 @@ impl CodeStore {
     }
 
     /// Deserialize code store from binary format.
-    pub fn from_bytes(bytes: &[u8]) -> eyre::Result<Self> {
-        use eyre::ensure;
-
-        ensure!(bytes.len() >= 4, "Code store too short");
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CodeStoreError> {
+        if bytes.len() < 4 {
+            return Err(CodeStoreError::TooShort {
+                actual: bytes.len(),
+            });
+        }
         let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
-        ensure!(
-            bytes.len() == 4 + count * 32,
-            "Code store size mismatch: expected {}, got {}",
-            4 + count * 32,
-            bytes.len()
-        );
+        let expected = count
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(4))
+            .ok_or(CodeStoreError::SizeOverflow { count })?;
+        if bytes.len() != expected {
+            return Err(CodeStoreError::SizeMismatch {
+                expected,
+                actual: bytes.len(),
+            });
+        }
 
         let mut store = Self::new();
         for i in 0..count {
@@ -427,6 +433,41 @@ impl CodeStore {
         Ok(store)
     }
 }
+
+/// Errors returned by [`CodeStore::from_bytes`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeStoreError {
+    /// Input buffer has fewer than the 4-byte count header.
+    TooShort { actual: usize },
+    /// The declared entry count overflows `usize` byte length.
+    SizeOverflow { count: usize },
+    /// Input byte length does not match `4 + count * 32`.
+    SizeMismatch { expected: usize, actual: usize },
+}
+
+impl std::fmt::Display for CodeStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooShort { actual } => {
+                write!(
+                    f,
+                    "Code store too short: got {actual} bytes, need at least 4"
+                )
+            }
+            Self::SizeOverflow { count } => {
+                write!(f, "Code store entry count overflow: {count}")
+            }
+            Self::SizeMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "Code store size mismatch: expected {expected}, got {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CodeStoreError {}
 
 #[cfg(test)]
 mod tests {
@@ -592,5 +633,23 @@ mod tests {
         assert_eq!(&bytes[0..32], &[0u8; 32]);
         // TAG is last 8 bytes
         assert_eq!(&bytes[32..40], &[0u8; 8]);
+    }
+
+    #[test]
+    fn test_code_store_from_bytes_rejects_invalid_inputs() {
+        assert_eq!(
+            CodeStore::from_bytes(&[0u8; 3]).err(),
+            Some(CodeStoreError::TooShort { actual: 3 })
+        );
+        let mut wrong_len = Vec::new();
+        wrong_len.extend_from_slice(&2u32.to_le_bytes());
+        wrong_len.extend_from_slice(&[0u8; 32]);
+        assert_eq!(
+            CodeStore::from_bytes(&wrong_len).err(),
+            Some(CodeStoreError::SizeMismatch {
+                expected: 68,
+                actual: 36,
+            })
+        );
     }
 }
