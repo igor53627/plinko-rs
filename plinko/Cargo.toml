@@ -53,6 +53,11 @@ path = "src/bin/protocol_scenario.rs"
 required-features = ["cli"]
 
 [[bin]]
+name = "bench_multilevel"
+path = "src/bin/bench_multilevel.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "bench_gpu_hints"
 path = "src/bin/bench_gpu_hints.rs"
 required-features = ["gpu", "cli"]
