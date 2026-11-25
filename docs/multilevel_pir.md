@@ -17,12 +17,13 @@ Level 0 (fast path)   : block_size w_0 ~ sqrt(N)/2, M_0 = ceil(2 * w_0 * ln(kapp
                         -> misses with probability ~1 / kappa
                            |
                            v (only on Level 0 miss)
-Level 1 (fallback)    : block_size w_1 = w_0 / kappa, M_1 = ceil(2 * w_1 * kappa) = ~2 * w_0
+Level 1 (fallback)    : ratio = next_power_of_two(kappa), block_size w_1 = w_0 / ratio (>= 2),
+                        M_1 = 2 * w_1 * kappa
                         -> combined miss probability ~exp(-kappa)
 ```
 
 - **Parameter builders** (`plinko/src/multilevel.rs`):
-  - `MultiLevelParams::two_level(num_entries, record_size, kappa, query_budget, variant)` — 2-level Table 2 geometry.
+  - `MultiLevelParams::two_level(num_entries, record_size, kappa, query_budget, variant)` — 2-level Table 2 geometry; rounds `kappa` up to `ratio = next_power_of_two(kappa)`, sets `w_1 = w_0 / ratio` (rejecting inputs where `ratio > w_0 / 2`, i.e. `w_1 < 2`), and sets `M_1 = 2 * w_1 * kappa` (for example, `N = 65,536`, `kappa = 33` yields `w_0 = 128`, `ratio = 64`, `w_1 = 2`, `M_1 = 132`).
   - `MultiLevelParams::waterfall(num_entries, record_size, num_levels, query_budget, variant)` — `d`-level geometric waterfall (`w_i` dividing by four across levels, `w_i = w_0 / 4^i`).
   - `MultiLevelParams::custom(num_entries, record_size, levels)` — validates level geometry and checks primary/backup/accumulator storage sizes fit within `isize::MAX` before allocation.
 - **Per-level backends (`BackendVariant`):**
@@ -39,7 +40,7 @@ Level 1 (fallback)    : block_size w_1 = w_0 / kappa, M_1 = ceil(2 * w_1 * kappa
 ## Safety invariants and `PLNKMLH1` checkpoint format
 
 - **In-flight slot reservation and recovery:** `prepare_query` reserves the selected primary slot so concurrent calls never emit two queries from the same hint. `finish_query(&pending, &answer, &mut rng)` and `abort_query(&pending)` borrow `PendingMultiLevelQuery` so callers retain the handle to retry or abort after `AnswerLengthMismatch` or server `SnapshotMismatch`. Calling `abort_query` releases the in-flight reservation while permanently marking the slot `retired` (persisted in slot flags bit 3) so an exposed hint is never reused.
-- **Session and snapshot-epoch binding:** each `MultiLevelClient` mints a unique `session_id` (renewed on reload) so pending handles cannot be replayed across client instances. `MultiLevelClient::epoch()` increments on each `apply_delta` / `apply_deltas_batch` and is stored in the `PLNKMLH1` header; `MultiLevelServer::answer(&db, &params, &query, snapshot_epoch)` stamps the server's epoch onto `MultiLevelAnswer`, and `finish_query` rejects both client-side and server-side epoch mismatches before decoding or refreshing.
+- **Session and snapshot-epoch binding:** each `MultiLevelClient` mints a unique `session_id` (renewed on reload) so pending handles cannot be replayed across client instances. `MultiLevelClient::epoch()` increments on each successful `apply_delta` and each non-empty successful `apply_deltas_batch` (empty batches do not advance the epoch) and is stored in the `PLNKMLH1` header; `MultiLevelServer::answer(&db, &params, &query, snapshot_epoch)` stamps the server's epoch onto `MultiLevelAnswer`, and `finish_query` rejects both client-side and server-side epoch mismatches before decoding or refreshing.
 - **Serialization (`write_hints`, `read_hints`, `read_hints_with_limit`, `to_bytes`, `from_bytes`, `from_bytes_with_limit`):**
   - Binary format `PLNKMLH1` (version 1): 36-byte header (magic, version, `num_entries`, `record_size`, `num_levels`, `epoch`), per-level metadata, slot flags (`selector`, `has_override`, `override_color`, `retired`), active overrides, primary parities, remaining unconsumed backup parities only (`next_backup..num_backup`), and a trailing 32-byte BLAKE3 checksum.
   - `write_hints` refuses to checkpoint while any query is in flight (`QueryInFlight`).
