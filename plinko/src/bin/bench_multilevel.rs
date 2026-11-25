@@ -254,11 +254,11 @@ fn run_multilevel_full(
 
         let ts: Instant = Instant::now();
         let ans: MultiLevelAnswer =
-            MultiLevelServer::answer(&db_mut, &params, &pending.query).unwrap();
+            MultiLevelServer::answer(&db_mut, &params, &pending.query, client.epoch()).unwrap();
         q_srv_total += ts.elapsed();
 
         let tf: Instant = Instant::now();
-        let got: Vec<u8> = client.finish_query(pending, &ans, &mut rng).unwrap();
+        let got: Vec<u8> = client.finish_query(&pending, &ans, &mut rng).unwrap();
         q_fin_total += tf.elapsed();
 
         assert_eq!(&got[..], &db_mut[idx * r..(idx + 1) * r]);
@@ -281,8 +281,9 @@ fn run_multilevel_full(
     // Verify a post-delta query is still 100% exact.
     let check_idx: usize = rng.gen_range(0..n);
     let pending: PendingMultiLevelQuery = client.prepare_query(check_idx, &mut rng).unwrap();
-    let ans: MultiLevelAnswer = MultiLevelServer::answer(&db_mut, &params, &pending.query).unwrap();
-    let got: Vec<u8> = client.finish_query(pending, &ans, &mut rng).unwrap();
+    let ans: MultiLevelAnswer =
+        MultiLevelServer::answer(&db_mut, &params, &pending.query, client.epoch()).unwrap();
+    let got: Vec<u8> = client.finish_query(&pending, &ans, &mut rng).unwrap();
     assert_eq!(&got[..], &db_mut[check_idx * r..(check_idx + 1) * r]);
 
     // Measure batch UpdateHint (1T and multi-thread), verifying retrieval after each batch.
@@ -304,8 +305,9 @@ fn run_multilevel_full(
     }
     let verify_idx_1t: usize = updates_1t[updates_1t.len() / 2].0;
     let p_1t: PendingMultiLevelQuery = client.prepare_query(verify_idx_1t, &mut rng).unwrap();
-    let a_1t: MultiLevelAnswer = MultiLevelServer::answer(&db_mut, &params, &p_1t.query).unwrap();
-    let g_1t: Vec<u8> = client.finish_query(p_1t, &a_1t, &mut rng).unwrap();
+    let a_1t: MultiLevelAnswer =
+        MultiLevelServer::answer(&db_mut, &params, &p_1t.query, client.epoch()).unwrap();
+    let g_1t: Vec<u8> = client.finish_query(&p_1t, &a_1t, &mut rng).unwrap();
     assert_eq!(
         &g_1t[..],
         &db_mut[verify_idx_1t * r..(verify_idx_1t + 1) * r]
@@ -329,8 +331,9 @@ fn run_multilevel_full(
     }
     let verify_idx_mt: usize = updates_mt[updates_mt.len() / 2].0;
     let p_mt: PendingMultiLevelQuery = client.prepare_query(verify_idx_mt, &mut rng).unwrap();
-    let a_mt: MultiLevelAnswer = MultiLevelServer::answer(&db_mut, &params, &p_mt.query).unwrap();
-    let g_mt: Vec<u8> = client.finish_query(p_mt, &a_mt, &mut rng).unwrap();
+    let a_mt: MultiLevelAnswer =
+        MultiLevelServer::answer(&db_mut, &params, &p_mt.query, client.epoch()).unwrap();
+    let g_mt: Vec<u8> = client.finish_query(&p_mt, &a_mt, &mut rng).unwrap();
     assert_eq!(
         &g_mt[..],
         &db_mut[verify_idx_mt * r..(verify_idx_mt + 1) * r]
@@ -461,21 +464,21 @@ fn run_ethereum_scale(label: &str, params: MultiLevelParams, threads: usize) {
             LevelBackend::Iprf => 2.min(sample_blocks).max(1),
             LevelBackend::FlatAes => (sample_blocks / 4).max(1).min(sample_blocks),
         };
-        let dt_1t: f64 =
-            MultiLevelClient::bench_level_blocks(&params, &seed, lvl_idx, &sample_db, sample_1t, 1)
-                .as_secs_f64();
-        let level_core_secs: f64 = dt_1t * (spec.num_blocks as f64 / sample_1t as f64);
+        let (fixed_1t, scan_1t) =
+            MultiLevelClient::bench_level_blocks(&params, &seed, lvl_idx, &sample_db, sample_1t, 1);
+        let level_core_secs: f64 = fixed_1t.as_secs_f64()
+            + scan_1t.as_secs_f64() * (spec.num_blocks as f64 / sample_1t as f64);
 
-        let dt_mt: f64 = MultiLevelClient::bench_level_blocks(
+        let (fixed_mt, scan_mt) = MultiLevelClient::bench_level_blocks(
             &params,
             &seed,
             lvl_idx,
             &sample_db,
             sample_blocks,
             eff_threads,
-        )
-        .as_secs_f64();
-        let level_wall_secs: f64 = dt_mt * (spec.num_blocks as f64 / sample_blocks as f64);
+        );
+        let level_wall_secs: f64 = fixed_mt.as_secs_f64()
+            + scan_mt.as_secs_f64() * (spec.num_blocks as f64 / sample_blocks as f64);
 
         total_core_secs += level_core_secs;
         total_wall_mt_secs += level_wall_secs;

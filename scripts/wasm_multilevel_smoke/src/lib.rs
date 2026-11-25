@@ -70,11 +70,12 @@ pub extern "C" fn run_multilevel_2b_smoke() -> i32 {
             Ok(p) => p,
             Err(_) => return -6,
         };
-        let ans: MultiLevelAnswer = match MultiLevelServer::answer(&db, &params, &pending.query) {
-            Ok(a) => a,
-            Err(_) => return -17,
-        };
-        let got: Vec<u8> = match restored.finish_query(pending, &ans, &mut rng) {
+        let ans: MultiLevelAnswer =
+            match MultiLevelServer::answer(&db, &params, &pending.query, restored.epoch()) {
+                Ok(a) => a,
+                Err(_) => return -17,
+            };
+        let got: Vec<u8> = match restored.finish_query(&pending, &ans, &mut rng) {
             Ok(v) => v,
             Err(_) => return -7,
         };
@@ -121,11 +122,12 @@ pub extern "C" fn run_multilevel_2b_smoke() -> i32 {
             Ok(p) => p,
             Err(_) => return -13,
         };
-        let ans: MultiLevelAnswer = match MultiLevelServer::answer(&db, &params, &pending.query) {
-            Ok(a) => a,
-            Err(_) => return -18,
-        };
-        let got: Vec<u8> = match reloaded.finish_query(pending, &ans, &mut rng) {
+        let ans: MultiLevelAnswer =
+            match MultiLevelServer::answer(&db, &params, &pending.query, reloaded.epoch()) {
+                Ok(a) => a,
+                Err(_) => return -18,
+            };
+        let got: Vec<u8> = match reloaded.finish_query(&pending, &ans, &mut rng) {
             Ok(v) => v,
             Err(_) => return -14,
         };

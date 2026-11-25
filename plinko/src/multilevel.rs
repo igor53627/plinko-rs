@@ -323,6 +323,44 @@ impl MultiLevelParams {
                     "total_hints per level must fit in u32",
                 ));
             }
+            let max_vec_bytes: usize = isize::MAX as usize;
+            let primary_bytes: usize = spec
+                .num_primary
+                .checked_mul(record_size)
+                .filter(|&n| n <= max_vec_bytes)
+                .ok_or(MultiLevelError::InvalidParams(
+                    "primary parity storage overflow",
+                ))?;
+            let backup_bytes: usize = spec
+                .num_backup
+                .checked_mul(record_size)
+                .filter(|&n| n <= max_vec_bytes)
+                .ok_or(MultiLevelError::InvalidParams(
+                    "backup parity storage overflow",
+                ))?;
+            let _ = primary_bytes
+                .checked_add(backup_bytes)
+                .and_then(|n| n.checked_add(backup_bytes))
+                .ok_or(MultiLevelError::InvalidParams(
+                    "hint parity storage overflow",
+                ))?;
+            let words: usize = record_size.div_ceil(8);
+            let acc_word_bytes: usize = words.checked_mul(8).ok_or(
+                MultiLevelError::InvalidParams("accumulator word size overflow"),
+            )?;
+            let acc_hints: usize = spec
+                .num_backup
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(spec.num_primary))
+                .ok_or(MultiLevelError::InvalidParams(
+                    "accumulator hint count overflow",
+                ))?;
+            let _ = acc_hints
+                .checked_mul(acc_word_bytes)
+                .filter(|&n| n <= max_vec_bytes)
+                .ok_or(MultiLevelError::InvalidParams(
+                    "accumulator storage overflow",
+                ))?;
         }
         Ok(Self {
             num_entries,
@@ -935,6 +973,18 @@ impl LevelState {
         block_end: usize,
         threads: usize,
     ) {
+        let _ =
+            self.fill_parities_range_timed(database, num_entries, block_start, block_end, threads);
+    }
+
+    fn fill_parities_range_timed(
+        &mut self,
+        database: &[u8],
+        num_entries: usize,
+        block_start: usize,
+        block_end: usize,
+        threads: usize,
+    ) -> (u64, u64) {
         let r: usize = self.record_size;
         let words: usize = r.div_ceil(8);
         let workers: usize = effective_threads(threads, block_end.saturating_sub(block_start));
@@ -953,7 +1003,7 @@ impl LevelState {
                 workers,
                 words,
                 &selectors,
-            );
+            )
         } else {
             self.fill_atomic(
                 database,
@@ -963,7 +1013,7 @@ impl LevelState {
                 workers,
                 words,
                 &selectors,
-            );
+            )
         }
     }
 
@@ -977,12 +1027,16 @@ impl LevelState {
         workers: usize,
         words: usize,
         selectors: &[u8],
-    ) {
+    ) -> (u64, u64) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_total: std::time::Instant = std::time::Instant::now();
         let spec: LevelSpec = self.spec;
         let r: usize = self.record_size;
         let next_block: AtomicUsize = AtomicUsize::new(block_start);
         let block_key_cipher: &Aes128 = &self.block_key_cipher;
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_scan: std::time::Instant = std::time::Instant::now();
         let partials: Vec<(Vec<u64>, Vec<u64>, Vec<u64>)> = run_scoped_workers(workers, || {
             let mut reg: Vec<u64> = vec![0u64; spec.num_primary * words];
             let mut b0: Vec<u64> = vec![0u64; spec.num_backup * words];
@@ -1027,6 +1081,8 @@ impl LevelState {
             }
             (reg, b0, b1)
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        let scan_ns: u64 = t_scan.elapsed().as_nanos() as u64;
 
         let mut reg_total: Vec<u64> = vec![0u64; spec.num_primary * words];
         let mut b0_total: Vec<u64> = vec![0u64; spec.num_backup * words];
@@ -1040,6 +1096,16 @@ impl LevelState {
         store_words_into_bytes(&reg_total, words, r, &mut self.primary_parities);
         store_words_into_bytes(&b0_total, words, r, &mut self.backup_parities_0);
         store_words_into_bytes(&b1_total, words, r, &mut self.backup_parities_1);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let total_ns: u64 = t_total.elapsed().as_nanos() as u64;
+            (total_ns.saturating_sub(scan_ns), scan_ns)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            (0, 0)
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1052,7 +1118,9 @@ impl LevelState {
         workers: usize,
         words: usize,
         selectors: &[u8],
-    ) {
+    ) -> (u64, u64) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_total: std::time::Instant = std::time::Instant::now();
         let spec: LevelSpec = self.spec;
         let r: usize = self.record_size;
         let reg_acc: Vec<AtomicU64> = (0..spec.num_primary * words)
@@ -1068,6 +1136,8 @@ impl LevelState {
         let block_key_cipher: &Aes128 = &self.block_key_cipher;
         let color_cipher: &Aes128 = &self.color_cipher;
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let t_scan: std::time::Instant = std::time::Instant::now();
         let _ = run_scoped_workers(workers, || {
             let mut entry: Vec<u64> = vec![0u64; words];
             loop {
@@ -1139,10 +1209,22 @@ impl LevelState {
                 }
             }
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        let scan_ns: u64 = t_scan.elapsed().as_nanos() as u64;
 
         store_atomic_into_bytes(&reg_acc, words, r, &mut self.primary_parities);
         store_atomic_into_bytes(&b0_acc, words, r, &mut self.backup_parities_0);
         store_atomic_into_bytes(&b1_acc, words, r, &mut self.backup_parities_1);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let total_ns: u64 = t_total.elapsed().as_nanos() as u64;
+            (total_ns.saturating_sub(scan_ns), scan_ns)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            (0, 0)
+        }
     }
 }
 
@@ -1160,6 +1242,9 @@ pub struct MultiLevelQuery {
 /// Wire response returned by the server for a [`MultiLevelQuery`].
 #[derive(Debug, Clone)]
 pub struct MultiLevelAnswer {
+    /// Server database snapshot epoch at which this answer was computed.
+    /// Must match [`MultiLevelClient::epoch`] when passed to [`MultiLevelClient::finish_query`].
+    pub snapshot_epoch: u64,
     /// XOR parity of all queried entries with `colors[a] == 0`.
     pub parity_0: Vec<u8>,
     /// XOR parity of all queried entries with `colors[a] == 1`.
@@ -1257,8 +1342,8 @@ impl MultiLevelClient {
 
     /// Runs `HintInit` on the first `sample_blocks` blocks of level `level_idx` using an
     /// isolated scratch `LevelState` so no live client hint state is mutated, and returns
-    /// only the elapsed fill duration (excluding scratch-state allocation and setup). Used to
-    /// measure real per-block `HintInit` throughput at massive scales (such as Ethereum scale).
+    /// `(fixed_duration, scan_duration)` separating one-time accumulator setup/writeback
+    /// from per-block scanning work. Used to extrapolate `HintInit` throughput accurately.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bench_level_blocks(
         params: &MultiLevelParams,
@@ -1267,19 +1352,28 @@ impl MultiLevelClient {
         sample_db: &[u8],
         sample_blocks: usize,
         threads: usize,
-    ) -> std::time::Duration {
+    ) -> (std::time::Duration, std::time::Duration) {
         let spec: LevelSpec = params.levels[level_idx];
         let mut scratch: LevelState =
             LevelState::new_zeroed(spec, params.record_size, seed, level_idx);
         let num_entries: usize = sample_blocks * spec.block_size;
-        let t0: std::time::Instant = std::time::Instant::now();
-        scratch.fill_parities_range(sample_db, num_entries, 0, sample_blocks, threads);
-        t0.elapsed()
+        let (fixed_ns, scan_ns) =
+            scratch.fill_parities_range_timed(sample_db, num_entries, 0, sample_blocks, threads);
+        (
+            std::time::Duration::from_nanos(fixed_ns),
+            std::time::Duration::from_nanos(scan_ns),
+        )
     }
 
     /// Returns the protocol parameters.
     pub fn params(&self) -> &MultiLevelParams {
         &self.params
+    }
+
+    /// Returns the client's current database snapshot epoch (starts at `0` at `HintInit`,
+    /// incremented on each `apply_delta` / `apply_deltas_batch`, and persisted across checkpoints).
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Returns remaining unused backups per level.
@@ -1318,12 +1412,13 @@ impl MultiLevelClient {
         }
         let mut out: HashingWriter<W> = HashingWriter::new(writer);
 
-        let mut header: [u8; 28] = [0u8; 28];
+        let mut header: [u8; 36] = [0u8; 36];
         header[0..8].copy_from_slice(MAGIC);
         header[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
         header[12..20].copy_from_slice(&(self.params.num_entries as u64).to_le_bytes());
         header[20..24].copy_from_slice(&(self.params.record_size as u32).to_le_bytes());
         header[24..28].copy_from_slice(&(self.levels.len() as u32).to_le_bytes());
+        header[28..36].copy_from_slice(&self.epoch.to_le_bytes());
         out.write_hashed(&header)?;
 
         let r: usize = self.params.record_size;
@@ -1398,7 +1493,7 @@ impl MultiLevelClient {
     ) -> Result<Self, MultiLevelError> {
         let mut inp: HashingReader<R> = HashingReader::new(reader);
 
-        let mut header: [u8; 28] = [0u8; 28];
+        let mut header: [u8; 36] = [0u8; 36];
         inp.read_hashed(&mut header)?;
         if &header[0..8] != MAGIC {
             return Err(MultiLevelError::InvalidFormat("bad magic bytes"));
@@ -1410,6 +1505,7 @@ impl MultiLevelClient {
             .map_err(|_| MultiLevelError::InvalidFormat("num_entries overflow"))?;
         let record_size: usize = u32_at(&header, 20) as usize;
         let num_levels: usize = u32_at(&header, 24) as usize;
+        let epoch: u64 = u64_at(&header, 28);
         if num_levels == 0 || num_levels > MAX_LEVELS {
             return Err(MultiLevelError::InvalidFormat("num_levels out of range"));
         }
@@ -1666,15 +1762,44 @@ impl MultiLevelClient {
             params,
             levels,
             session_id: next_session_id(),
-            epoch: 0,
+            epoch,
             next_query_id: 1,
             in_flight: HashMap::new(),
         })
     }
 
+    /// Computes the exact serialized byte length of this client's checkpoint, accounting
+    /// only for active overrides and remaining unconsumed backups.
+    fn serialized_byte_len(&self) -> Option<usize> {
+        let r: usize = self.params.record_size;
+        // 36-byte header + 32-byte BLAKE3 trailer.
+        let mut total: usize = 36 + 32;
+        for level in &self.levels {
+            let spec: LevelSpec = level.spec;
+            let remaining_backups: usize = spec.num_backup.saturating_sub(level.next_backup);
+            let ov_count: usize = level
+                .slots
+                .iter()
+                .filter(|s| s.override_entry.is_some())
+                .count();
+            // 36-byte level header + 4-byte backend/reserved + 4-byte ov_count.
+            total = total.checked_add(44)?;
+            total = total.checked_add(spec.num_primary.checked_mul(5)?)?;
+            total = total.checked_add(ov_count.checked_mul(12)?)?;
+            total = total.checked_add(spec.num_primary.checked_mul(r)?)?;
+            let rem_backup_bytes: usize = remaining_backups.checked_mul(r)?;
+            total = total.checked_add(rem_backup_bytes)?;
+            total = total.checked_add(rem_backup_bytes)?;
+        }
+        Some(total)
+    }
+
     /// Serializes this client's hint set into an in-memory byte vector.
     pub fn to_bytes(&self) -> Result<Vec<u8>, MultiLevelError> {
-        let mut buf: Vec<u8> = Vec::with_capacity(self.hint_memory_bytes() + 256);
+        let mut buf: Vec<u8> = Vec::new();
+        if let Some(cap) = self.serialized_byte_len() {
+            let _ = buf.try_reserve_exact(cap);
+        }
         self.write_hints(&mut buf)?;
         Ok(buf)
     }
@@ -1787,7 +1912,7 @@ impl MultiLevelClient {
     /// The slot is permanently marked `retired` so no future query can reuse the hint
     /// that may have reached the server, while removing the in-flight reservation so
     /// subsequent [`MultiLevelClient::write_hints`] checkpoints succeed.
-    pub fn abort_query(&mut self, pending: PendingMultiLevelQuery) -> Result<(), MultiLevelError> {
+    pub fn abort_query(&mut self, pending: &PendingMultiLevelQuery) -> Result<(), MultiLevelError> {
         if pending.session_id != self.session_id {
             return Err(MultiLevelError::UnknownPendingQuery {
                 query_id: pending.query_id,
@@ -1817,11 +1942,14 @@ impl MultiLevelClient {
     /// Reconstructs `DB[index]` from the server's answer and runs failure-private `Refresh`
     /// (Fig. 3, Lemma 9) on all failed levels `0..pending.level` and on `pending.level`.
     ///
-    /// Validates answer parity lengths, session/reservation binding, snapshot epoch, and backup
-    /// availability across all affected levels before mutating any hint slot.
+    /// Borrows `pending` so the caller retains ownership to retry or call
+    /// [`MultiLevelClient::abort_query`] if `answer` has invalid parity lengths or a mismatched
+    /// server snapshot epoch. Validates answer parity lengths, session/reservation binding,
+    /// client and server snapshot epochs, and backup availability across all affected levels
+    /// before mutating any hint slot.
     pub fn finish_query<R: Rng + ?Sized>(
         &mut self,
-        pending: PendingMultiLevelQuery,
+        pending: &PendingMultiLevelQuery,
         answer: &MultiLevelAnswer,
         rng: &mut R,
     ) -> Result<Vec<u8>, MultiLevelError> {
@@ -1860,6 +1988,14 @@ impl MultiLevelClient {
             slot.retired = true;
             return Err(MultiLevelError::SnapshotMismatch {
                 query_epoch: res.epoch,
+                current_epoch: self.epoch,
+            });
+        }
+        if answer.snapshot_epoch != self.epoch {
+            // Reject stale/ahead server answer without consuming the reservation so caller
+            // can retry against an up-to-date server snapshot or call `abort_query`.
+            return Err(MultiLevelError::SnapshotMismatch {
+                query_epoch: answer.snapshot_epoch,
                 current_epoch: self.epoch,
             });
         }
@@ -2148,11 +2284,12 @@ pub struct MultiLevelServer;
 
 impl MultiLevelServer {
     /// Validates `query` and `database` bounds, then computes both color parities
-    /// `(parity_0, parity_1)` for `query`.
+    /// `(parity_0, parity_1)` tagged with the server's `snapshot_epoch`.
     pub fn answer(
         database: &[u8],
         params: &MultiLevelParams,
         query: &MultiLevelQuery,
+        snapshot_epoch: u64,
     ) -> Result<MultiLevelAnswer, MultiLevelError> {
         let expected_db: usize = params
             .num_entries
@@ -2201,7 +2338,11 @@ impl MultiLevelServer {
             }
         }
 
-        Ok(MultiLevelAnswer { parity_0, parity_1 })
+        Ok(MultiLevelAnswer {
+            snapshot_epoch,
+            parity_0,
+            parity_1,
+        })
     }
 }
 
@@ -2788,8 +2929,8 @@ mod tests {
                 let pending: PendingMultiLevelQuery = client.prepare_query(idx, &mut rng).unwrap();
                 level_hits[pending.level] += 1;
                 let answer: MultiLevelAnswer =
-                    MultiLevelServer::answer(&db, &params, &pending.query).unwrap();
-                let recovered: Vec<u8> = client.finish_query(pending, &answer, &mut rng).unwrap();
+                    MultiLevelServer::answer(&db, &params, &pending.query, client.epoch()).unwrap();
+                let recovered: Vec<u8> = client.finish_query(&pending, &answer, &mut rng).unwrap();
                 assert_eq!(
                     &recovered[..],
                     &db[idx * record_size..(idx + 1) * record_size],
@@ -2858,8 +2999,8 @@ mod tests {
             let idx: usize = rng.gen_range(0..num_entries);
             let pending: PendingMultiLevelQuery = client.prepare_query(idx, &mut rng).unwrap();
             let answer: MultiLevelAnswer =
-                MultiLevelServer::answer(&db, &params, &pending.query).unwrap();
-            let got: Vec<u8> = client.finish_query(pending, &answer, &mut rng).unwrap();
+                MultiLevelServer::answer(&db, &params, &pending.query, client.epoch()).unwrap();
+            let got: Vec<u8> = client.finish_query(&pending, &answer, &mut rng).unwrap();
             assert_eq!(&got[..], &db[idx * record_size..(idx + 1) * record_size]);
 
             let mut delta: Vec<u8> = vec![0u8; record_size];
@@ -2917,8 +3058,9 @@ mod tests {
                 let pending: PendingMultiLevelQuery =
                     restored.prepare_query(idx, &mut rng).unwrap();
                 let ans: MultiLevelAnswer =
-                    MultiLevelServer::answer(&db, &params, &pending.query).unwrap();
-                let got: Vec<u8> = restored.finish_query(pending, &ans, &mut rng).unwrap();
+                    MultiLevelServer::answer(&db, &params, &pending.query, restored.epoch())
+                        .unwrap();
+                let got: Vec<u8> = restored.finish_query(&pending, &ans, &mut rng).unwrap();
                 assert_eq!(&got[..], &db[idx * record_size..(idx + 1) * record_size]);
                 queried.push(idx);
 
@@ -2934,6 +3076,7 @@ mod tests {
 
             let mut reloaded: MultiLevelClient =
                 MultiLevelClient::from_bytes(&mid_bytes, &seed).unwrap();
+            assert_eq!(reloaded.epoch(), restored.epoch());
             assert_eq!(reloaded.to_bytes().unwrap(), mid_bytes);
             verify_all_parities_exact(&reloaded, &db);
 
@@ -2947,8 +3090,9 @@ mod tests {
                 let pending: PendingMultiLevelQuery =
                     reloaded.prepare_query(idx, &mut rng).unwrap();
                 let ans: MultiLevelAnswer =
-                    MultiLevelServer::answer(&db, &params, &pending.query).unwrap();
-                let got: Vec<u8> = reloaded.finish_query(pending, &ans, &mut rng).unwrap();
+                    MultiLevelServer::answer(&db, &params, &pending.query, reloaded.epoch())
+                        .unwrap();
+                let got: Vec<u8> = reloaded.finish_query(&pending, &ans, &mut rng).unwrap();
                 assert_eq!(&got[..], &db[idx * record_size..(idx + 1) * record_size]);
 
                 let mut delta: Vec<u8> = vec![0u8; record_size];
@@ -3034,33 +3178,53 @@ mod tests {
         let p2: PendingMultiLevelQuery = client.prepare_query(7, &mut rng).unwrap();
         assert_ne!((p1.level, p1.slot_idx), (p2.level, p2.slot_idx));
 
-        // 2. Truncated answer is rejected without consuming or corrupting the reservation.
+        // 2. Truncated answer is rejected without consuming the handle or reservation,
+        //    so the caller can retry or abort without cloning `p1`.
         let bad_ans: MultiLevelAnswer = MultiLevelAnswer {
+            snapshot_epoch: client.epoch(),
             parity_0: vec![0u8; record_size - 1],
             parity_1: vec![0u8; record_size],
         };
         assert_eq!(
-            client.finish_query(p1.clone(), &bad_ans, &mut rng),
+            client.finish_query(&p1, &bad_ans, &mut rng),
             Err(MultiLevelError::AnswerLengthMismatch {
                 expected: record_size,
                 actual: (record_size - 1, record_size),
             })
         );
 
-        // Completing p1 with the valid answer still succeeds.
+        // Server answer from a mismatched snapshot epoch is also rejected without consuming p1.
+        let wrong_epoch_ans: MultiLevelAnswer =
+            MultiLevelServer::answer(&db, &params, &p1.query, client.epoch() + 1).unwrap();
+        assert_eq!(
+            client.finish_query(&p1, &wrong_epoch_ans, &mut rng),
+            Err(MultiLevelError::SnapshotMismatch {
+                query_epoch: 1,
+                current_epoch: 0,
+            })
+        );
+
+        // Completing p1 with the valid matching-epoch answer still succeeds, and a second
+        // completion with the same handle is rejected.
         let good_ans1: MultiLevelAnswer =
-            MultiLevelServer::answer(&db, &params, &p1.query).unwrap();
-        let got1: Vec<u8> = client.finish_query(p1, &good_ans1, &mut rng).unwrap();
+            MultiLevelServer::answer(&db, &params, &p1.query, client.epoch()).unwrap();
+        let got1: Vec<u8> = client.finish_query(&p1, &good_ans1, &mut rng).unwrap();
         assert_eq!(&got1[..], &db[7 * record_size..8 * record_size]);
+        assert_eq!(
+            client.finish_query(&p1, &good_ans1, &mut rng),
+            Err(MultiLevelError::UnknownPendingQuery {
+                query_id: p1.query_id,
+            })
+        );
 
         // 3. Interleaved delta advances snapshot epoch, so stale p2 is rejected without corrupting state.
         let ans2_stale: MultiLevelAnswer =
-            MultiLevelServer::answer(&db, &params, &p2.query).unwrap();
+            MultiLevelServer::answer(&db, &params, &p2.query, client.epoch()).unwrap();
         let delta: Vec<u8> = vec![0x55; record_size];
         xor_bytes(&mut db[0..record_size], &delta);
         client.apply_delta(0, &delta).unwrap();
         assert_eq!(
-            client.finish_query(p2, &ans2_stale, &mut rng),
+            client.finish_query(&p2, &ans2_stale, &mut rng),
             Err(MultiLevelError::SnapshotMismatch {
                 query_epoch: 0,
                 current_epoch: 1,
@@ -3074,14 +3238,14 @@ mod tests {
             offsets: vec![],
         };
         assert!(matches!(
-            MultiLevelServer::answer(&db, &params, &bad_q),
+            MultiLevelServer::answer(&db, &params, &bad_q, client.epoch()),
             Err(MultiLevelError::InvalidQuery(_))
         ));
         bad_q.level = 0;
         bad_q.colors = vec![0; params.levels[0].num_blocks];
         bad_q.offsets = vec![params.levels[0].block_size as u32; params.levels[0].num_blocks];
         assert!(matches!(
-            MultiLevelServer::answer(&db, &params, &bad_q),
+            MultiLevelServer::answer(&db, &params, &bad_q, client.epoch()),
             Err(MultiLevelError::InvalidQuery(_))
         ));
 
@@ -3102,16 +3266,18 @@ mod tests {
             MultiLevelClient::hint_init(tiny_params.clone(), &seed, &db, 1).unwrap();
         // Consume the single backup on query 1, then trigger exhaustion on query 2.
         let q1: PendingMultiLevelQuery = tiny_client.prepare_query(3, &mut rng).unwrap();
-        let a1: MultiLevelAnswer = MultiLevelServer::answer(&db, &tiny_params, &q1.query).unwrap();
-        let _ = tiny_client.finish_query(q1, &a1, &mut rng);
+        let a1: MultiLevelAnswer =
+            MultiLevelServer::answer(&db, &tiny_params, &q1.query, tiny_client.epoch()).unwrap();
+        let _ = tiny_client.finish_query(&q1, &a1, &mut rng);
 
         // Exhaust any remaining backups so next query is guaranteed to hit BackupExhausted.
         tiny_client.levels[0].next_backup = tiny_client.levels[0].spec.num_backup;
         let q2: PendingMultiLevelQuery = tiny_client.prepare_query(4, &mut rng).unwrap();
-        let a2: MultiLevelAnswer = MultiLevelServer::answer(&db, &tiny_params, &q2.query).unwrap();
+        let a2: MultiLevelAnswer =
+            MultiLevelServer::answer(&db, &tiny_params, &q2.query, tiny_client.epoch()).unwrap();
         let expected_rec: Vec<u8> = db[4 * record_size..5 * record_size].to_vec();
         assert_eq!(
-            tiny_client.finish_query(q2, &a2, &mut rng),
+            tiny_client.finish_query(&q2, &a2, &mut rng),
             Err(MultiLevelError::BackupExhausted {
                 level: 0,
                 recovered: Some(expected_rec),
@@ -3139,21 +3305,21 @@ mod tests {
             Some(MultiLevelError::QueryInFlight)
         );
         let (ab_lvl, ab_slot) = (abandoned.level, abandoned.slot_idx);
-        client.abort_query(abandoned.clone()).unwrap();
+        client.abort_query(&abandoned).unwrap();
         assert!(client.levels[ab_lvl].slots[ab_slot as usize].retired);
         assert!(!client.levels[ab_lvl].slots[ab_slot as usize].reserved);
 
         // Double abort or finishing an aborted query must fail cleanly.
         assert_eq!(
-            client.abort_query(abandoned.clone()),
+            client.abort_query(&abandoned),
             Err(MultiLevelError::UnknownPendingQuery {
                 query_id: abandoned.query_id,
             })
         );
         let ans_ab: MultiLevelAnswer =
-            MultiLevelServer::answer(&db, &params, &abandoned.query).unwrap();
+            MultiLevelServer::answer(&db, &params, &abandoned.query, client.epoch()).unwrap();
         assert_eq!(
-            client.finish_query(abandoned.clone(), &ans_ab, &mut rng),
+            client.finish_query(&abandoned, &ans_ab, &mut rng),
             Err(MultiLevelError::UnknownPendingQuery {
                 query_id: abandoned.query_id,
             })
@@ -3174,31 +3340,32 @@ mod tests {
         assert_eq!(p_other.query_id, p_live.query_id);
         assert_eq!(p_other.slot_idx, p_live.slot_idx);
         let ans_other: MultiLevelAnswer =
-            MultiLevelServer::answer(&db, &params, &p_other.query).unwrap();
+            MultiLevelServer::answer(&db, &params, &p_other.query, fresh_copy.epoch()).unwrap();
         assert_eq!(
-            reloaded.finish_query(p_other.clone(), &ans_other, &mut rng),
+            reloaded.finish_query(&p_other, &ans_other, &mut rng),
             Err(MultiLevelError::UnknownPendingQuery {
                 query_id: p_other.query_id,
             })
         );
         assert_eq!(
-            reloaded.abort_query(p_other.clone()),
+            reloaded.abort_query(&p_other),
             Err(MultiLevelError::UnknownPendingQuery {
                 query_id: p_other.query_id,
             })
         );
         // `reloaded`'s own reservation `p_live` is still intact and finishes cleanly.
         let ans_live: MultiLevelAnswer =
-            MultiLevelServer::answer(&db, &params, &p_live.query).unwrap();
-        let got_live: Vec<u8> = reloaded.finish_query(p_live, &ans_live, &mut rng).unwrap();
+            MultiLevelServer::answer(&db, &params, &p_live.query, reloaded.epoch()).unwrap();
+        let got_live: Vec<u8> = reloaded.finish_query(&p_live, &ans_live, &mut rng).unwrap();
         assert_eq!(&got_live[..], &db[12 * record_size..13 * record_size]);
 
         // Reloaded client can still serve queries and never picks the retired slot.
         for _ in 0..10 {
             let p: PendingMultiLevelQuery = reloaded.prepare_query(11, &mut rng).unwrap();
             assert_ne!((p.level, p.slot_idx), (ab_lvl, ab_slot));
-            let a: MultiLevelAnswer = MultiLevelServer::answer(&db, &params, &p.query).unwrap();
-            let got: Vec<u8> = reloaded.finish_query(p, &a, &mut rng).unwrap();
+            let a: MultiLevelAnswer =
+                MultiLevelServer::answer(&db, &params, &p.query, reloaded.epoch()).unwrap();
+            let got: Vec<u8> = reloaded.finish_query(&p, &a, &mut rng).unwrap();
             assert_eq!(&got[..], &db[11 * record_size..12 * record_size]);
         }
     }
@@ -3214,6 +3381,7 @@ mod tests {
         let client: MultiLevelClient =
             MultiLevelClient::hint_init(params.clone(), &seed, &db, 1).unwrap();
         let valid: Vec<u8> = client.to_bytes().unwrap();
+        assert_eq!(client.serialized_byte_len(), Some(valid.len()));
 
         assert_eq!(
             MultiLevelClient::from_bytes_with_limit(&valid, &seed, 1024).err(),
@@ -3221,6 +3389,22 @@ mod tests {
                 "checkpoint size limit exceeded"
             ))
         );
+
+        // Unrepresentable parity/accumulator sizes in `custom` must return InvalidParams before allocation.
+        assert!(matches!(
+            MultiLevelParams::custom(
+                2,
+                u32::MAX as usize,
+                vec![LevelSpec {
+                    block_size: 2,
+                    num_blocks: 1,
+                    num_primary: (isize::MAX as usize) / (u32::MAX as usize) + 1,
+                    num_backup: 1,
+                    backend: LevelBackend::FlatAes,
+                }],
+            ),
+            Err(MultiLevelError::InvalidParams(_))
+        ));
 
         // Overflowing kappa or query_budget in constructors must return the specific InvalidParams error, not panic.
         assert_eq!(
