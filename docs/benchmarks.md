@@ -21,6 +21,9 @@ These numbers are from the code of November 2026. All are from one machine
 | `protocol::compute_hints`, 24 blocks of w = 4096                             | 47.7 s on 1 thread, 2.36 s on 24 threads                   | [`hint_generation.md`](hint_generation.md#worker-threads)                |
 | Constant-time path, 24 blocks of w = 1024                                    | 291.3 s on 1 thread, 14.1 s on 24 threads                  | [`constant_time_mode.md`](constant_time_mode.md#worker-threads)          |
 | Constant-time path (feature `tee`), one thread                               | 16.7 ms for each record                                    | [`trust_model.md`](trust_model.md#tee-mode)                              |
+| Multi-level 2-level Flat B (`2^20` recs, 32T, experimental)                  | 74.1 ms HintInit, 490.8 KiB hints, 324.4 us 1-rec update   | [`multilevel_pir.md`](multilevel_pir.md#measured-benchmarks)             |
+| Multi-level 2-level Flat B (`2^24` recs, 32T, experimental)                  | 1.09 s HintInit, 1.86 MiB hints (6-level: 3.44 s, 1.81 MiB)| [`multilevel_pir.md`](multilevel_pir.md#measured-benchmarks)             |
+| Multi-level 2-level Flat B (mainnet v3 scale ref, extrapolated)              | 0.64 core-h HintInit, 29.44 MiB hints, 41.4 ms / 3k upd    | [`multilevel_pir.md`](multilevel_pir.md#measured-benchmarks)             |
 
 Synthetic database: `cargo run --release -p plinko --bin gen_synthetic -- --help`.
 

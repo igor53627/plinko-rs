@@ -5,7 +5,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | Link | URL |
 |------|-----|
 | DeepWiki (agent index) | [deepwiki.com/igor53627/plinko-rs](https://deepwiki.com/igor53627/plinko-rs) |
-| Protocol demo (GitHub Pages) | [igor53627.github.io/plinko-rs](https://igor53627.github.io/plinko-rs/): the page [`protocol-visualization.html`](protocol-visualization.html), in English and in Russian ([`?lang=ru`](https://igor53627.github.io/plinko-rs/?lang=ru)) |
+| Protocol demo (GitHub Pages) | [igor53627.github.io/plinko-rs](https://igor53627.github.io/plinko-rs/): the page [`protocol-visualization.html`](protocol-visualization.html) (1-level Plinko + interactive 2-level multi-level PIR), in English and in Russian ([`?lang=ru`](https://igor53627.github.io/plinko-rs/?lang=ru)) |
 
 ## Canonical (use for implementation)
 
@@ -18,6 +18,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | [`trust_model.md`](trust_model.md) | Who runs HintInit, who holds the seed, what each party learns |
 | [`integrity.md`](integrity.md) | What the client can check and what it must trust; the library gives no integrity of an answer |
 | [`online_protocol.md`](online_protocol.md) | Query, decoy, query format, retry rule, query limit; deviations from the paper |
+| [`multilevel_pir.md`](multilevel_pir.md) | Experimental multi-level PIR prototype (`ePrint 2026/1273`), `PLNKMLH1` checkpoints, benchmarks, and WASM |
 | [`keyword_lookup.md`](keyword_lookup.md) | Proposal: lookup by key through a cuckoo table (not implemented) |
 | [`constant_time_mode.md`](constant_time_mode.md) | TEE / constant-time HintInit |
 | [`update_strategy.md`](update_strategy.md) | Database versions, deltas, restart, cost, rule for a database that grows, what is not implemented |
