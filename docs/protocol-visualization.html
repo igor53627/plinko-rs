@@ -175,8 +175,18 @@ button.cell:hover { border-color: var(--ink); }
 }
 .cell.is-known { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.2em; }
 .hints { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; margin-bottom: 1rem; }
+.hints.ml-bak { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .hints .cell { font-size: 0.8rem; line-height: 1.35; padding: 0.25rem 0; }
 .hints .cell strong { display: block; font-family: var(--serif); font-size: 0.85rem; font-weight: 400; color: var(--muted); }
+.ml-level { margin-bottom: 0.9rem; padding-top: 0.5rem; border-top: 1px solid var(--rule); }
+.ml-level:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.ml-level:last-child { margin-bottom: 0; }
+.ml-level-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.45rem; }
+.ml-level-head h3 { margin: 0; }
+.ml-badge { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+.ml-badge.is-hit { color: var(--pmns); font-weight: 700; }
+.ml-badge.is-miss { color: var(--prp); font-weight: 700; }
+.ml-sub { font-size: 0.85rem; color: var(--muted); margin: 0.25rem 0 0.35rem; }
 .cell.took { background: var(--hint); border-color: var(--hint); color: var(--field); }
 .cell.took strong { color: var(--field); }
 .cell.skipped { border: 2px dashed var(--hint); }
@@ -184,6 +194,7 @@ button.cell:hover { border-color: var(--ink); }
 .cell.used { color: var(--muted); border-style: dotted; text-decoration: line-through; }
 .cell.used.took { color: var(--field); }
 .cell.promoted { border: 2px solid var(--hint); }
+.cell.refreshed { border: 2px solid var(--prp); }
 .steps { margin: 0.8rem 0 0; padding-left: 1.3rem; max-width: 46rem; }
 .steps li { margin-bottom: 0.35rem; }
 .steps code, figcaption code { font-family: var(--mono); font-size: 0.92em; }
@@ -204,6 +215,7 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
     .bench { grid-template-columns: minmax(0, 1fr); }
     .plot.padded { padding: 0.7rem; }
     .hints { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .hints.ml-bak { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 40rem) {
     .rounds { font-size: 0.9rem; }
@@ -482,26 +494,108 @@ footer { margin-top: 3rem; padding-top: 0.8rem; border-top: 1px solid var(--rule
         </figure>
     </section>
 
+    <section class="part">
+        <h2 data-i18n="ml.title">Two levels cut hint size and HintInit cost</h2>
+        <div>
+            <p data-i18n="ml.p1">One-level Plinko pays the full security factor lambda on every hint: about 2 * lambda * sqrt(N) hints.
+               The experimental multi-level prototype in plinko-rs (<a href="https://eprint.iacr.org/2026/1273">ePrint 2026/1273</a>,
+               Section 4) splits the database across levels with shrinking block sizes. Level 1 uses larger blocks and far fewer
+               primary hints, so it handles most queries with a short message and misses with probability about 1 / kappa.</p>
+            <p data-i18n="ml.p2">When Level 1 misses, the client falls back to Level 2, whose blocks are smaller by a factor of kappa.
+               Shrinking the block size cancels the kappa factor in the Level 2 hint count, keeping total hints around
+               O(ln(kappa) * sqrt(N)) while driving the combined miss probability down to exp(-kappa). Because the hint set is
+               small, Variant B (FlatAes) can scan hints directly with batched AES instead of running an iPRF.</p>
+            <p data-i18n="ml.p3">A miss on Level 1 leaks that none of its hints held the target record. To keep both levels independent of
+               past queries, failure-private Refresh (Lemma 9) promotes a Binomial sample of Level 1 backups with the recovered
+               record programmed in, always replaces the spent slot on the winning level via PromoteIn, and with probability
+               (1 - 1/(2*w))^M sweeps every matching slot on the winning level via PromoteOut. Dynamic updates XOR deltas into
+               both levels, respecting programmed overrides.</p>
+        </div>
+        <aside>
+            <h3 data-i18n="aside.title">This figure and plinko-rs</h3>
+            <table data-i18n="ml.table">
+                <tr><th></th><th>Figure</th><th>plinko::multilevel (2-level Flat B)</th></tr>
+                <tr><td>Level 1 blocks</td><td>6 of 4 (w1 = 4)</td><td>c0 blocks of w0 ~ sqrt(N)/2</td></tr>
+                <tr><td>Level 2 blocks</td><td>12 of 2 (w2 = 2)</td><td>c1 blocks of w1 = w0 / kappa</td></tr>
+                <tr><td>Primary hints</td><td>8 + 8 (miss 3.4%)</td><td>2*w0*ln(kappa) + 2*w0 (miss exp(-kappa))</td></tr>
+                <tr><td>Hint map</td><td>toy hash per block</td><td>batched AES-128 (FlatAes) or iPRF</td></tr>
+                <tr><td>Backups</td><td>6 + 6</td><td>3*Q on L1, scaled margin on L2</td></tr>
+            </table>
+        </aside>
+        <figure>
+            <div class="controls" style="padding: 0 0 0.9rem">
+                <div class="switch" role="group" aria-label="Multi-level action" data-i18n-label="ml.action">
+                    <button data-i18n="online.read" type="button" data-ml-mode="query" aria-pressed="true">Read a record</button>
+                    <button data-i18n="online.change" type="button" data-ml-mode="change" aria-pressed="false">Change a record</button>
+                </div>
+                <button data-i18n="online.reset" class="plain" type="button" id="ml-reset">Run HintInit again</button>
+            </div>
+            <div class="plot padded">
+                <div class="bench">
+                    <div>
+                        <h3 data-i18n="online.db">Database of the server</h3>
+                        <div class="db" id="ml-db"></div>
+                    </div>
+                    <div>
+                        <div class="ml-level">
+                            <div class="ml-level-head">
+                                <h3 data-i18n="ml.l1">Level 1 (6 blocks of 4)</h3>
+                                <span class="ml-badge" id="ml-l0-badge"></span>
+                            </div>
+                            <div class="hints" id="ml-l0-primary"></div>
+                            <div class="ml-sub" data-i18n="ml.backups">Backups (c0, c1)</div>
+                            <div class="hints ml-bak" id="ml-l0-backup"></div>
+                        </div>
+                        <div class="ml-level">
+                            <div class="ml-level-head">
+                                <h3 data-i18n="ml.l2">Level 2 fallback (12 blocks of 2)</h3>
+                                <span class="ml-badge" id="ml-l1-badge"></span>
+                            </div>
+                            <div class="hints" id="ml-l1-primary"></div>
+                            <div class="ml-sub" data-i18n="ml.backups">Backups (c0, c1)</div>
+                            <div class="hints ml-bak" id="ml-l1-backup"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <figcaption>
+                <span class="readout" id="ml-readout" aria-live="polite"></span>
+                <ol class="steps" id="ml-steps"></ol>
+                <span class="note" id="ml-check"></span>
+                <div class="key">
+                    <span><span class="cell is-now"></span><span data-i18n="legend.now">the record of the action</span></span>
+                    <span><span class="cell is-s0"></span><span data-i18n="ml.legend.c0">color 0 in the query</span></span>
+                    <span><span class="cell is-s1"></span><span data-i18n="ml.legend.c1">color 1 in the query</span></span>
+                    <span><span class="cell took"></span><span data-i18n="legend.action">hint of the action</span></span>
+                    <span><span class="cell promoted"></span><span data-i18n="ml.legend.promoted">slot with promoted backup</span></span>
+                    <span><span class="cell refreshed"></span><span data-i18n="ml.legend.refreshed">Level 1 slot refreshed after a miss</span></span>
+                </div>
+            </figcaption>
+        </figure>
+    </section>
+
     <section class="closing">
         <h2 data-i18n="cost.title">What each step costs</h2>
         <table data-i18n="cost.table">
-            <tr><th>Step</th><th>Work</th></tr>
-            <tr><td>HintInit (client)</td><td>One iPRF inverse for each record of the database: 2 * lambda candidate hints on average</td></tr>
-            <tr><td>Find a <span class="hint">hint</span> for an index</td><td>One iPRF inverse</td></tr>
-            <tr><td>Query (client)</td><td>c/2 iPRF forward calls, one for each block of the hint</td></tr>
-            <tr><td>Query message</td><td>c/8 bytes of block mask and c/2 offsets of 4 bytes</td></tr>
-            <tr><td>Answer (server)</td><td>XOR of c records into two parities</td></tr>
-            <tr><td>Update (client)</td><td>One iPRF inverse for each changed record</td></tr>
-            <tr><td>Query limit</td><td>One backup hint for each query; then a new HintInit</td></tr>
+            <tr><th>Step</th><th>1-level Plinko (Fig. 7)</th><th>2-level Flat B (experimental)</th></tr>
+            <tr><td>Hint memory</td><td>2 * lambda * w parities</td><td>About (2 * ln(kappa) + 2) * w0 + backups (~11x smaller at 2^20)</td></tr>
+            <tr><td>HintInit (client)</td><td>One iPRF inverse per record (~2 * lambda candidates)</td><td>Batched AES scan over small hint set (~146x faster at 2^20)</td></tr>
+            <tr><td>Find a <span class="hint">hint</span></td><td>One iPRF inverse</td><td>Scan Level 1 hints; fall back to Level 2 with prob ~1 / kappa</td></tr>
+            <tr><td>Query message</td><td>c/8 bytes of mask + c/2 offsets</td><td>c0 blocks on Level 1 hit; c1 = kappa * c0 blocks on Level 2 fallback</td></tr>
+            <tr><td>Answer (server)</td><td>XOR of c records into two parities</td><td>XOR of c0 (Level 1) or c1 (Level 2) records into two parities</td></tr>
+            <tr><td>Update (client)</td><td>One iPRF inverse per changed record</td><td>Scan both levels' hint sets + override index per changed record</td></tr>
+            <tr><td>Query limit</td><td>One backup hint per query; then a new HintInit</td><td>Backup pool per level (including failure-private Level 1 refreshes)</td></tr>
         </table>
         <p data-i18n="cost.scope" style="max-width: 40rem; margin-top: 1.2rem">plinko-rs is a library for a database of fixed-size records.
            Each client downloads the database and runs HintInit. The full Ethereum state is not a target: at that
-           size the download is 73.4 GB and HintInit needs about 300 core-hours (extrapolated).</p>
+           size the download is still 73.4 GB (1-level HintInit needs about 300 core-hours, and 2-level Flat B reduces
+           extrapolated HintInit CPU to about 0.64 core-hours, without changing the download cost).</p>
     </section>
 
     <footer data-i18n="page.footer">
         Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs,
-        <a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>.
+        <a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>;
+        Multi-level PIR prototype based on <a href="https://eprint.iacr.org/2026/1273">ePrint 2026/1273</a>.
         Code and documents: <a href="https://github.com/igor53627/plinko-rs">github.com/igor53627/plinko-rs</a>.
     </footer>
 </div>
@@ -814,6 +908,254 @@ function checkClient(world, client, server) {
 }
 
 // ---------------------------------------------------------------------------
+// Toy 2-level PIR prototype (ePrint 2026/1273, Section 4, Variant B FlatAes)
+// on the same 24-record database: Level 1 (6 blocks of 4) + Level 2 (12 of 2).
+// ---------------------------------------------------------------------------
+
+const ML_LEVELS = [
+    { blockSize: 4, numBlocks: 6, primary: 8, backup: 6 },
+    { blockSize: 2, numBlocks: 12, primary: 8, backup: 6 },
+];
+
+function mlEval(master, levelIdx, block, hintId) {
+    const spec = ML_LEVELS[levelIdx];
+    const h = prf(master, 40 + levelIdx, block, hintId);
+    return { color: h & 1, offset: (h >>> 1) & (spec.blockSize - 1) };
+}
+
+function mlEffective(master, levelIdx, slot, block) {
+    if (slot.override && slot.override.block === block) {
+        return { color: slot.override.color, offset: slot.override.offset };
+    }
+    return mlEval(master, levelIdx, block, slot.hintId);
+}
+
+function mlMakeClient(master, db) {
+    const levels = ML_LEVELS.map((spec, levelIdx) => {
+        const slots = Array.from({ length: spec.primary }, (_, j) => ({
+            hintId: j,
+            selector: prf(master, 50 + levelIdx, j) & 1,
+            override: null,
+            parity: 0,
+            promoted: false,
+        }));
+        const backups = Array.from({ length: spec.backup }, () => ({ p0: 0, p1: 0, used: false }));
+        for (let block = 0; block < spec.numBlocks; block++) {
+            for (let s = 0; s < spec.primary; s++) {
+                const { color, offset } = mlEval(master, levelIdx, block, s);
+                if (color === slots[s].selector) {
+                    slots[s].parity ^= db[block * spec.blockSize + offset];
+                }
+            }
+            for (let b = 0; b < spec.backup; b++) {
+                const { color, offset } = mlEval(master, levelIdx, block, spec.primary + b);
+                const val = db[block * spec.blockSize + offset];
+                if (color === 0) backups[b].p0 ^= val;
+                else backups[b].p1 ^= val;
+            }
+        }
+        return { spec, slots, backups, nextBackup: 0 };
+    });
+    return { levels, epoch: 0, step: 0 };
+}
+
+function mlFindMatches(master, levelIdx, level, index) {
+    const block = Math.floor(index / level.spec.blockSize);
+    const offset = index % level.spec.blockSize;
+    const matches = [];
+    for (let s = 0; s < level.spec.primary; s++) {
+        const slot = level.slots[s];
+        const eff = mlEffective(master, levelIdx, slot, block);
+        if (eff.offset === offset && eff.color === slot.selector) matches.push(s);
+    }
+    return { block, offset, matches };
+}
+
+function mlPromoteSlot(master, levelIdx, level, slotIdx, xBlock, xOffset, value, includeX) {
+    const b = level.nextBackup;
+    if (b >= level.spec.backup) return null;
+    level.nextBackup += 1;
+    const bak = level.backups[b];
+    bak.used = true;
+    const hintId = level.spec.primary + b;
+    const nat = mlEval(master, levelIdx, xBlock, hintId);
+    const newSelector = nat.color ^ 1;
+    const baseParity = newSelector === 0 ? bak.p0 : bak.p1;
+    const override = includeX
+        ? { block: xBlock, offset: xOffset, color: newSelector }
+        : { block: xBlock, offset: xOffset, color: newSelector ^ 1 };
+    const newParity = includeX ? (baseParity ^ value) : baseParity;
+    level.slots[slotIdx] = {
+        hintId,
+        selector: newSelector,
+        override,
+        parity: newParity,
+        promoted: true,
+    };
+    return { slotIdx, backupIdx: b, mode: includeX ? 'PromoteIn' : 'PromoteOut' };
+}
+
+function mlQuery(master, client, server, index) {
+    client.step += 1;
+    const step = client.step;
+    const probe0 = mlFindMatches(master, 0, client.levels[0], index);
+    const probe1 = probe0.matches.length ? null : mlFindMatches(master, 1, client.levels[1], index);
+
+    let winLevel = -1;
+    let probe = null;
+    if (probe0.matches.length) { winLevel = 0; probe = probe0; }
+    else if (probe1 && probe1.matches.length) { winLevel = 1; probe = probe1; }
+
+    if (winLevel < 0) {
+        return { error: 'no-hint', index, epoch: client.epoch };
+    }
+
+    const level = client.levels[winLevel];
+    const spec = level.spec;
+    const slotIdx = probe.matches[prf(master, 61, step, winLevel) % probe.matches.length];
+    const slot = level.slots[slotIdx];
+
+    // Plan Level 1 failure-private refresh (Lemma 9) before mutating any state.
+    const failedPicks = [];
+    if (winLevel === 1) {
+        const lvl0 = client.levels[0];
+        let k = 0;
+        const denom = 2 * lvl0.spec.blockSize; // 8 for w0 = 4
+        for (let i = 0; i < lvl0.spec.primary; i++) {
+            if (prf(master, 62, step, i) % denom === 0) k += 1;
+        }
+        const pool = Array.from({ length: lvl0.spec.primary }, (_, s) => s);
+        for (let i = 0; i < k && pool.length > 0; i++) {
+            const pick = prf(master, 63, step, i) % pool.length;
+            failedPicks.push(pool.splice(pick, 1)[0]);
+        }
+        if (lvl0.nextBackup + failedPicks.length > lvl0.spec.backup) {
+            return { error: 'no-backup', level: 0, index, epoch: client.epoch };
+        }
+    }
+    // Plan winning-level replacement (always PromoteIn) + optional PromoteOut sweep
+    // with probability p0 = (1 - 1/(2*w))^M (matching finish_query / Lemma 9).
+    const p0 = Math.pow(1 - 1 / (2 * spec.blockSize), spec.primary);
+    const doSweep = (prf(master, 65, step, winLevel) / 0x100000000) < p0;
+    const sweepSlots = doSweep ? [...probe.matches] : [];
+    const neededWinBackups = 1 + sweepSlots.length;
+    if (level.nextBackup + neededWinBackups > spec.backup) {
+        return { error: 'no-backup', level: winLevel, index, epoch: client.epoch };
+    }
+
+    // Build wire query: edit target block to opposite color + uniform offset.
+    const colors = [];
+    const offsets = [];
+    for (let blk = 0; blk < spec.numBlocks; blk++) {
+        if (blk === probe.block) {
+            colors.push(slot.selector ^ 1);
+            offsets.push(prf(master, 64, step, blk) % spec.blockSize);
+        } else {
+            const eff = mlEffective(master, winLevel, slot, blk);
+            colors.push(eff.color);
+            offsets.push(eff.offset);
+        }
+    }
+
+    // Stateless server computes both parities at the current snapshot epoch.
+    const answer = [0, 0];
+    for (let blk = 0; blk < spec.numBlocks; blk++) {
+        answer[colors[blk]] ^= server.db[blk * spec.blockSize + offsets[blk]];
+    }
+    const hintParity = slot.parity;
+    const selector = slot.selector;
+    const record = hintParity ^ answer[selector];
+
+    // Refresh failed Level 1 slots with PromoteIn, then always PromoteIn on spent slot
+    // and optionally sweep all matching slots on winLevel with PromoteOut.
+    const l0Refreshed = [];
+    if (winLevel === 1) {
+        const b0 = Math.floor(index / client.levels[0].spec.blockSize);
+        const o0 = index % client.levels[0].spec.blockSize;
+        for (const s0 of failedPicks) {
+            l0Refreshed.push(mlPromoteSlot(master, 0, client.levels[0], s0, b0, o0, record, true));
+        }
+    }
+    const winRefresh = mlPromoteSlot(master, winLevel, level, slotIdx, probe.block, probe.offset, record, true);
+    const winSweep = [];
+    for (const s of sweepSlots) {
+        winSweep.push(mlPromoteSlot(master, winLevel, level, s, probe.block, probe.offset, record, false));
+    }
+
+    return {
+        index, winLevel, block: probe.block, offset: probe.offset, matches: probe.matches,
+        slotIdx, selector, hintParity, colors, offsets, answer, record,
+        winRefresh, winSweep, l0Refreshed, epoch: client.epoch,
+        left: client.levels.map(l => l.spec.backup - l.nextBackup),
+    };
+}
+
+function mlChange(master, client, server, index, value) {
+    const old = server.db[index];
+    const change = old ^ value;
+    server.db[index] = value;
+    server.epoch += 1;
+    client.epoch += 1;
+
+    const touched = [];
+    for (let levelIdx = 0; levelIdx < client.levels.length; levelIdx++) {
+        const level = client.levels[levelIdx];
+        const block = Math.floor(index / level.spec.blockSize);
+        const offset = index % level.spec.blockSize;
+        for (let s = 0; s < level.spec.primary; s++) {
+            const slot = level.slots[s];
+            const eff = mlEffective(master, levelIdx, slot, block);
+            if (eff.offset === offset && eff.color === slot.selector) {
+                slot.parity ^= change;
+                touched.push({ level: levelIdx, kind: 'primary', id: s, override: Boolean(slot.override && slot.override.block === block) });
+            }
+        }
+        for (let b = level.nextBackup; b < level.spec.backup; b++) {
+            const nat = mlEval(master, levelIdx, block, level.spec.primary + b);
+            if (nat.offset === offset) {
+                if (nat.color === 0) level.backups[b].p0 ^= change;
+                else level.backups[b].p1 ^= change;
+                touched.push({ level: levelIdx, kind: 'backup', id: b, color: nat.color });
+            }
+        }
+    }
+    return { index, old, value, change, epoch: client.epoch, touched };
+}
+
+function checkMultiLevel(master, client, server) {
+    let checked = 0;
+    let wrong = 0;
+    for (let levelIdx = 0; levelIdx < client.levels.length; levelIdx++) {
+        const level = client.levels[levelIdx];
+        const spec = level.spec;
+        for (let s = 0; s < spec.primary; s++) {
+            const slot = level.slots[s];
+            let exp = 0;
+            for (let blk = 0; blk < spec.numBlocks; blk++) {
+                const eff = mlEffective(master, levelIdx, slot, blk);
+                if (eff.color === slot.selector) exp ^= server.db[blk * spec.blockSize + eff.offset];
+            }
+            checked += 1;
+            if (slot.parity !== exp) wrong += 1;
+        }
+        for (let b = level.nextBackup; b < spec.backup; b++) {
+            let exp0 = 0;
+            let exp1 = 0;
+            for (let blk = 0; blk < spec.numBlocks; blk++) {
+                const nat = mlEval(master, levelIdx, blk, spec.primary + b);
+                const val = server.db[blk * spec.blockSize + nat.offset];
+                if (nat.color === 0) exp0 ^= val;
+                else exp1 ^= val;
+            }
+            checked += 2;
+            if (level.backups[b].p0 !== exp0) wrong += 1;
+            if (level.backups[b].p1 !== exp1) wrong += 1;
+        }
+    }
+    return { checked, wrong };
+}
+
+// ---------------------------------------------------------------------------
 // Figures
 // ---------------------------------------------------------------------------
 
@@ -836,7 +1178,8 @@ const TRANSLATIONS = {
             'Каждый рисунок выполняет алгоритм, который описан в тексте рядом, с малыми размерами и с игрушечным хешем вместо AES. ' +
             'Рисунки не дают никакой защиты.',
         'page.footer': 'Plinko: Single-Server PIR with Efficient Updates via Invertible PRFs, ' +
-            '<a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>. ' +
+            '<a href="https://eprint.iacr.org/2024/318">ePrint 2024/318</a>; ' +
+            'многоуровневый прототип основан на <a href="https://eprint.iacr.org/2026/1273">ePrint 2026/1273</a>. ' +
             'Код и документы: <a href="https://github.com/igor53627/plinko-rs">github.com/igor53627/plinko-rs</a>.',
         'lang.group': 'Язык',
         'theme.group': 'Тема',
@@ -948,18 +1291,47 @@ const TRANSLATIONS = {
         'legend.action': 'подсказка, участвующая в действии',
         'legend.promoted': 'запасная подсказка, которая работает как обычная',
 
+        'ml.title': 'Два уровня уменьшают подсказки и ускоряют HintInit',
+        'ml.p1': 'Одноуровневый Plinko платит полный множитель безопасности lambda за каждую подсказку: около 2 * lambda * sqrt(N) подсказок. ' +
+            'Экспериментальный многоуровневый прототип в plinko-rs (<a href="https://eprint.iacr.org/2026/1273">ePrint 2026/1273</a>, ' +
+            'раздел 4) делит базу на уровни с убывающим размером блока. Уровень 1 держит крупные блоки и намного меньше обычных подсказок, ' +
+            'поэтому обрабатывает большинство запросов коротким сообщением и промахивается с вероятностью около 1 / kappa.',
+        'ml.p2': 'При промахе на уровне 1 клиент переходит на уровень 2, где блоки меньше в kappa раз. ' +
+            'Уменьшение блока сокращает множитель kappa в числе подсказок уровня 2: всего остаётся порядка O(ln(kappa) * sqrt(N)) подсказок, ' +
+            'а общая вероятность промаха падает до exp(-kappa). Так как подсказок мало, вариант B (FlatAes) сканирует их пакетами AES без iPRF.',
+        'ml.p3': 'Промах на уровне 1 означает, что ни одна его подсказка не держала целевую запись. Чтобы распределение обоих уровней ' +
+            'не зависело от прошлых запросов, приватное обновление (Refresh, лемма 9) продвигает биномиальную выборку запасных уровня 1 ' +
+            'с запрограммированной записью, всегда заменяет потраченный слот сработавшего уровня через PromoteIn и с вероятностью ' +
+            '(1 - 1/(2*w))^M очищает все совпавшие слоты этого уровня через PromoteOut. Обновления базы применяют XOR-дельту к обоим уровням с учётом перезаписей.',
+        'ml.table': `
+            <tr><th></th><th>Рисунок</th><th>plinko::multilevel (2-level Flat B)</th></tr>
+            <tr><td>Блоки уровня 1</td><td>6 по 4 (w1 = 4)</td><td>c0 блоков по w0 ~ sqrt(N)/2</td></tr>
+            <tr><td>Блоки уровня 2</td><td>12 по 2 (w2 = 2)</td><td>c1 блоков по w1 = w0 / kappa</td></tr>
+            <tr><td>Обычные подсказки</td><td>8 + 8 (промах 3,4%)</td><td>2*w0*ln(kappa) + 2*w0 (промах exp(-kappa))</td></tr>
+            <tr><td>Отображение</td><td>игрушечный хеш на блок</td><td>пакетный AES-128 (FlatAes) или iPRF</td></tr>
+            <tr><td>Запасные</td><td>6 + 6</td><td>3*Q на L1, масштабированный запас на L2</td></tr>`,
+        'ml.action': 'Многоуровневое действие',
+        'ml.l1': 'Уровень 1 (6 блоков по 4)',
+        'ml.l2': 'Уровень 2, резерв (12 блоков по 2)',
+        'ml.backups': 'Запасные (c0, c1)',
+        'ml.legend.c0': 'цвет 0 в запросе',
+        'ml.legend.c1': 'цвет 1 в запросе',
+        'ml.legend.promoted': 'слот с продвинутой запасной',
+        'ml.legend.refreshed': 'слот уровня 1, обновлённый после промаха',
+
         'cost.title': 'Сколько стоит каждый шаг',
         'cost.table': `
-            <tr><th>Шаг</th><th>Работа</th></tr>
-            <tr><td>HintInit (клиент)</td><td>Одно обращение iPRF на каждую запись базы данных: в среднем 2 * lambda подсказок-кандидатов</td></tr>
-            <tr><td>Найти <span class="hint">подсказку</span> для индекса</td><td>Одно обращение iPRF</td></tr>
-            <tr><td>Запрос (клиент)</td><td>c/2 прямых вычислений iPRF, по одному на каждый блок подсказки</td></tr>
-            <tr><td>Сообщение запроса</td><td>c/8 байт маски блоков и c/2 смещений по 4 байта</td></tr>
-            <tr><td>Ответ (сервер)</td><td>XOR c записей в две чётности</td></tr>
-            <tr><td>Обновление (клиент)</td><td>Одно обращение iPRF на каждую изменённую запись</td></tr>
-            <tr><td>Предел запросов</td><td>Одна запасная подсказка на каждый запрос; затем новый HintInit</td></tr>`,
+            <tr><th>Шаг</th><th>1-level Plinko (рис. 7)</th><th>2-level Flat B (экспериментальный)</th></tr>
+            <tr><td>Память подсказок</td><td>2 * lambda * w чётностей</td><td>Около (2 * ln(kappa) + 2) * w0 + запасные (~11x меньше при 2^20)</td></tr>
+            <tr><td>HintInit (клиент)</td><td>Одно обращение iPRF на запись (~2 * lambda кандидатов)</td><td>Пакетный проход AES по малому набору подсказок (~146x быстрее при 2^20)</td></tr>
+            <tr><td>Поиск <span class="hint">подсказки</span></td><td>Одно обращение iPRF</td><td>Проход по подсказкам уровня 1; переход на уровень 2 с вероятностью ~1 / kappa</td></tr>
+            <tr><td>Сообщение запроса</td><td>c/8 байт маски + c/2 смещений</td><td>c0 блоков при попадании в L1; c1 = kappa * c0 блоков при переходе на L2</td></tr>
+            <tr><td>Ответ (сервер)</td><td>XOR c записей в две чётности</td><td>XOR c0 (уровень 1) или c1 (уровень 2) записей в две чётности</td></tr>
+            <tr><td>Обновление (клиент)</td><td>Одно обращение iPRF на изменённую запись</td><td>Проход по подсказкам обоих уровней + индекс перезаписей</td></tr>
+            <tr><td>Предел запросов</td><td>Одна запасная на запрос; затем новый HintInit</td><td>Пул запасных на каждый уровень (включая Refresh уровня 1 при промахах)</td></tr>`,
         'cost.scope': 'plinko-rs — библиотека для базы данных с записями фиксированного размера. Каждый клиент скачивает базу данных и выполняет HintInit. ' +
-            'Полное состояние Ethereum не является целью: при таком размере загрузка составляет 73,4 ГБ, а HintInit требует около 300 ядро-часов (экстраполяция).',
+            'Полное состояние Ethereum не является целью: при таком размере загрузка всё равно составляет 73,4 ГБ (одноуровневый HintInit требует около 300 ядро-часов, ' +
+            'а 2-level Flat B снижает экстраполированное CPU-время HintInit до ~0,64 ядро-часа, не меняя объём загрузки).',
     },
 };
 
@@ -1062,6 +1434,45 @@ const MESSAGES = {
         check: result => (result.wrong === 0
             ? `Check of the figure: all ${result.checked} parities and records of the client agree with the database of the server.`
             : `Check of the figure: ${result.wrong} of ${result.checked} values of the client do not agree with the database. This is a defect of the page.`),
+        mlStart: mode => (mode === 'query'
+            ? 'Select a record to probe Level 1 first, falling back to Level 2 when Level 1 misses. '
+            : 'Select a record to apply a delta across both levels. '),
+        mlNoHint: last => `Neither Level 1 nor Level 2 holds record ${last.index} in this toy key, so nothing is sent. `,
+        mlNoBackup: last => `Level ${last.level + 1} has no backup left for Refresh, so nothing is sent. Run HintInit again. `,
+        mlBadgeHit: (levelIdx, blocks) => `Level ${levelIdx + 1} hit (${blocks} blocks)`,
+        mlBadgeMiss: refreshed => (refreshed ? `miss -> ${plural(refreshed, 'slot')} refreshed` : 'miss -> 0 refreshed'),
+        mlBadgeIdle: left => `${plural(left, 'backup')} left`,
+        mlQueryReadout: q => `Level ${q.winLevel + 1} reads record ${q.index}: ${hex(q.record)} ` +
+            `(epoch ${q.epoch}, ${q.colors.length}-block query). `,
+        mlQueryProbe: q => (q.winLevel === 0
+            ? `Level 1 matches on ${q.matches.length === 1 ? 'slot' : 'slots'} ${enList(q.matches)} (block ${q.block}, offset ${q.offset}); picks slot ${q.slotIdx} (selector c${q.selector}). Level 2 is not queried.`
+            : `Level 1 misses record ${q.index}. Fallback Level 2 matches on ${q.matches.length === 1 ? 'slot' : 'slots'} ${enList(q.matches)} (block ${q.block}, offset ${q.offset}); picks slot ${q.slotIdx} (selector c${q.selector}).`),
+        mlQueryMessage: q => `Query on Level ${q.winLevel + 1} (${q.colors.length} blocks): colors <code>${q.colors.join('')}</code>, offsets <code>${q.offsets.join(', ')}</code>. ` +
+            `Answer: c0 = <code>${hex(q.answer[0])}</code>, c1 = <code>${hex(q.answer[1])}</code>.`,
+        mlQueryRecord: q => `Record = <code>${hex(q.answer[q.selector])} xor ${hex(q.hintParity)} = ${hex(q.record)}</code> (answer for color c${q.selector} XOR slot ${q.slotIdx} parity).`,
+        mlQueryRefresh(q) {
+            const win = `Level ${q.winLevel + 1} slot ${q.slotIdx} replaced by backup ${q.winRefresh.backupIdx} (PromoteIn).`;
+            const sweep = q.winSweep.length
+                ? ` PromoteOut sweep cleared ${plural(q.winSweep.length, 'matching slot')} (${enList(q.winSweep.map(r => `slot ${r.slotIdx} <- bak ${r.backupIdx}`))}).`
+                : '';
+            const l0 = q.winLevel === 1
+                ? (q.l0Refreshed.length
+                    ? ` Failure-private Refresh on Level 1 promoted ${plural(q.l0Refreshed.length, 'backup')} (${enList(q.l0Refreshed.map(r => `slot ${r.slotIdx} <- bak ${r.backupIdx}`))}) with record ${q.index} programmed in.`
+                    : ' Failure-private Refresh on Level 1 drew k = 0 from Binomial(8, 1/8).')
+                : '';
+            return `${win}${sweep}${l0} Backups left: L1 = ${q.left[0]}, L2 = ${q.left[1]}.`;
+        },
+        mlChangeReadout: last => `Record ${last.index} changes from ${hex(last.old)} to ${hex(last.value)} (delta ${hex(last.change)}, epoch ${last.epoch}). `,
+        mlChangeTouched(last) {
+            if (!last.touched.length) return 'No primary slot or remaining backup on either level holds this record.';
+            const fmt = e => (e.kind === 'primary'
+                ? `L${e.level + 1} slot ${e.id}${e.override ? ' (override)' : ''}`
+                : `L${e.level + 1} bak ${e.id} (c${e.color})`);
+            return `Client XORs <code>${hex(last.change)}</code> into ${enList(last.touched.map(fmt))}.`;
+        },
+        mlCheck: result => (result.wrong === 0
+            ? `Check of the figure: all ${result.checked} primary and backup parities across 2 levels agree with the database.`
+            : `Check of the figure: ${result.wrong} of ${result.checked} multi-level parities do not agree. This is a defect of the page.`),
     },
     ru: {
         binLabel: bin => `корзина ${bin}`,
@@ -1143,6 +1554,45 @@ const MESSAGES = {
         check: result => (result.wrong === 0
             ? `Проверка рисунка: чётности и записи клиента (всего ${result.checked}) совпадают с базой данных сервера.`
             : `Проверка рисунка: ${result.wrong} из ${result.checked} значений клиента не совпадают с базой данных. Это дефект страницы.`),
+        mlStart: mode => (mode === 'query'
+            ? 'Выберите запись: сначала проверяется уровень 1, при промахе — резервный уровень 2. '
+            : 'Выберите запись, чтобы применить XOR-дельту к обоим уровням. '),
+        mlNoHint: last => `На этом игрушечном ключе ни уровень 1, ни уровень 2 не держат запись ${last.index}, поэтому запрос не отправляется. `,
+        mlNoBackup: last => `На уровне ${last.level + 1} не осталось запасных подсказок для Refresh. Запустите HintInit заново. `,
+        mlBadgeHit: (levelIdx, blocks) => `Уровень ${levelIdx + 1}: попадание (${ruCount(blocks, 'блок', 'блока', 'блоков')})`,
+        mlBadgeMiss: refreshed => (refreshed ? `промах -> обновлено ${refreshed}` : 'промах -> обновлено 0'),
+        mlBadgeIdle: left => `запасных: ${left}`,
+        mlQueryReadout: q => `Уровень ${q.winLevel + 1} читает запись ${q.index}: ${hex(q.record)} ` +
+            `(эпоха ${q.epoch}, запрос на ${ruCount(q.colors.length, 'блок', 'блока', 'блоков')}). `,
+        mlQueryProbe: q => (q.winLevel === 0
+            ? `Уровень 1 совпал в ${q.matches.length === 1 ? 'слоте' : 'слотах'} ${ruList(q.matches)} (блок ${q.block}, смещение ${q.offset}); выбран слот ${q.slotIdx} (цвет c${q.selector}). Уровень 2 не запрашивается.`
+            : `Уровень 1 промахнулся по записи ${q.index}. Резервный уровень 2 совпал в ${q.matches.length === 1 ? 'слоте' : 'слотах'} ${ruList(q.matches)} (блок ${q.block}, смещение ${q.offset}); выбран слот ${q.slotIdx} (цвет c${q.selector}).`),
+        mlQueryMessage: q => `Запрос на уровне ${q.winLevel + 1} (${ruCount(q.colors.length, 'блок', 'блока', 'блоков')}): цвета <code>${q.colors.join('')}</code>, смещения <code>${q.offsets.join(', ')}</code>. ` +
+            `Ответ: c0 = <code>${hex(q.answer[0])}</code>, c1 = <code>${hex(q.answer[1])}</code>.`,
+        mlQueryRecord: q => `Запись = <code>${hex(q.answer[q.selector])} xor ${hex(q.hintParity)} = ${hex(q.record)}</code> (ответ цвета c${q.selector} XOR чётность слота ${q.slotIdx}).`,
+        mlQueryRefresh(q) {
+            const win = `Слот ${q.slotIdx} уровня ${q.winLevel + 1} заменён запасной ${q.winRefresh.backupIdx} (PromoteIn).`;
+            const sweep = q.winSweep.length
+                ? ` Проход PromoteOut очистил ${ruCount(q.winSweep.length, 'совпавший слот', 'совпавших слота', 'совпавших слотов')} (${ruList(q.winSweep.map(r => `слот ${r.slotIdx} <- зап. ${r.backupIdx}`))}).`
+                : '';
+            const l0 = q.winLevel === 1
+                ? (q.l0Refreshed.length
+                    ? ` Приватный Refresh уровня 1 продвинул ${ruCount(q.l0Refreshed.length, 'запасную', 'запасные', 'запасных')} (${ruList(q.l0Refreshed.map(r => `слот ${r.slotIdx} <- зап. ${r.backupIdx}`))}) с запрограммированной записью ${q.index}.`
+                    : ' Приватный Refresh уровня 1 вытянул k = 0 из Binomial(8, 1/8).')
+                : '';
+            return `${win}${sweep}${l0} Осталось запасных: L1 = ${q.left[0]}, L2 = ${q.left[1]}.`;
+        },
+        mlChangeReadout: last => `Запись ${last.index} меняется с ${hex(last.old)} на ${hex(last.value)} (дельта ${hex(last.change)}, эпоха ${last.epoch}). `,
+        mlChangeTouched(last) {
+            if (!last.touched.length) return 'Ни один слот и ни одна оставшаяся запасная на обоих уровнях не держат эту запись.';
+            const fmt = e => (e.kind === 'primary'
+                ? `L${e.level + 1} слот ${e.id}${e.override ? ' (override)' : ''}`
+                : `L${e.level + 1} зап. ${e.id} (c${e.color})`);
+            return `Клиент прибавляет <code>${hex(last.change)}</code> по XOR к ${ruList(last.touched.map(fmt))}.`;
+        },
+        mlCheck: result => (result.wrong === 0
+            ? `Проверка рисунка: все ${result.checked} основных и запасных чётностей на 2 уровнях совпадают с базой данных.`
+            : `Проверка рисунка: ${result.wrong} из ${result.checked} многоуровневых чётностей не совпадают. Это дефект страницы.`),
     },
 };
 
@@ -1570,6 +2020,138 @@ function drawOnline() {
     $('online-check').textContent = t.check(checkClient(world, client, server));
 }
 
+// Multi-level 2-level prototype figure ---------------------------------------
+
+function resetMl(keepServer) {
+    const server = keepServer ? state.ml.server : { db: [...state.world.db], epoch: 0 };
+    const client = mlMakeClient(state.master, server.db);
+    client.epoch = server.epoch;
+    state.ml = {
+        mode: state.ml ? state.ml.mode : 'query',
+        server,
+        client,
+        last: null,
+    };
+}
+
+function actMl(index) {
+    const { master, ml } = state;
+    if (ml.mode === 'query') {
+        ml.last = { kind: 'query', ...mlQuery(master, ml.client, ml.server, index) };
+    } else {
+        const value = (ml.server.db[index] ^ ((prf(master, 72, index, ml.server.db[index]) % 255) + 1)) & 0xff;
+        ml.last = { kind: 'change', ...mlChange(master, ml.client, ml.server, index, value) };
+    }
+    renderMl();
+}
+
+const renderMl = () => keepFocus(drawMl);
+
+function drawMl() {
+    const t = MESSAGES[state.lang];
+    const { master, ml } = state;
+    const { client, server, last } = ml;
+    const query = last && last.kind === 'query' && !last.error ? last : null;
+    const colorSet = [new Set(), new Set()];
+    if (query) {
+        const spec = ML_LEVELS[query.winLevel];
+        for (let blk = 0; blk < spec.numBlocks; blk++) {
+            const idx = blk * spec.blockSize + query.offsets[blk];
+            colorSet[query.colors[blk]].add(idx);
+        }
+    }
+    const focus = last && last.index !== undefined ? last.index : null;
+
+    renderDb($('ml-db'), server.db, index => [
+        focus === index ? 'is-now' : '',
+        colorSet[0].has(index) ? 'is-s0' : '',
+        colorSet[1].has(index) ? 'is-s1' : '',
+    ].join(' '), actMl);
+
+    const touchedKey = (lvl, kind, id) => `${lvl}:${kind}:${id}`;
+    const touched = new Set(last && last.kind === 'change' ? last.touched.map(e => touchedKey(e.level, e.kind, e.id)) : []);
+    const l0RefSlots = new Set(query ? query.l0Refreshed.map(r => r.slotIdx) : []);
+    const l0RefBaks = new Set(query ? query.l0Refreshed.map(r => r.backupIdx) : []);
+    const winSweepSlots = new Set(query ? query.winSweep.map(r => r.slotIdx) : []);
+    const winSweepBaks = new Set(query ? query.winSweep.map(r => r.backupIdx) : []);
+
+    for (let lvl = 0; lvl < client.levels.length; lvl++) {
+        const level = client.levels[lvl];
+        const pWrap = $(`ml-l${lvl}-primary`);
+        const bWrap = $(`ml-l${lvl}-backup`);
+        pWrap.replaceChildren();
+        bWrap.replaceChildren();
+
+        for (let s = 0; s < level.spec.primary; s++) {
+            const slot = level.slots[s];
+            const isWin = query && query.winLevel === lvl && (query.slotIdx === s || winSweepSlots.has(s));
+            const isRef = lvl === 0 && l0RefSlots.has(s);
+            const isTouched = touched.has(touchedKey(lvl, 'primary', s));
+            const classes = [
+                'cell',
+                slot.promoted ? 'promoted' : '',
+                isRef ? 'refreshed' : '',
+                isWin || isTouched ? 'took' : '',
+            ].join(' ');
+            const tag = slot.override ? `${s}*` : `${s}`;
+            pWrap.append(htmlEl('span', { class: classes }, `<strong>${tag}</strong>${hex(slot.parity)}`));
+        }
+        for (let b = 0; b < level.spec.backup; b++) {
+            const bak = level.backups[b];
+            const isWinBak = query && query.winLevel === lvl && ((query.winRefresh && query.winRefresh.backupIdx === b) || winSweepBaks.has(b));
+            const isRefBak = lvl === 0 && l0RefBaks.has(b);
+            const isTouched = touched.has(touchedKey(lvl, 'backup', b));
+            const classes = [
+                'cell',
+                bak.used ? 'used' : '',
+                isWinBak || isRefBak || isTouched ? 'took' : '',
+            ].join(' ');
+            bWrap.append(htmlEl('span', { class: classes }, `<strong>b${b}</strong>${hex(bak.p0)},${hex(bak.p1)}`));
+        }
+
+        const badge = $(`ml-l${lvl}-badge`);
+        const left = level.spec.backup - level.nextBackup;
+        if (query && query.winLevel === lvl) {
+            badge.className = 'ml-badge is-hit';
+            badge.textContent = t.mlBadgeHit(lvl, level.spec.numBlocks);
+        } else if (query && lvl === 0 && query.winLevel === 1) {
+            badge.className = 'ml-badge is-miss';
+            badge.textContent = t.mlBadgeMiss(query.l0Refreshed.length);
+        } else {
+            badge.className = 'ml-badge';
+            badge.textContent = t.mlBadgeIdle(left);
+        }
+    }
+
+    for (const button of document.querySelectorAll('[data-ml-mode]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.mlMode === ml.mode));
+    }
+
+    const steps = $('ml-steps');
+    steps.replaceChildren();
+    const add = step => steps.append(htmlEl('li', {}, step));
+    const readout = $('ml-readout');
+
+    if (!last) {
+        readout.textContent = t.mlStart(ml.mode);
+    } else if (last.error === 'no-hint') {
+        readout.textContent = t.mlNoHint(last);
+    } else if (last.error === 'no-backup') {
+        readout.textContent = t.mlNoBackup(last);
+    } else if (query) {
+        readout.textContent = t.mlQueryReadout(query);
+        add(t.mlQueryProbe(query));
+        add(t.mlQueryMessage(query));
+        add(t.mlQueryRecord(query));
+        add(t.mlQueryRefresh(query));
+    } else {
+        readout.textContent = t.mlChangeReadout(last);
+        add(t.mlChangeTouched(last));
+    }
+
+    $('ml-check').textContent = t.mlCheck(checkMultiLevel(master, client, server));
+}
+
 // Start ------------------------------------------------------------------------
 
 function renderAll() {
@@ -1578,6 +2160,7 @@ function renderAll() {
     renderIprf();
     renderInit();
     renderOnline();
+    renderMl();
 }
 
 function rekey(master) {
@@ -1586,6 +2169,7 @@ function rekey(master) {
     state.pickedBin = null;
     resetInit();
     resetOnline(false);
+    resetMl(false);
 }
 
 const I18N_MARKERS = [['data-i18n', null], ['data-i18n-label', 'aria-label'], ['data-i18n-content', 'content']];
@@ -1640,6 +2224,10 @@ $('init-reset').addEventListener('click', () => { resetInit(); renderInit(); });
 $('online-reset').addEventListener('click', () => { resetOnline(true); renderOnline(); });
 for (const button of document.querySelectorAll('[data-mode]')) {
     button.addEventListener('click', () => { state.online.mode = button.dataset.mode; state.online.last = null; renderOnline(); });
+}
+$('ml-reset').addEventListener('click', () => { resetMl(true); renderMl(); });
+for (const button of document.querySelectorAll('[data-ml-mode]')) {
+    button.addEventListener('click', () => { state.ml.mode = button.dataset.mlMode; state.ml.last = null; renderMl(); });
 }
 for (const button of document.querySelectorAll('[data-set-theme]')) {
     button.addEventListener('click', () => {
