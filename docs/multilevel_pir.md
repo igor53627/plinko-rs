@@ -23,7 +23,7 @@ Level 1 (fallback)    : block_size w_1 = w_0 / kappa, M_1 = ceil(2 * w_1 * kappa
 
 - **Parameter builders** (`plinko/src/multilevel.rs`):
   - `MultiLevelParams::two_level(num_entries, record_size, kappa, query_budget, variant)` — 2-level Table 2 geometry.
-  - `MultiLevelParams::waterfall(num_entries, record_size, num_levels, query_budget, variant)` — `d`-level geometric waterfall (`w_i` halving across levels).
+  - `MultiLevelParams::waterfall(num_entries, record_size, num_levels, query_budget, variant)` — `d`-level geometric waterfall (`w_i` dividing by four across levels, `w_i = w_0 / 4^i`).
   - `MultiLevelParams::custom(num_entries, record_size, levels)` — validates level geometry and checks primary/backup/accumulator storage sizes fit within `isize::MAX` before allocation.
 - **Per-level backends (`BackendVariant`):**
   - `HybridA { iprf_levels }`: uses `Iprf` on the first `iprf_levels` levels and batched `FlatAes` on the remaining levels.
