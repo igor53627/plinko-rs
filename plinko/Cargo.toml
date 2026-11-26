@@ -1,6 +1,6 @@
 [package]
 name = "plinko"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Plinko PIR cryptographic primitives - invertible PRF, binomial sampling, constant-time operations"
 license = "MIT"
