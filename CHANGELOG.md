@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
+Library-only `wasm32-unknown-unknown` builds, faster 1-level iPRF/client query and update
+paths (4.1x-18.1x on `prepare_query`, 9.0x on batched `apply_delta`), an experimental
+multi-level PIR prototype (`plinko::multilevel`, `ePrint 2026/1273`, Section 4) with
+single-pass streaming `HintInit`, `PLNKMLH1` checkpoints, and a zero-import WebAssembly
+smoke test, plus a bilingual (EN/RU) interactive protocol tutorial on GitHub Pages.
+
+Not in this release:
+
+- Lookup by key: a query takes an index (`TASK-22`, proposal in `docs/keyword_lookup.md`).
+- Integrity of an answer or of a delta: a decision, see `docs/integrity.md`.
+- A network transport or a program that writes delta files.
+- Plinko hints from the GPU path: it is a throughput benchmark (`TASK-21`).
+- Formal verification or constant-time mode for `plinko::multilevel` (experimental prototype).
+
 ### Added
 
 - `plinko::multilevel`: single-pass streaming `HintInit` across all levels simultaneously via `MultiLevelHintBuilder` (`push_bytes` / `finish`, zero-import `wasm32` compatible), `MultiLevelClient::hint_init_from_reader[_with_chunk_bytes]`, `MultiLevelClient::hint_init_from_file[_with_chunk_bytes]` (native), and `DEFAULT_STREAM_CHUNK_BYTES`; produces bit-identical hint sets to in-memory `MultiLevelClient::hint_init` without requiring the full database in memory (the read buffer is capped to the smaller of the aligned chunk size and the database size).
