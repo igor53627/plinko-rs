@@ -1325,7 +1325,9 @@ impl LevelAccumulator {
 /// Feeds raw database bytes across all levels in a single pass with bounded RAM. Because every
 /// level's `block_size` is a power of two, their least common multiple equals `max(block_size)`;
 /// aligned chunks are processed zero-copy across all levels simultaneously, and unaligned inputs
-/// are buffered up to `chunk_bytes` (rounded up to a multiple of `max(block_size) * record_size`).
+/// are buffered up to `chunk_bytes` rounded down to a whole superblock (`max(block_size) *
+/// record_size`, minimum one superblock), or the exact database size when it fits in one
+/// superblock.
 ///
 /// Works on both native targets and `wasm32-unknown-unknown` (`--no-default-features`) with zero
 /// host imports.
@@ -1368,7 +1370,8 @@ impl MultiLevelHintBuilder {
     /// Creates a streaming `HintInit` builder with a custom target chunk buffer size in bytes.
     ///
     /// `chunk_bytes` is rounded down to a positive multiple of `max(block_size) * record_size`
-    /// (at least one full superblock of `max(block_size)` records).
+    /// (at least one full superblock of `max(block_size)` records), or the exact database size
+    /// when `num_entries <= max(block_size)`.
     pub fn with_chunk_bytes(
         params: MultiLevelParams,
         seed: &[u8; 32],
@@ -1629,6 +1632,9 @@ impl MultiLevelClient {
     }
 
     /// Runs full `HintInit` across all levels on `threads` worker threads from an in-memory slice.
+    ///
+    /// Processes one level at a time so scratch parity accumulators for each level are released
+    /// before allocating the next level's accumulators.
     pub fn hint_init(
         params: MultiLevelParams,
         seed: &[u8; 32],
@@ -1645,9 +1651,26 @@ impl MultiLevelClient {
                 actual: database.len(),
             });
         }
-        let mut builder: MultiLevelHintBuilder = MultiLevelHintBuilder::new(params, seed, threads)?;
-        builder.push_bytes(database)?;
-        builder.finish()
+        let params: MultiLevelParams =
+            MultiLevelParams::custom(params.num_entries, params.record_size, params.levels)?;
+        let num_entries: usize = params.num_entries;
+        let record_size: usize = params.record_size;
+        let mut levels: Vec<LevelState> = Vec::with_capacity(params.levels.len());
+        for (i, &spec) in params.levels.iter().enumerate() {
+            let mut local_budget: usize = LOCAL_ACCUM_MAX_WORKERS_BYTES;
+            let mut acc: LevelAccumulator =
+                LevelAccumulator::new(spec, record_size, seed, i, threads, &mut local_budget);
+            acc.process_chunk(database, 0, num_entries, num_entries);
+            levels.push(acc.into_level_state());
+        }
+        Ok(Self {
+            params,
+            levels,
+            session_id: next_session_id(),
+            epoch: 0,
+            next_query_id: 1,
+            in_flight: HashMap::new(),
+        })
     }
 
     /// Runs single-pass streaming `HintInit` from any EOF-terminated [`Read`] source using
@@ -1660,9 +1683,10 @@ impl MultiLevelClient {
     ///
     /// Because this method probes one byte past `num_entries * record_size` to detect trailing
     /// data, the reader must signal EOF after the database bytes. For length-delimited messages
-    /// on a persistent connection, pass a bounded reader such as `reader.take(expected as u64)`
-    /// (which will not detect trailing bytes beyond its bound) or feed chunks directly via
-    /// [`MultiLevelHintBuilder::push_bytes`].
+    /// on a persistent connection, validate that the declared frame length equals
+    /// `num_entries * record_size` first and then bound the read by that validated frame length
+    /// (such as `reader.take(frame_len)` — noting that a bounded reader cannot detect trailing
+    /// bytes beyond its bound), or feed chunks directly via [`MultiLevelHintBuilder::push_bytes`].
     pub fn hint_init_from_reader<R: Read>(
         params: MultiLevelParams,
         seed: &[u8; 32],
@@ -1706,10 +1730,10 @@ impl MultiLevelClient {
         while remaining > 0 {
             let want: usize = buf_len.min(remaining);
             let n: usize = read_fill(&mut reader, &mut buf[..want])?;
-            if n == 0 {
+            if n < want {
                 return Err(MultiLevelError::DatabaseLengthMismatch {
                     expected,
-                    actual: builder.bytes_fed(),
+                    actual: expected - remaining + n,
                 });
             }
             builder.push_bytes(&buf[..n])?;
@@ -1801,6 +1825,7 @@ impl MultiLevelClient {
         let spec: LevelSpec = params.levels[level_idx];
         let num_entries: usize = sample_blocks * spec.block_size;
         let sample_bytes: usize = num_entries * params.record_size;
+        let sample_threads: usize = threads.min(sample_blocks.max(1));
         let t_total: std::time::Instant = std::time::Instant::now();
         let mut local_budget: usize = LOCAL_ACCUM_MAX_WORKERS_BYTES;
         let mut acc: LevelAccumulator = LevelAccumulator::new(
@@ -1808,7 +1833,7 @@ impl MultiLevelClient {
             params.record_size,
             seed,
             level_idx,
-            threads,
+            sample_threads,
             &mut local_budget,
         );
         let t_scan: std::time::Instant = std::time::Instant::now();
@@ -4344,6 +4369,53 @@ mod tests {
             Some(MultiLevelError::DatabaseLengthMismatch {
                 expected: db.len(),
                 actual: db.len() - 5,
+            })
+        );
+
+        // Reader that returns EOF after a partial chunk must fail at first EOF even if more bytes
+        // would appear on a subsequent read (e.g. concurrent append).
+        struct EofThenMore<'a> {
+            first: &'a [u8],
+            second: &'a [u8],
+            stage: u8,
+        }
+        impl Read for EofThenMore<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                match self.stage {
+                    0 => {
+                        self.stage = 1;
+                        let n: usize = buf.len().min(self.first.len());
+                        buf[..n].copy_from_slice(&self.first[..n]);
+                        Ok(n)
+                    }
+                    1 => {
+                        self.stage = 2;
+                        Ok(0)
+                    }
+                    _ => {
+                        let n: usize = buf.len().min(self.second.len());
+                        buf[..n].copy_from_slice(&self.second[..n]);
+                        Ok(n)
+                    }
+                }
+            }
+        }
+        let split: usize = 64;
+        assert_eq!(
+            MultiLevelClient::hint_init_from_reader(
+                params.clone(),
+                &seed,
+                EofThenMore {
+                    first: &db[..split],
+                    second: &db[split..],
+                    stage: 0,
+                },
+                1,
+            )
+            .err(),
+            Some(MultiLevelError::DatabaseLengthMismatch {
+                expected: db.len(),
+                actual: split,
             })
         );
 
