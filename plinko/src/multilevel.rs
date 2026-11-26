@@ -2014,14 +2014,16 @@ impl MultiLevelClient {
         let mut failed_plans: Vec<Vec<u32>> = Vec::with_capacity(res.level);
         for lvl_idx in 0..res.level {
             let level: &LevelState = &self.levels[lvl_idx];
-            let p_in: f64 = 1.0 / (2.0 * level.spec.block_size as f64);
-            let k: usize = sample_binomial_exact(level.spec.num_primary, p_in, rng);
             let avail_slots: Vec<u32> = (0..level.spec.num_primary as u32)
                 .filter(|&pos| {
                     let slot: &PrimarySlot = &level.slots[pos as usize];
                     !slot.reserved && !slot.retired
                 })
                 .collect();
+            let p_in: f64 = 1.0 / (2.0 * level.spec.block_size as f64);
+            // Sample over `avail_slots.len()` so each active, non-reserved slot keeps exact
+            // per-slot probability `1 / (2 * w_i)` even when other slots are reserved or retired.
+            let k: usize = sample_binomial_exact(avail_slots.len(), p_in, rng);
             let chosen: Vec<u32> = sample_distinct_from(&avail_slots, k, rng);
             let remaining: usize = level.spec.num_backup.saturating_sub(level.next_backup);
             if chosen.len() > remaining {
@@ -2041,8 +2043,14 @@ impl MultiLevelClient {
         // Plan the successful level's replacement + optional PromoteOut sweep.
         let (promote_out_slots, needed_succ_backups): (Vec<u32>, usize) = {
             let level: &LevelState = &self.levels[res.level];
-            let neg_log_p0: f64 = -(level.spec.num_primary as f64)
-                * (-1.0 / (2.0 * level.spec.block_size as f64)).ln_1p();
+            let active_slots: usize = level
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|&(pos, slot)| !slot.retired && (!slot.reserved || pos == s))
+                .count();
+            let neg_log_p0: f64 =
+                -(active_slots as f64) * (-1.0 / (2.0 * level.spec.block_size as f64)).ln_1p();
             if sample_bernoulli_neg_exp(neg_log_p0, rng) {
                 let mut scratch: Vec<(u32, u8)> = Vec::new();
                 // `find_matching_slots` skips `res.slot_idx` because it is reserved; after
@@ -3435,5 +3443,162 @@ mod tests {
             MultiLevelClient::hint_init(huge_params, &seed, &[], 1).err(),
             Some(MultiLevelError::InvalidParams("database size overflow"))
         );
+    }
+
+    #[test]
+    fn refresh_preserves_unbiased_probabilities_with_unavailable_slots() {
+        let record_size: usize = 8;
+        let seed: [u8; 32] = [0x42; 32];
+        let mut rng: ChaCha20Rng = ChaCha20Rng::seed_from_u64(0x5EED_BEEF);
+
+        // Part 1: Failed-level PromoteIn with M_0 = 2, w_0 = 2 (p = 0.25) and 1 retired slot (A_0 = 1).
+        // Unbiased per-slot replacement probability is 0.25 (~500 / 2000), whereas sampling over
+        // M_0 = 2 and clamping to A_0 = 1 would give 1 - (3/4)^2 = 7/16 = 0.4375 (~875 / 2000).
+        {
+            let num_entries: usize = 4;
+            let db: Vec<u8> = make_db(num_entries, record_size, 11);
+            let params: MultiLevelParams = MultiLevelParams::custom(
+                num_entries,
+                record_size,
+                vec![
+                    LevelSpec {
+                        block_size: 2,
+                        num_blocks: 2,
+                        num_primary: 2,
+                        num_backup: 2_500,
+                        backend: LevelBackend::FlatAes,
+                    },
+                    LevelSpec {
+                        block_size: 2,
+                        num_blocks: 2,
+                        num_primary: 48,
+                        num_backup: 6_000,
+                        backend: LevelBackend::FlatAes,
+                    },
+                ],
+            )
+            .unwrap();
+            let mut client: MultiLevelClient =
+                MultiLevelClient::hint_init(params.clone(), &seed, &db, 1).unwrap();
+            client.levels[0].slots[0].retired = true;
+
+            let mut scratch: Vec<(u32, u8)> = Vec::new();
+            let trials: usize = 2_000;
+            for _ in 0..trials {
+                let miss_idx: usize = (0..num_entries)
+                    .find(|&idx| {
+                        client.levels[0]
+                            .find_matching_slots(idx, &mut scratch)
+                            .is_empty()
+                    })
+                    .expect("a single slot with w=2 cannot cover all entries");
+                let pending: PendingMultiLevelQuery =
+                    client.prepare_query(miss_idx, &mut rng).unwrap();
+                assert_eq!(pending.level, 1);
+                let answer: MultiLevelAnswer =
+                    MultiLevelServer::answer(&db, &params, &pending.query, client.epoch()).unwrap();
+                let value: Vec<u8> = client.finish_query(&pending, &answer, &mut rng).unwrap();
+                assert_eq!(
+                    value.as_slice(),
+                    &db[miss_idx * record_size..(miss_idx + 1) * record_size]
+                );
+            }
+            let l0_replacements: usize = client.levels[0].next_backup;
+            assert!(
+                (420..=580).contains(&l0_replacements),
+                "expected ~500 unbiased failed-level replacements out of {trials}, got {l0_replacements}"
+            );
+
+            // Boundary: A_0 = 0 (all level-0 slots retired) replaces 0 slots without error.
+            client.levels[0].slots[1].retired = true;
+            let before_zero: usize = client.levels[0].next_backup;
+            let pending: PendingMultiLevelQuery = client.prepare_query(0, &mut rng).unwrap();
+            assert_eq!(pending.level, 1);
+            let answer: MultiLevelAnswer =
+                MultiLevelServer::answer(&db, &params, &pending.query, client.epoch()).unwrap();
+            let value: Vec<u8> = client.finish_query(&pending, &answer, &mut rng).unwrap();
+            assert_eq!(value.as_slice(), &db[0..record_size]);
+            assert_eq!(client.levels[0].next_backup, before_zero);
+        }
+
+        // Part 2: Winning-level PromoteOut sweep with M_0 = 4, w_0 = 2 (p = 0.25) and 3 retired
+        // slots (A_0 = 1). Exact sweep probability is (1 - 0.25)^1 = 0.75 (~1500 / 2000), whereas
+        // using M_0 = 4 would give (3/4)^4 = 81/256 ≈ 0.3164 (~633 / 2000).
+        {
+            let num_entries: usize = 16;
+            let db: Vec<u8> = make_db(num_entries, record_size, 22);
+            let params: MultiLevelParams = MultiLevelParams::custom(
+                num_entries,
+                record_size,
+                vec![
+                    LevelSpec {
+                        block_size: 2,
+                        num_blocks: 8,
+                        num_primary: 4,
+                        num_backup: 5_000,
+                        backend: LevelBackend::FlatAes,
+                    },
+                    LevelSpec {
+                        block_size: 2,
+                        num_blocks: 8,
+                        num_primary: 48,
+                        num_backup: 2_000,
+                        backend: LevelBackend::FlatAes,
+                    },
+                ],
+            )
+            .unwrap();
+            let mut client: MultiLevelClient =
+                MultiLevelClient::hint_init(params.clone(), &seed, &db, 1).unwrap();
+            for pos in 0..3 {
+                client.levels[0].slots[pos].retired = true;
+            }
+
+            let mut scratch: Vec<(u32, u8)> = Vec::new();
+            let trials: usize = 2_000;
+            let mut sweeps: usize = 0;
+            let mut l0_hits: usize = 0;
+            while l0_hits < trials {
+                if let Some(hit_idx) = (0..num_entries).find(|&idx| {
+                    !client.levels[0]
+                        .find_matching_slots(idx, &mut scratch)
+                        .is_empty()
+                }) {
+                    let before: usize = client.levels[0].next_backup;
+                    let pending: PendingMultiLevelQuery =
+                        client.prepare_query(hit_idx, &mut rng).unwrap();
+                    assert_eq!(pending.level, 0);
+                    let answer: MultiLevelAnswer =
+                        MultiLevelServer::answer(&db, &params, &pending.query, client.epoch())
+                            .unwrap();
+                    let value: Vec<u8> = client.finish_query(&pending, &answer, &mut rng).unwrap();
+                    assert_eq!(
+                        value.as_slice(),
+                        &db[hit_idx * record_size..(hit_idx + 1) * record_size]
+                    );
+                    let used: usize = client.levels[0].next_backup - before;
+                    assert!(used == 1 || used == 2);
+                    if used == 2 {
+                        sweeps += 1;
+                    }
+                    l0_hits += 1;
+                } else {
+                    // Rare case (~2^-8) where the single active slot has no matching block;
+                    // issue a level-1 query so level-0 refresh can repopulate it.
+                    let pending: PendingMultiLevelQuery =
+                        client.prepare_query(0, &mut rng).unwrap();
+                    assert_eq!(pending.level, 1);
+                    let answer: MultiLevelAnswer =
+                        MultiLevelServer::answer(&db, &params, &pending.query, client.epoch())
+                            .unwrap();
+                    let value: Vec<u8> = client.finish_query(&pending, &answer, &mut rng).unwrap();
+                    assert_eq!(value.as_slice(), &db[0..record_size]);
+                }
+            }
+            assert!(
+                (1_420..=1_580).contains(&sweeps),
+                "expected ~1500 unbiased winning-level sweeps out of {trials}, got {sweeps}"
+            );
+        }
     }
 }
