@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- `plinko::multilevel`: `MultiLevelClient::finish_query` now samples failed-level `Refresh` replacements over the `A` active, non-reserved slots (`Binomial(A, 1 / (2 * w_i))`) and computes the winning-level `PromoteOut` sweep probability over active eligible slots `(1 - 1 / (2 * w_l))^A_l`, eliminating the per-slot bias when retired or concurrently reserved slots make `A < M_i`.
 - `docs/protocol-visualization.html` had a horizontal scroll of the page at widths from 834 px to 942 px and at 384 px and below. The notes beside the text now go below it on a screen narrower than 64rem (before: 52rem), where they are at most 40rem wide, because their tables do not fit in a narrower column. At 22rem and below, a result in the table of the rounds can wrap.
 - `docs/protocol-visualization.html` (the protocol demo):
   - The HintInit demo sent each entry to every hint whose subset holds the block. It now uses a toy iPRF inverse, as the pseudocode beside it does, and shows the two parities of a backup hint.
