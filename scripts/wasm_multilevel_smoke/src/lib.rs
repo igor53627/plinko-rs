@@ -5,8 +5,8 @@
 //! Build and run via `scripts/test_wasm_multilevel.sh`.
 
 use plinko::multilevel::{
-    BackendVariant, MultiLevelAnswer, MultiLevelClient, MultiLevelError, MultiLevelParams,
-    MultiLevelServer, PendingMultiLevelQuery,
+    BackendVariant, MultiLevelAnswer, MultiLevelClient, MultiLevelError, MultiLevelHintBuilder,
+    MultiLevelParams, MultiLevelServer, PendingMultiLevelQuery,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -33,8 +33,18 @@ pub extern "C" fn run_multilevel_2b_smoke() -> i32 {
             Err(_) => return -1,
         };
 
-    let client: MultiLevelClient = match MultiLevelClient::hint_init(params.clone(), &seed, &db, 1)
-    {
+    // Exercise unaligned single-pass streaming HintInit inside zero-import WASM.
+    let mut builder: MultiLevelHintBuilder =
+        match MultiLevelHintBuilder::with_chunk_bytes(params.clone(), &seed, 1, 128 * 1024) {
+            Ok(b) => b,
+            Err(_) => return -2,
+        };
+    for part in db.chunks(65_537) {
+        if builder.push_bytes(part).is_err() {
+            return -2;
+        }
+    }
+    let client: MultiLevelClient = match builder.finish() {
         Ok(c) => c,
         Err(_) => return -2,
     };
