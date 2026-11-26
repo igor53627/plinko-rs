@@ -61,6 +61,21 @@ const AES_BATCH_BLOCKS: usize = 8;
 /// uses thread-local non-atomic accumulators to avoid cache-line contention.
 const LOCAL_ACCUM_THRESHOLD_BYTES: usize = 8 * 1024 * 1024;
 
+/// Maximum combined thread-local accumulator memory across all levels and workers
+/// before remaining levels fall back to shared atomic accumulators.
+const LOCAL_ACCUM_MAX_WORKERS_BYTES: usize = 128 * 1024 * 1024;
+
+/// Default database streaming chunk buffer size (64 MiB on native targets) used by
+/// [`MultiLevelHintBuilder::new`], [`MultiLevelClient::hint_init_from_reader`], and
+/// [`MultiLevelClient::hint_init_from_file`].
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_STREAM_CHUNK_BYTES: usize = 64 * 1024 * 1024;
+
+/// Default database streaming chunk buffer size (4 MiB on `wasm32`) used by
+/// [`MultiLevelHintBuilder::new`] and [`MultiLevelClient::hint_init_from_reader`].
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_STREAM_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
 /// Backend that generates `(color, offset)` pairs for one level's blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelBackend {
@@ -139,11 +154,13 @@ pub struct MultiLevelParams {
 pub enum MultiLevelError {
     /// Invalid parameter configuration.
     InvalidParams(&'static str),
-    /// Database slice length does not match `num_entries * record_size`.
+    /// Database input length does not match `num_entries * record_size`.
     DatabaseLengthMismatch {
         /// Expected byte length.
         expected: usize,
-        /// Actual byte length.
+        /// Actual byte length, or a lower bound (`expected.saturating_add(1)`) when a streaming
+        /// [`Read`] source has trailing bytes past `expected` (detected via a single-byte probe
+        /// without draining the stream).
         actual: usize,
     },
     /// Query or delta index is out of bounds.
@@ -963,268 +980,568 @@ impl LevelState {
             }
         }
     }
+}
 
-    /// Runs `HintInit` for all blocks (or a contiguous slice `block_start..block_end`) of this level.
-    fn fill_parities_range(
-        &mut self,
-        database: &[u8],
-        num_entries: usize,
-        block_start: usize,
-        block_end: usize,
+struct LocalParityBuf {
+    reg: Vec<u64>,
+    b0: Vec<u64>,
+    b1: Vec<u64>,
+}
+
+enum LevelParityAccum {
+    Local(Vec<LocalParityBuf>),
+    Atomic {
+        reg: Vec<AtomicU64>,
+        b0: Vec<AtomicU64>,
+        b1: Vec<AtomicU64>,
+    },
+}
+
+struct LevelAccumulator {
+    spec: LevelSpec,
+    record_size: usize,
+    words: usize,
+    block_key_cipher: Aes128,
+    color_cipher: Aes128,
+    selectors: Vec<u8>,
+    workers: usize,
+    accum: LevelParityAccum,
+}
+
+impl LevelAccumulator {
+    fn new(
+        spec: LevelSpec,
+        record_size: usize,
+        seed: &[u8; 32],
+        level_idx: usize,
         threads: usize,
-    ) {
-        let _ =
-            self.fill_parities_range_timed(database, num_entries, block_start, block_end, threads);
-    }
+        remaining_local_budget: &mut usize,
+    ) -> Self {
+        let block_key_cipher: Aes128 = derive_level_cipher(seed, b"ml-block-key", level_idx);
+        let color_cipher: Aes128 = derive_level_cipher(seed, b"ml-color-bit", level_idx);
+        let selector_cipher: Aes128 = derive_level_cipher(seed, b"ml-init-sel", level_idx);
+        let selectors: Vec<u8> = (0..spec.num_primary)
+            .map(|j| initial_selector(&selector_cipher, j))
+            .collect();
 
-    fn fill_parities_range_timed(
-        &mut self,
-        database: &[u8],
-        num_entries: usize,
-        block_start: usize,
-        block_end: usize,
-        threads: usize,
-    ) -> (u64, u64) {
-        let r: usize = self.record_size;
-        let words: usize = r.div_ceil(8);
-        let workers: usize = effective_threads(threads, block_end.saturating_sub(block_start));
-        let selectors: Vec<u8> = self.slots.iter().map(|s| s.selector).collect();
-
-        let level_bytes: usize = (self.spec.num_primary + 2 * self.spec.num_backup) * words * 8;
-        let use_local_accum: bool = self.spec.backend == LevelBackend::FlatAes
-            && level_bytes <= LOCAL_ACCUM_THRESHOLD_BYTES;
-
-        if use_local_accum {
-            self.fill_flat_aes_local(
-                database,
-                num_entries,
-                block_start,
-                block_end,
-                workers,
-                words,
-                &selectors,
-            )
-        } else {
-            self.fill_atomic(
-                database,
-                num_entries,
-                block_start,
-                block_end,
-                workers,
-                words,
-                &selectors,
-            )
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn fill_flat_aes_local(
-        &mut self,
-        database: &[u8],
-        num_entries: usize,
-        block_start: usize,
-        block_end: usize,
-        workers: usize,
-        words: usize,
-        selectors: &[u8],
-    ) -> (u64, u64) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_total: std::time::Instant = std::time::Instant::now();
-        let spec: LevelSpec = self.spec;
-        let r: usize = self.record_size;
-        let next_block: AtomicUsize = AtomicUsize::new(block_start);
-        let block_key_cipher: &Aes128 = &self.block_key_cipher;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_scan: std::time::Instant = std::time::Instant::now();
-        let partials: Vec<(Vec<u64>, Vec<u64>, Vec<u64>)> = run_scoped_workers(workers, || {
-            let mut reg: Vec<u64> = vec![0u64; spec.num_primary * words];
-            let mut b0: Vec<u64> = vec![0u64; spec.num_backup * words];
-            let mut b1: Vec<u64> = vec![0u64; spec.num_backup * words];
-            let mut entry: Vec<u64> = vec![0u64; words];
-
-            loop {
-                let block: usize = next_block.fetch_add(1, Ordering::Relaxed);
-                if block >= block_end {
-                    break;
-                }
-                let key: PrfKey128 = derive_block_key_with(block_key_cipher, block);
-                let cipher: Aes128 = Aes128::new(&GenericArray::from(key));
-                let base_entry: usize = block * spec.block_size;
-
-                flat_aes_scan_all(
-                    &cipher,
-                    spec.block_size,
-                    spec.total_hints(),
-                    |h, color, off| {
-                        let idx: usize = base_entry + off as usize;
-                        if idx >= num_entries {
-                            return;
-                        }
-                        load_record_words(&database[idx * r..(idx + 1) * r], &mut entry);
-                        let j: usize = h as usize;
-                        if j < spec.num_primary {
-                            if color == selectors[j] {
-                                xor_words(&mut reg[j * words..(j + 1) * words], &entry);
-                            }
-                        } else {
-                            let b: usize = j - spec.num_primary;
-                            let dst: &mut [u64] = if color == 0 {
-                                &mut b0[b * words..(b + 1) * words]
-                            } else {
-                                &mut b1[b * words..(b + 1) * words]
-                            };
-                            xor_words(dst, &entry);
-                        }
-                    },
-                );
+        let words: usize = record_size.div_ceil(8);
+        let workers: usize = effective_threads(threads, spec.num_blocks);
+        let level_bytes: usize = (spec.num_primary + 2 * spec.num_backup) * words * 8;
+        let use_local: bool = if spec.backend != LevelBackend::FlatAes {
+            false
+        } else if workers == 1 {
+            // Single-worker non-atomic buffer uses the same memory as AtomicU64 (no extra copies).
+            true
+        } else if level_bytes <= LOCAL_ACCUM_THRESHOLD_BYTES {
+            let total_worker_bytes: usize = workers.saturating_mul(level_bytes);
+            if total_worker_bytes <= *remaining_local_budget {
+                *remaining_local_budget -= total_worker_bytes;
+                true
+            } else {
+                false
             }
-            (reg, b0, b1)
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        let scan_ns: u64 = t_scan.elapsed().as_nanos() as u64;
+        } else {
+            false
+        };
 
-        let mut reg_total: Vec<u64> = vec![0u64; spec.num_primary * words];
-        let mut b0_total: Vec<u64> = vec![0u64; spec.num_backup * words];
-        let mut b1_total: Vec<u64> = vec![0u64; spec.num_backup * words];
-        for (reg, b0, b1) in partials {
-            xor_words(&mut reg_total, &reg);
-            xor_words(&mut b0_total, &b0);
-            xor_words(&mut b1_total, &b1);
-        }
+        let accum: LevelParityAccum = if use_local {
+            let bufs: Vec<LocalParityBuf> = (0..workers)
+                .map(|_| LocalParityBuf {
+                    reg: vec![0u64; spec.num_primary * words],
+                    b0: vec![0u64; spec.num_backup * words],
+                    b1: vec![0u64; spec.num_backup * words],
+                })
+                .collect();
+            LevelParityAccum::Local(bufs)
+        } else {
+            LevelParityAccum::Atomic {
+                reg: (0..spec.num_primary * words)
+                    .map(|_| AtomicU64::new(0))
+                    .collect(),
+                b0: (0..spec.num_backup * words)
+                    .map(|_| AtomicU64::new(0))
+                    .collect(),
+                b1: (0..spec.num_backup * words)
+                    .map(|_| AtomicU64::new(0))
+                    .collect(),
+            }
+        };
 
-        store_words_into_bytes(&reg_total, words, r, &mut self.primary_parities);
-        store_words_into_bytes(&b0_total, words, r, &mut self.backup_parities_0);
-        store_words_into_bytes(&b1_total, words, r, &mut self.backup_parities_1);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let total_ns: u64 = t_total.elapsed().as_nanos() as u64;
-            (total_ns.saturating_sub(scan_ns), scan_ns)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            (0, 0)
+        Self {
+            spec,
+            record_size,
+            words,
+            block_key_cipher,
+            color_cipher,
+            selectors,
+            workers,
+            accum,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn fill_atomic(
+    /// Accumulates all complete (and final partial) blocks intersecting `entry_start..entry_end`.
+    ///
+    /// `entry_start` must be a multiple of `self.spec.block_size`, and `chunk` must contain
+    /// `(entry_end - entry_start) * self.record_size` bytes.
+    fn process_chunk(
         &mut self,
-        database: &[u8],
+        chunk: &[u8],
+        entry_start: usize,
+        entry_end: usize,
         num_entries: usize,
-        block_start: usize,
-        block_end: usize,
-        workers: usize,
-        words: usize,
-        selectors: &[u8],
-    ) -> (u64, u64) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_total: std::time::Instant = std::time::Instant::now();
+    ) {
+        debug_assert_eq!(entry_start % self.spec.block_size, 0);
+        debug_assert_eq!(
+            chunk.len(),
+            entry_end.saturating_sub(entry_start) * self.record_size
+        );
+        if entry_start >= entry_end {
+            return;
+        }
+        let block_start: usize = entry_start / self.spec.block_size;
+        let block_end: usize = entry_end.div_ceil(self.spec.block_size);
+        let chunk_workers: usize = effective_threads(self.workers, block_end - block_start);
+
         let spec: LevelSpec = self.spec;
         let r: usize = self.record_size;
-        let reg_acc: Vec<AtomicU64> = (0..spec.num_primary * words)
-            .map(|_| AtomicU64::new(0))
-            .collect();
-        let b0_acc: Vec<AtomicU64> = (0..spec.num_backup * words)
-            .map(|_| AtomicU64::new(0))
-            .collect();
-        let b1_acc: Vec<AtomicU64> = (0..spec.num_backup * words)
-            .map(|_| AtomicU64::new(0))
-            .collect();
-        let next_block: AtomicUsize = AtomicUsize::new(block_start);
+        let words: usize = self.words;
         let block_key_cipher: &Aes128 = &self.block_key_cipher;
         let color_cipher: &Aes128 = &self.color_cipher;
+        let selectors: &[u8] = &self.selectors;
+        let next_block: AtomicUsize = AtomicUsize::new(block_start);
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_scan: std::time::Instant = std::time::Instant::now();
-        let _ = run_scoped_workers(workers, || {
-            let mut entry: Vec<u64> = vec![0u64; words];
-            loop {
-                let block: usize = next_block.fetch_add(1, Ordering::Relaxed);
-                if block >= block_end {
-                    break;
-                }
-                let key: PrfKey128 = derive_block_key_with(block_key_cipher, block);
-                let base_entry: usize = block * spec.block_size;
-
-                match spec.backend {
-                    LevelBackend::Iprf => {
-                        let iprf: Iprf =
-                            Iprf::new(key, spec.total_hints() as u64, spec.block_size as u64);
-                        let table: IprfTable<'_> = iprf.table();
-                        let max_off: usize =
-                            spec.block_size.min(num_entries.saturating_sub(base_entry));
-                        for offset in 0..max_off {
-                            let idx: usize = base_entry + offset;
-                            load_record_words(&database[idx * r..(idx + 1) * r], &mut entry);
-                            for h in table.inverse(offset as u64) {
-                                let j: usize = h as usize;
-                                let color: u8 = iprf_color_bit_with(color_cipher, block, h as u32);
-                                if j < spec.num_primary {
-                                    if color == selectors[j] {
-                                        xor_atomic(&reg_acc[j * words..(j + 1) * words], &entry);
-                                    }
-                                } else {
-                                    let b: usize = j - spec.num_primary;
-                                    let dst: &[AtomicU64] = if color == 0 {
-                                        &b0_acc[b * words..(b + 1) * words]
-                                    } else {
-                                        &b1_acc[b * words..(b + 1) * words]
-                                    };
-                                    xor_atomic(dst, &entry);
-                                }
-                            }
+        match &mut self.accum {
+            LevelParityAccum::Local(bufs) => {
+                let active_bufs: &mut [LocalParityBuf] = &mut bufs[..chunk_workers];
+                run_scoped_workers_mut(active_bufs, |buf| {
+                    let mut entry: Vec<u64> = vec![0u64; words];
+                    loop {
+                        let block: usize = next_block.fetch_add(1, Ordering::Relaxed);
+                        if block >= block_end {
+                            break;
                         }
-                    }
-                    LevelBackend::FlatAes => {
+                        let key: PrfKey128 = derive_block_key_with(block_key_cipher, block);
                         let cipher: Aes128 = Aes128::new(&GenericArray::from(key));
+                        let base_entry: usize = block * spec.block_size;
+
                         flat_aes_scan_all(
                             &cipher,
                             spec.block_size,
                             spec.total_hints(),
                             |h, color, off| {
                                 let idx: usize = base_entry + off as usize;
-                                if idx >= num_entries {
+                                if idx >= entry_end || idx >= num_entries {
                                     return;
                                 }
-                                load_record_words(&database[idx * r..(idx + 1) * r], &mut entry);
+                                let local_idx: usize = idx - entry_start;
+                                load_record_words(
+                                    &chunk[local_idx * r..(local_idx + 1) * r],
+                                    &mut entry,
+                                );
                                 let j: usize = h as usize;
                                 if j < spec.num_primary {
                                     if color == selectors[j] {
-                                        xor_atomic(&reg_acc[j * words..(j + 1) * words], &entry);
+                                        xor_words(&mut buf.reg[j * words..(j + 1) * words], &entry);
                                     }
                                 } else {
                                     let b: usize = j - spec.num_primary;
-                                    let dst: &[AtomicU64] = if color == 0 {
-                                        &b0_acc[b * words..(b + 1) * words]
+                                    let dst: &mut [u64] = if color == 0 {
+                                        &mut buf.b0[b * words..(b + 1) * words]
                                     } else {
-                                        &b1_acc[b * words..(b + 1) * words]
+                                        &mut buf.b1[b * words..(b + 1) * words]
                                     };
-                                    xor_atomic(dst, &entry);
+                                    xor_words(dst, &entry);
                                 }
                             },
                         );
                     }
+                });
+            }
+            LevelParityAccum::Atomic { reg, b0, b1 } => {
+                let reg_ref: &[AtomicU64] = reg;
+                let b0_ref: &[AtomicU64] = b0;
+                let b1_ref: &[AtomicU64] = b1;
+                run_scoped_workers(chunk_workers, || {
+                    let mut entry: Vec<u64> = vec![0u64; words];
+                    loop {
+                        let block: usize = next_block.fetch_add(1, Ordering::Relaxed);
+                        if block >= block_end {
+                            break;
+                        }
+                        let key: PrfKey128 = derive_block_key_with(block_key_cipher, block);
+                        let base_entry: usize = block * spec.block_size;
+
+                        match spec.backend {
+                            LevelBackend::Iprf => {
+                                let iprf: Iprf = Iprf::new(
+                                    key,
+                                    spec.total_hints() as u64,
+                                    spec.block_size as u64,
+                                );
+                                let table: IprfTable<'_> = iprf.table();
+                                let max_off: usize = spec
+                                    .block_size
+                                    .min(entry_end.saturating_sub(base_entry))
+                                    .min(num_entries.saturating_sub(base_entry));
+                                for offset in 0..max_off {
+                                    let idx: usize = base_entry + offset;
+                                    let local_idx: usize = idx - entry_start;
+                                    load_record_words(
+                                        &chunk[local_idx * r..(local_idx + 1) * r],
+                                        &mut entry,
+                                    );
+                                    for h in table.inverse(offset as u64) {
+                                        let j: usize = h as usize;
+                                        let color: u8 =
+                                            iprf_color_bit_with(color_cipher, block, h as u32);
+                                        if j < spec.num_primary {
+                                            if color == selectors[j] {
+                                                xor_atomic(
+                                                    &reg_ref[j * words..(j + 1) * words],
+                                                    &entry,
+                                                );
+                                            }
+                                        } else {
+                                            let b: usize = j - spec.num_primary;
+                                            let dst: &[AtomicU64] = if color == 0 {
+                                                &b0_ref[b * words..(b + 1) * words]
+                                            } else {
+                                                &b1_ref[b * words..(b + 1) * words]
+                                            };
+                                            xor_atomic(dst, &entry);
+                                        }
+                                    }
+                                }
+                            }
+                            LevelBackend::FlatAes => {
+                                let cipher: Aes128 = Aes128::new(&GenericArray::from(key));
+                                flat_aes_scan_all(
+                                    &cipher,
+                                    spec.block_size,
+                                    spec.total_hints(),
+                                    |h, color, off| {
+                                        let idx: usize = base_entry + off as usize;
+                                        if idx >= entry_end || idx >= num_entries {
+                                            return;
+                                        }
+                                        let local_idx: usize = idx - entry_start;
+                                        load_record_words(
+                                            &chunk[local_idx * r..(local_idx + 1) * r],
+                                            &mut entry,
+                                        );
+                                        let j: usize = h as usize;
+                                        if j < spec.num_primary {
+                                            if color == selectors[j] {
+                                                xor_atomic(
+                                                    &reg_ref[j * words..(j + 1) * words],
+                                                    &entry,
+                                                );
+                                            }
+                                        } else {
+                                            let b: usize = j - spec.num_primary;
+                                            let dst: &[AtomicU64] = if color == 0 {
+                                                &b0_ref[b * words..(b + 1) * words]
+                                            } else {
+                                                &b1_ref[b * words..(b + 1) * words]
+                                            };
+                                            xor_atomic(dst, &entry);
+                                        }
+                                    },
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    fn into_level_state(self) -> LevelState {
+        let spec: LevelSpec = self.spec;
+        let r: usize = self.record_size;
+        let words: usize = self.words;
+
+        let mut slots: Vec<PrimarySlot> = Vec::with_capacity(spec.num_primary);
+        let mut hint_id_to_slot: Vec<u32> = vec![NO_SLOT; spec.total_hints()];
+        for (j, (&selector, slot_ref)) in self
+            .selectors
+            .iter()
+            .zip(hint_id_to_slot.iter_mut())
+            .enumerate()
+        {
+            slots.push(PrimarySlot {
+                hint_id: j as u32,
+                selector,
+                override_entry: None,
+                reserved: false,
+                retired: false,
+            });
+            *slot_ref = j as u32;
+        }
+
+        let mut primary_parities: Vec<u8> = vec![0u8; spec.num_primary * r];
+        let mut backup_parities_0: Vec<u8> = vec![0u8; spec.num_backup * r];
+        let mut backup_parities_1: Vec<u8> = vec![0u8; spec.num_backup * r];
+
+        match self.accum {
+            LevelParityAccum::Local(mut bufs) => {
+                if let Some((first, rest)) = bufs.split_first_mut() {
+                    for other in rest {
+                        xor_words(&mut first.reg, &other.reg);
+                        xor_words(&mut first.b0, &other.b0);
+                        xor_words(&mut first.b1, &other.b1);
+                    }
+                    store_words_into_bytes(&first.reg, words, r, &mut primary_parities);
+                    store_words_into_bytes(&first.b0, words, r, &mut backup_parities_0);
+                    store_words_into_bytes(&first.b1, words, r, &mut backup_parities_1);
                 }
             }
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        let scan_ns: u64 = t_scan.elapsed().as_nanos() as u64;
-
-        store_atomic_into_bytes(&reg_acc, words, r, &mut self.primary_parities);
-        store_atomic_into_bytes(&b0_acc, words, r, &mut self.backup_parities_0);
-        store_atomic_into_bytes(&b1_acc, words, r, &mut self.backup_parities_1);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let total_ns: u64 = t_total.elapsed().as_nanos() as u64;
-            (total_ns.saturating_sub(scan_ns), scan_ns)
+            LevelParityAccum::Atomic { reg, b0, b1 } => {
+                store_atomic_into_bytes(&reg, words, r, &mut primary_parities);
+                store_atomic_into_bytes(&b0, words, r, &mut backup_parities_0);
+                store_atomic_into_bytes(&b1, words, r, &mut backup_parities_1);
+            }
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            (0, 0)
+
+        LevelState {
+            spec,
+            record_size: r,
+            block_key_cipher: self.block_key_cipher,
+            color_cipher: self.color_cipher,
+            slots,
+            primary_parities,
+            backup_parities_0,
+            backup_parities_1,
+            backup_offset: 0,
+            next_backup: 0,
+            hint_id_to_slot,
+            override_index: HashMap::new(),
         }
+    }
+}
+
+/// Incremental, single-pass streaming `HintInit` builder for [`MultiLevelClient`].
+///
+/// Feeds raw database bytes across all levels in a single pass with bounded RAM. Because every
+/// level's `block_size` is a power of two, their least common multiple equals `max(block_size)`;
+/// aligned chunks are processed zero-copy across all levels simultaneously, and unaligned inputs
+/// are buffered up to `chunk_bytes` rounded down to a whole superblock (`max(block_size) *
+/// record_size`, minimum one superblock), or the exact database size when it fits in one
+/// superblock.
+///
+/// Works on both native targets and `wasm32-unknown-unknown` (`--no-default-features`) with zero
+/// host imports.
+///
+/// # Example
+/// ```
+/// use plinko::multilevel::{BackendVariant, MultiLevelHintBuilder, MultiLevelParams};
+///
+/// let params = MultiLevelParams::two_level(256, 8, 4, 16, BackendVariant::FlatB).unwrap();
+/// let db = vec![0x5Au8; 256 * 8];
+/// let seed = [0x11u8; 32];
+/// let mut builder = MultiLevelHintBuilder::new(params, &seed, 1).unwrap();
+/// for part in db.chunks(137) {
+///     builder.push_bytes(part).unwrap();
+/// }
+/// let client = builder.finish().unwrap();
+/// assert_eq!(client.epoch(), 0);
+/// ```
+pub struct MultiLevelHintBuilder {
+    params: MultiLevelParams,
+    levels: Vec<LevelAccumulator>,
+    expected_bytes: usize,
+    max_block_size: usize,
+    superblock_bytes: usize,
+    flush_bytes: usize,
+    entries_processed: usize,
+    pending_buf: Vec<u8>,
+}
+
+impl MultiLevelHintBuilder {
+    /// Creates a streaming `HintInit` builder using [`DEFAULT_STREAM_CHUNK_BYTES`].
+    pub fn new(
+        params: MultiLevelParams,
+        seed: &[u8; 32],
+        threads: usize,
+    ) -> Result<Self, MultiLevelError> {
+        Self::with_chunk_bytes(params, seed, threads, DEFAULT_STREAM_CHUNK_BYTES)
+    }
+
+    /// Creates a streaming `HintInit` builder with a custom target chunk buffer size in bytes.
+    ///
+    /// `chunk_bytes` is rounded down to a positive multiple of `max(block_size) * record_size`
+    /// (at least one full superblock of `max(block_size)` records), or the exact database size
+    /// when `num_entries <= max(block_size)`.
+    pub fn with_chunk_bytes(
+        params: MultiLevelParams,
+        seed: &[u8; 32],
+        threads: usize,
+        chunk_bytes: usize,
+    ) -> Result<Self, MultiLevelError> {
+        if chunk_bytes == 0 {
+            return Err(MultiLevelError::InvalidParams("chunk_bytes must be > 0"));
+        }
+        let expected_bytes: usize = params
+            .num_entries
+            .checked_mul(params.record_size)
+            .ok_or(MultiLevelError::InvalidParams("database size overflow"))?;
+        let params: MultiLevelParams =
+            MultiLevelParams::custom(params.num_entries, params.record_size, params.levels)?;
+
+        let max_block_size: usize = params.levels.iter().map(|s| s.block_size).max().ok_or(
+            MultiLevelError::InvalidParams("levels.len() must be in 1..=MAX_LEVELS"),
+        )?;
+        // If the entire database fits in a single superblock, use its exact byte length so valid
+        // small databases with large nominal `block_size` still work on 32-bit targets (`wasm32`).
+        let (superblock_bytes, flush_bytes): (usize, usize) =
+            if params.num_entries <= max_block_size {
+                (expected_bytes, expected_bytes)
+            } else {
+                let sb: usize = max_block_size
+                    .checked_mul(params.record_size)
+                    .ok_or(MultiLevelError::InvalidParams("superblock size overflow"))?;
+                let superblocks_per_chunk: usize = (chunk_bytes / sb).max(1);
+                let fb: usize = superblocks_per_chunk.checked_mul(sb).unwrap_or(sb);
+                (sb, fb)
+            };
+
+        let mut remaining_local_budget: usize = LOCAL_ACCUM_MAX_WORKERS_BYTES;
+        let levels: Vec<LevelAccumulator> = params
+            .levels
+            .iter()
+            .enumerate()
+            .map(|(i, &spec)| {
+                LevelAccumulator::new(
+                    spec,
+                    params.record_size,
+                    seed,
+                    i,
+                    threads,
+                    &mut remaining_local_budget,
+                )
+            })
+            .collect();
+
+        Ok(Self {
+            params,
+            levels,
+            expected_bytes,
+            max_block_size,
+            superblock_bytes,
+            flush_bytes,
+            entries_processed: 0,
+            pending_buf: Vec::new(),
+        })
+    }
+
+    /// Returns the total database byte length expected across all [`Self::push_bytes`] calls.
+    pub fn expected_bytes(&self) -> usize {
+        self.expected_bytes
+    }
+
+    /// Returns the number of database bytes accepted so far.
+    pub fn bytes_fed(&self) -> usize {
+        self.entries_processed * self.params.record_size + self.pending_buf.len()
+    }
+
+    /// Returns the aligned chunk size in bytes used for buffered flushes and reader pulls.
+    fn flush_bytes(&self) -> usize {
+        self.flush_bytes
+    }
+
+    /// Feeds the next contiguous slice of database bytes into the streaming `HintInit` pass.
+    ///
+    /// Slices may have arbitrary length (even unaligned to `record_size`). Pushing past
+    /// [`Self::expected_bytes`] fails immediately with [`MultiLevelError::DatabaseLengthMismatch`].
+    pub fn push_bytes(&mut self, mut data: &[u8]) -> Result<(), MultiLevelError> {
+        let r: usize = self.params.record_size;
+        let already: usize = self.entries_processed * r + self.pending_buf.len();
+        let new_total: usize =
+            already
+                .checked_add(data.len())
+                .ok_or(MultiLevelError::DatabaseLengthMismatch {
+                    expected: self.expected_bytes,
+                    actual: usize::MAX,
+                })?;
+        if new_total > self.expected_bytes {
+            return Err(MultiLevelError::DatabaseLengthMismatch {
+                expected: self.expected_bytes,
+                actual: new_total,
+            });
+        }
+
+        while !data.is_empty() {
+            let remaining_unprocessed: usize = self.expected_bytes - self.entries_processed * r;
+            if self.pending_buf.is_empty() {
+                if data.len() == remaining_unprocessed {
+                    // Exact final chunk (or full in-memory database): zero-copy flush.
+                    let chunk_entries: usize = data.len() / r;
+                    self.process_aligned_chunk(data, chunk_entries);
+                    data = &[];
+                } else if data.len() >= self.superblock_bytes {
+                    // Zero-copy fast path for complete superblocks.
+                    let full_sbs: usize = data.len() / self.superblock_bytes;
+                    let take_bytes: usize = full_sbs * self.superblock_bytes;
+                    self.process_aligned_chunk(&data[..take_bytes], full_sbs * self.max_block_size);
+                    data = &data[take_bytes..];
+                } else {
+                    self.pending_buf.extend_from_slice(data);
+                    data = &[];
+                }
+            } else {
+                let target: usize = self.flush_bytes.min(remaining_unprocessed);
+                let need: usize = target - self.pending_buf.len();
+                let take: usize = data.len().min(need);
+                self.pending_buf.extend_from_slice(&data[..take]);
+                data = &data[take..];
+                if self.pending_buf.len() == target {
+                    let buf: Vec<u8> = std::mem::take(&mut self.pending_buf);
+                    let chunk_entries: usize = target / r;
+                    self.process_aligned_chunk(&buf, chunk_entries);
+                    self.pending_buf = buf;
+                    self.pending_buf.clear();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_aligned_chunk(&mut self, chunk: &[u8], chunk_entries: usize) {
+        let entry_start: usize = self.entries_processed;
+        let entry_end: usize = entry_start + chunk_entries;
+        let num_entries: usize = self.params.num_entries;
+        for level in &mut self.levels {
+            level.process_chunk(chunk, entry_start, entry_end, num_entries);
+        }
+        self.entries_processed = entry_end;
+    }
+
+    /// Finalizes streaming `HintInit` and returns the initialized [`MultiLevelClient`].
+    ///
+    /// Fails with [`MultiLevelError::DatabaseLengthMismatch`] if fewer than
+    /// [`Self::expected_bytes`] bytes were pushed.
+    pub fn finish(self) -> Result<MultiLevelClient, MultiLevelError> {
+        let actual: usize = self.bytes_fed();
+        if actual != self.expected_bytes || !self.pending_buf.is_empty() {
+            return Err(MultiLevelError::DatabaseLengthMismatch {
+                expected: self.expected_bytes,
+                actual,
+            });
+        }
+        let levels: Vec<LevelState> = self
+            .levels
+            .into_iter()
+            .map(LevelAccumulator::into_level_state)
+            .collect();
+        Ok(MultiLevelClient {
+            params: self.params,
+            levels,
+            session_id: next_session_id(),
+            epoch: 0,
+            next_query_id: 1,
+            in_flight: HashMap::new(),
+        })
     }
 }
 
@@ -1314,7 +1631,10 @@ impl MultiLevelClient {
         }
     }
 
-    /// Runs full streaming `HintInit` across all levels on `threads` worker threads.
+    /// Runs full `HintInit` across all levels on `threads` worker threads from an in-memory slice.
+    ///
+    /// Processes one level at a time so scratch parity accumulators for each level are released
+    /// before allocating the next level's accumulators.
     pub fn hint_init(
         params: MultiLevelParams,
         seed: &[u8; 32],
@@ -1331,17 +1651,166 @@ impl MultiLevelClient {
                 actual: database.len(),
             });
         }
-        let mut client: Self = Self::new_zeroed(params, seed);
-        let num_entries: usize = client.params.num_entries;
-        for level in &mut client.levels {
-            let num_blocks: usize = level.spec.num_blocks;
-            level.fill_parities_range(database, num_entries, 0, num_blocks, threads);
+        let params: MultiLevelParams =
+            MultiLevelParams::custom(params.num_entries, params.record_size, params.levels)?;
+        let num_entries: usize = params.num_entries;
+        let record_size: usize = params.record_size;
+        let mut levels: Vec<LevelState> = Vec::with_capacity(params.levels.len());
+        for (i, &spec) in params.levels.iter().enumerate() {
+            let mut local_budget: usize = LOCAL_ACCUM_MAX_WORKERS_BYTES;
+            let mut acc: LevelAccumulator =
+                LevelAccumulator::new(spec, record_size, seed, i, threads, &mut local_budget);
+            acc.process_chunk(database, 0, num_entries, num_entries);
+            levels.push(acc.into_level_state());
         }
-        Ok(client)
+        Ok(Self {
+            params,
+            levels,
+            session_id: next_session_id(),
+            epoch: 0,
+            next_query_id: 1,
+            in_flight: HashMap::new(),
+        })
+    }
+
+    /// Runs single-pass streaming `HintInit` from any EOF-terminated [`Read`] source using
+    /// [`DEFAULT_STREAM_CHUNK_BYTES`] of database read buffer.
+    ///
+    /// Fails with [`MultiLevelError::DatabaseLengthMismatch`] if the stream terminates before
+    /// `num_entries * record_size` bytes or contains trailing bytes beyond the expected length
+    /// (on trailing bytes, `actual` is reported as a lower bound `expected.saturating_add(1)`
+    /// without draining the stream).
+    ///
+    /// Because this method probes one byte past `num_entries * record_size` to detect trailing
+    /// data, the reader must signal EOF after the database bytes. For length-delimited messages
+    /// on a persistent connection, validate that the declared frame length equals
+    /// `num_entries * record_size` first and then bound the read by that validated frame length
+    /// (such as `reader.take(frame_len)` — noting that a bounded reader cannot detect trailing
+    /// bytes beyond its bound), or feed chunks directly via [`MultiLevelHintBuilder::push_bytes`].
+    pub fn hint_init_from_reader<R: Read>(
+        params: MultiLevelParams,
+        seed: &[u8; 32],
+        reader: R,
+        threads: usize,
+    ) -> Result<Self, MultiLevelError> {
+        Self::hint_init_from_reader_with_chunk_bytes(
+            params,
+            seed,
+            reader,
+            threads,
+            DEFAULT_STREAM_CHUNK_BYTES,
+        )
+    }
+
+    /// Runs single-pass streaming `HintInit` from any EOF-terminated [`Read`] source with a custom
+    /// chunk buffer size in bytes (aligned to a positive multiple of `max(block_size) * record_size`
+    /// and capped to the database size).
+    ///
+    /// Fails with [`MultiLevelError::DatabaseLengthMismatch`] if the stream ends early or has
+    /// trailing bytes after `num_entries * record_size` (reporting `actual = expected.saturating_add(1)`
+    /// as a lower bound without draining the stream). See [`Self::hint_init_from_reader`] for
+    /// persistent-connection EOF guidance.
+    pub fn hint_init_from_reader_with_chunk_bytes<R: Read>(
+        params: MultiLevelParams,
+        seed: &[u8; 32],
+        mut reader: R,
+        threads: usize,
+        chunk_bytes: usize,
+    ) -> Result<Self, MultiLevelError> {
+        let mut builder: MultiLevelHintBuilder =
+            MultiLevelHintBuilder::with_chunk_bytes(params, seed, threads, chunk_bytes)?;
+        let expected: usize = builder.expected_bytes();
+        let buf_len: usize = builder.flush_bytes().min(expected);
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(buf_len)
+            .map_err(|_| MultiLevelError::InvalidParams("chunk buffer allocation failed"))?;
+        buf.resize(buf_len, 0);
+
+        let mut remaining: usize = expected;
+        while remaining > 0 {
+            let want: usize = buf_len.min(remaining);
+            let n: usize = read_fill(&mut reader, &mut buf[..want])?;
+            if n < want {
+                return Err(MultiLevelError::DatabaseLengthMismatch {
+                    expected,
+                    actual: expected - remaining + n,
+                });
+            }
+            builder.push_bytes(&buf[..n])?;
+            remaining -= n;
+        }
+
+        let mut extra: [u8; 1] = [0u8; 1];
+        if read_fill(&mut reader, &mut extra)? > 0 {
+            return Err(MultiLevelError::DatabaseLengthMismatch {
+                expected,
+                actual: expected.saturating_add(1),
+            });
+        }
+
+        builder.finish()
+    }
+
+    /// Runs single-pass streaming `HintInit` directly from a database file on disk using
+    /// [`DEFAULT_STREAM_CHUNK_BYTES`] of read buffer.
+    ///
+    /// For regular files, the file length is checked against `num_entries * record_size` before
+    /// allocating hint accumulators. The file must remain unchanged for the entire call (the
+    /// length check cannot detect concurrent same-length in-place writes), and the server must
+    /// answer queries against that same snapshot.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hint_init_from_file<P: AsRef<std::path::Path>>(
+        params: MultiLevelParams,
+        seed: &[u8; 32],
+        path: P,
+        threads: usize,
+    ) -> Result<Self, MultiLevelError> {
+        Self::hint_init_from_file_with_chunk_bytes(
+            params,
+            seed,
+            path,
+            threads,
+            DEFAULT_STREAM_CHUNK_BYTES,
+        )
+    }
+
+    /// Runs single-pass streaming `HintInit` directly from a database file on disk with a custom
+    /// chunk buffer size in bytes.
+    ///
+    /// The input file must remain unchanged for the entire call (concurrent same-length edits are
+    /// not detected by the length check), and the server must answer queries against that same
+    /// snapshot.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hint_init_from_file_with_chunk_bytes<P: AsRef<std::path::Path>>(
+        params: MultiLevelParams,
+        seed: &[u8; 32],
+        path: P,
+        threads: usize,
+        chunk_bytes: usize,
+    ) -> Result<Self, MultiLevelError> {
+        if chunk_bytes == 0 {
+            return Err(MultiLevelError::InvalidParams("chunk_bytes must be > 0"));
+        }
+        let expected: usize = params
+            .num_entries
+            .checked_mul(params.record_size)
+            .ok_or(MultiLevelError::InvalidParams("database size overflow"))?;
+        let file: std::fs::File = std::fs::File::open(path)?;
+        let meta: std::fs::Metadata = file.metadata()?;
+        if meta.is_file() {
+            let file_len: u64 = meta.len();
+            if file_len != expected as u64 {
+                return Err(MultiLevelError::DatabaseLengthMismatch {
+                    expected,
+                    actual: usize::try_from(file_len).unwrap_or(usize::MAX),
+                });
+            }
+        }
+        Self::hint_init_from_reader_with_chunk_bytes(params, seed, file, threads, chunk_bytes)
     }
 
     /// Runs `HintInit` on the first `sample_blocks` blocks of level `level_idx` using an
-    /// isolated scratch `LevelState` so no live client hint state is mutated, and returns
+    /// isolated scratch accumulator so no live client hint state is mutated, and returns
     /// `(fixed_duration, scan_duration)` separating one-time accumulator setup/writeback
     /// from per-block scanning work. Used to extrapolate `HintInit` throughput accurately.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1354,11 +1823,25 @@ impl MultiLevelClient {
         threads: usize,
     ) -> (std::time::Duration, std::time::Duration) {
         let spec: LevelSpec = params.levels[level_idx];
-        let mut scratch: LevelState =
-            LevelState::new_zeroed(spec, params.record_size, seed, level_idx);
         let num_entries: usize = sample_blocks * spec.block_size;
-        let (fixed_ns, scan_ns) =
-            scratch.fill_parities_range_timed(sample_db, num_entries, 0, sample_blocks, threads);
+        let sample_bytes: usize = num_entries * params.record_size;
+        let sample_threads: usize = threads.min(sample_blocks.max(1));
+        let t_total: std::time::Instant = std::time::Instant::now();
+        let mut local_budget: usize = LOCAL_ACCUM_MAX_WORKERS_BYTES;
+        let mut acc: LevelAccumulator = LevelAccumulator::new(
+            spec,
+            params.record_size,
+            seed,
+            level_idx,
+            sample_threads,
+            &mut local_budget,
+        );
+        let t_scan: std::time::Instant = std::time::Instant::now();
+        acc.process_chunk(&sample_db[..sample_bytes], 0, num_entries, num_entries);
+        let scan_ns: u64 = t_scan.elapsed().as_nanos() as u64;
+        let _state: LevelState = acc.into_level_state();
+        let total_ns: u64 = t_total.elapsed().as_nanos() as u64;
+        let fixed_ns: u64 = total_ns.saturating_sub(scan_ns);
         (
             std::time::Duration::from_nanos(fixed_ns),
             std::time::Duration::from_nanos(scan_ns),
@@ -2722,32 +3205,78 @@ fn try_alloc_filled(len: usize, val: u32) -> Result<Vec<u32>, MultiLevelError> {
     Ok(v)
 }
 
-fn run_scoped_workers<T: Send, F: Fn() -> T + Sync>(workers: usize, f: F) -> Vec<T> {
+fn read_fill<R: Read>(reader: &mut R, mut buf: &mut [u8]) -> io::Result<usize> {
+    let mut total: usize = 0;
+    while !buf.is_empty() {
+        match reader.read(buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                buf = &mut buf[n..];
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
+}
+
+fn run_scoped_workers<F: Fn() + Sync>(workers: usize, f: F) {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = workers;
-        vec![f()]
+        f();
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         if workers <= 1 {
-            return vec![f()];
+            f();
+            return;
         }
         std::thread::scope(|s| {
             let f_ref: &F = &f;
-            let mut handles = Vec::with_capacity(workers);
-            let mut results: Vec<T> = Vec::with_capacity(workers);
-            for _ in 0..workers {
-                match std::thread::Builder::new().spawn_scoped(s, f_ref) {
-                    Ok(handle) => handles.push(handle),
-                    Err(_) => results.push(f_ref()),
+            let mut handles = Vec::with_capacity(workers - 1);
+            for _ in 1..workers {
+                if let Ok(handle) = std::thread::Builder::new().spawn_scoped(s, f_ref) {
+                    handles.push(handle);
                 }
             }
+            f_ref();
             for h in handles {
-                results.push(h.join().unwrap());
+                h.join().unwrap();
             }
-            results
-        })
+        });
+    }
+}
+
+fn run_scoped_workers_mut<S: Send, F: Fn(&mut S) + Sync>(states: &mut [S], f: F) {
+    let Some((first, rest)) = states.split_first_mut() else {
+        return;
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = rest;
+        f(first);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if rest.is_empty() {
+            f(first);
+            return;
+        }
+        std::thread::scope(|s| {
+            let f_ref: &F = &f;
+            let mut handles = Vec::with_capacity(rest.len());
+            for st in rest.iter_mut() {
+                if let Ok(handle) = std::thread::Builder::new().spawn_scoped(s, move || f_ref(st)) {
+                    handles.push(handle);
+                }
+            }
+            f_ref(first);
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
     }
 }
 
@@ -3598,6 +4127,336 @@ mod tests {
             assert!(
                 (1_420..=1_580).contains(&sweeps),
                 "expected ~1500 unbiased winning-level sweeps out of {trials}, got {sweeps}"
+            );
+        }
+    }
+
+    /// Reader wrapper that yields short reads and periodic `ErrorKind::Interrupted` errors
+    /// to verify `read_fill` and streaming `HintInit` resilience.
+    struct FlakyReader<'a> {
+        data: &'a [u8],
+        pos: usize,
+        max_chunk: usize,
+        calls: usize,
+    }
+
+    impl<'a> Read for FlakyReader<'a> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls.is_multiple_of(3) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "simulated EINTR",
+                ));
+            }
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            let n: usize = buf
+                .len()
+                .min(self.max_chunk)
+                .min(self.data.len() - self.pos);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct PrivateTempDir(std::path::PathBuf);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl PrivateTempDir {
+        fn new(prefix: &str) -> Self {
+            use std::fs::DirBuilder;
+            #[cfg(unix)]
+            use std::os::unix::fs::DirBuilderExt;
+
+            let base: std::path::PathBuf = std::env::temp_dir();
+            let pid: u32 = std::process::id();
+            let mut builder: DirBuilder = DirBuilder::new();
+            #[cfg(unix)]
+            builder.mode(0o700);
+
+            for _ in 0..64 {
+                let tag: u64 = next_session_id();
+                let nanos: u128 = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let dir: std::path::PathBuf = base.join(format!("{prefix}_{pid}_{tag}_{nanos}"));
+                match builder.create(&dir) {
+                    Ok(()) => return Self(dir),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("failed to create private temp dir: {e}"),
+                }
+            }
+            panic!("failed to allocate unique private temp dir");
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Drop for PrivateTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn streaming_hint_init_matches_in_memory_for_hybrid_and_flat_with_unaligned_and_odd_sizes() {
+        // Odd entry count (not divisible by w=16, 4, or 2) and non-8-byte-aligned record size.
+        let num_entries: usize = 101;
+        let record_size: usize = 37;
+        let seed: [u8; 32] = [0xA7; 32];
+        let db: Vec<u8> = make_db(num_entries, record_size, 777);
+
+        for variant in [
+            BackendVariant::FlatB,
+            BackendVariant::HybridA { iprf_levels: 1 },
+        ] {
+            let params: MultiLevelParams =
+                small_three_level_params(num_entries, record_size, variant);
+            let baseline: MultiLevelClient =
+                MultiLevelClient::hint_init(params.clone(), &seed, &db, 4).unwrap();
+            let baseline_bytes: Vec<u8> = baseline.to_bytes().unwrap();
+
+            // 1. Byte-by-byte push into MultiLevelHintBuilder with minimum chunk size (1 superblock).
+            let mut byte_builder: MultiLevelHintBuilder =
+                MultiLevelHintBuilder::with_chunk_bytes(params.clone(), &seed, 4, 1).unwrap();
+            assert_eq!(byte_builder.expected_bytes(), db.len());
+            for b in &db {
+                byte_builder.push_bytes(&[*b]).unwrap();
+            }
+            assert_eq!(byte_builder.bytes_fed(), db.len());
+            let from_bytes_client: MultiLevelClient = byte_builder.finish().unwrap();
+            assert_eq!(from_bytes_client.to_bytes().unwrap(), baseline_bytes);
+
+            // 2. Irregular slices (empty, tiny, > 1 superblock, partial) across multiple superblocks.
+            let mut irreg_builder: MultiLevelHintBuilder =
+                MultiLevelHintBuilder::with_chunk_bytes(params.clone(), &seed, 4, 1_200).unwrap();
+            let pattern: [usize; 7] = [0, 13, 700, 1, 1_300, 7, 500];
+            let mut offset: usize = 0;
+            let mut step: usize = 0;
+            while offset < db.len() {
+                let take: usize = pattern[step % pattern.len()].min(db.len() - offset);
+                irreg_builder
+                    .push_bytes(&db[offset..offset + take])
+                    .unwrap();
+                offset += take;
+                step += 1;
+            }
+            let from_irreg: MultiLevelClient = irreg_builder.finish().unwrap();
+            assert_eq!(from_irreg.to_bytes().unwrap(), baseline_bytes);
+
+            // 3. Flaky short-read + EINTR reader.
+            let flaky = FlakyReader {
+                data: &db,
+                pos: 0,
+                max_chunk: 19,
+                calls: 0,
+            };
+            let from_reader: MultiLevelClient =
+                MultiLevelClient::hint_init_from_reader_with_chunk_bytes(
+                    params.clone(),
+                    &seed,
+                    flaky,
+                    4,
+                    900,
+                )
+                .unwrap();
+            assert_eq!(from_reader.to_bytes().unwrap(), baseline_bytes);
+
+            // 4. Direct disk file streaming with both small (1 superblock) and multi-superblock buffers.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let dir = PrivateTempDir::new("plinko_ml_stream");
+                let path: std::path::PathBuf = dir.path().join("database.bin");
+                std::fs::write(&path, &db).unwrap();
+
+                let mut from_file: MultiLevelClient =
+                    MultiLevelClient::hint_init_from_file_with_chunk_bytes(
+                        params.clone(),
+                        &seed,
+                        &path,
+                        4,
+                        1_500,
+                    )
+                    .unwrap();
+                assert_eq!(from_file.to_bytes().unwrap(), baseline_bytes);
+
+                // Verify `bench_level_blocks` accepts a larger `sample_db` than `sample_blocks`.
+                let _ = MultiLevelClient::bench_level_blocks(&params, &seed, 0, &db, 2, 1);
+
+                let mut rng: ChaCha20Rng = ChaCha20Rng::seed_from_u64(909);
+                for &idx in &[0usize, 15, 16, 50, 100] {
+                    let pending: PendingMultiLevelQuery =
+                        from_file.prepare_query(idx, &mut rng).unwrap();
+                    let ans: MultiLevelAnswer =
+                        MultiLevelServer::answer(&db, &params, &pending.query, from_file.epoch())
+                            .unwrap();
+                    let val: Vec<u8> = from_file.finish_query(&pending, &ans, &mut rng).unwrap();
+                    assert_eq!(
+                        val.as_slice(),
+                        &db[idx * record_size..(idx + 1) * record_size]
+                    );
+                }
+            }
+        }
+
+        // Sub-superblock database (num_entries < max(block_size)).
+        let tiny_n: usize = 5;
+        let tiny_r: usize = 13;
+        let tiny_db: Vec<u8> = make_db(tiny_n, tiny_r, 888);
+        let tiny_params: MultiLevelParams =
+            small_three_level_params(tiny_n, tiny_r, BackendVariant::FlatB);
+        let tiny_mem: MultiLevelClient =
+            MultiLevelClient::hint_init(tiny_params.clone(), &seed, &tiny_db, 2).unwrap();
+        let tiny_stream: MultiLevelClient =
+            MultiLevelClient::hint_init_from_reader(tiny_params, &seed, &tiny_db[..], 2).unwrap();
+        assert_eq!(
+            tiny_stream.to_bytes().unwrap(),
+            tiny_mem.to_bytes().unwrap()
+        );
+    }
+
+    #[test]
+    fn streaming_hint_init_error_handling() {
+        let num_entries: usize = 64;
+        let record_size: usize = 16;
+        let seed: [u8; 32] = [0x3C; 32];
+        let db: Vec<u8> = make_db(num_entries, record_size, 555);
+        let params: MultiLevelParams =
+            small_three_level_params(num_entries, record_size, BackendVariant::FlatB);
+
+        // chunk_bytes == 0 rejected.
+        assert_eq!(
+            MultiLevelHintBuilder::with_chunk_bytes(params.clone(), &seed, 1, 0).err(),
+            Some(MultiLevelError::InvalidParams("chunk_bytes must be > 0"))
+        );
+
+        // Finishing early returns DatabaseLengthMismatch.
+        let mut short_builder: MultiLevelHintBuilder =
+            MultiLevelHintBuilder::new(params.clone(), &seed, 1).unwrap();
+        short_builder.push_bytes(&db[..100]).unwrap();
+        assert_eq!(
+            short_builder.finish().err(),
+            Some(MultiLevelError::DatabaseLengthMismatch {
+                expected: db.len(),
+                actual: 100,
+            })
+        );
+
+        // Overfeeding returns DatabaseLengthMismatch immediately.
+        let mut over_builder: MultiLevelHintBuilder =
+            MultiLevelHintBuilder::new(params.clone(), &seed, 1).unwrap();
+        over_builder.push_bytes(&db).unwrap();
+        assert_eq!(
+            over_builder.push_bytes(&[0u8]).err(),
+            Some(MultiLevelError::DatabaseLengthMismatch {
+                expected: db.len(),
+                actual: db.len() + 1,
+            })
+        );
+
+        // Truncated reader returns DatabaseLengthMismatch.
+        assert_eq!(
+            MultiLevelClient::hint_init_from_reader(params.clone(), &seed, &db[..db.len() - 5], 1,)
+                .err(),
+            Some(MultiLevelError::DatabaseLengthMismatch {
+                expected: db.len(),
+                actual: db.len() - 5,
+            })
+        );
+
+        // Reader that returns EOF after a partial chunk must fail at first EOF even if more bytes
+        // would appear on a subsequent read (e.g. concurrent append).
+        struct EofThenMore<'a> {
+            first: &'a [u8],
+            second: &'a [u8],
+            stage: u8,
+        }
+        impl Read for EofThenMore<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                match self.stage {
+                    0 => {
+                        self.stage = 1;
+                        let n: usize = buf.len().min(self.first.len());
+                        buf[..n].copy_from_slice(&self.first[..n]);
+                        Ok(n)
+                    }
+                    1 => {
+                        self.stage = 2;
+                        Ok(0)
+                    }
+                    _ => {
+                        let n: usize = buf.len().min(self.second.len());
+                        buf[..n].copy_from_slice(&self.second[..n]);
+                        Ok(n)
+                    }
+                }
+            }
+        }
+        let split: usize = 64;
+        assert_eq!(
+            MultiLevelClient::hint_init_from_reader(
+                params.clone(),
+                &seed,
+                EofThenMore {
+                    first: &db[..split],
+                    second: &db[split..],
+                    stage: 0,
+                },
+                1,
+            )
+            .err(),
+            Some(MultiLevelError::DatabaseLengthMismatch {
+                expected: db.len(),
+                actual: split,
+            })
+        );
+
+        // Trailing bytes in reader return DatabaseLengthMismatch.
+        let mut extra_db: Vec<u8> = db.clone();
+        extra_db.push(0xFF);
+        assert_eq!(
+            MultiLevelClient::hint_init_from_reader(params.clone(), &seed, &extra_db[..], 1).err(),
+            Some(MultiLevelError::DatabaseLengthMismatch {
+                expected: db.len(),
+                actual: db.len() + 1,
+            })
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dir = PrivateTempDir::new("plinko_ml_err");
+            let missing_path: std::path::PathBuf = dir.path().join("missing.bin");
+            assert_eq!(
+                MultiLevelClient::hint_init_from_file(params.clone(), &seed, &missing_path, 1)
+                    .err(),
+                Some(MultiLevelError::Io(io::ErrorKind::NotFound))
+            );
+
+            let bad_path: std::path::PathBuf = dir.path().join("badlen.bin");
+            std::fs::write(&bad_path, &db[..db.len() - 1]).unwrap();
+            assert_eq!(
+                MultiLevelClient::hint_init_from_file(params.clone(), &seed, &bad_path, 1).err(),
+                Some(MultiLevelError::DatabaseLengthMismatch {
+                    expected: db.len(),
+                    actual: db.len() - 1,
+                })
+            );
+
+            std::fs::write(&bad_path, &extra_db).unwrap();
+            assert_eq!(
+                MultiLevelClient::hint_init_from_file(params, &seed, &bad_path, 1).err(),
+                Some(MultiLevelError::DatabaseLengthMismatch {
+                    expected: db.len(),
+                    actual: db.len() + 1,
+                })
             );
         }
     }

@@ -36,6 +36,11 @@ Level 1 (fallback)    : ratio = next_power_of_two(kappa), block_size w_1 = w_0 /
 - **Dynamic `UpdateHint` (`apply_delta`, `apply_deltas_batch`):**
   - Each record change `(index, delta)` XORs `delta` into matching primary slots (respecting `override_entry` on promoted slots via an `override_index` map) and unconsumed backups on every level.
   - `apply_deltas_batch` evaluates per-block inverses across worker threads using fallible `std::thread::Builder::spawn_scoped` with inline fallback.
+- **Single-pass streaming `HintInit` (`MultiLevelHintBuilder`, `hint_init_from_reader`, `hint_init_from_file`):**
+  - Because every level's `block_size` is a power of two, their least common multiple equals `max(block_size)`. Streaming `HintInit` reads the database once in bounded chunks (default `DEFAULT_STREAM_CHUNK_BYTES`: 64 MiB native / 4 MiB `wasm32`, aligned to a multiple of `max(block_size) * record_size` and capped to the database size) and updates all levels simultaneously into persistent per-level accumulators (with total multi-worker local buffer memory bounded across all levels), producing bit-identical hints to in-memory `MultiLevelClient::hint_init`.
+  - `MultiLevelHintBuilder` accepts arbitrary unaligned `push_bytes` slices (works on `wasm32-unknown-unknown` with zero host imports).
+  - `hint_init_from_reader[_with_chunk_bytes]` streams from any EOF-terminated `std::io::Read` (handling short reads / `EINTR` and probing one byte past the expected length to reject trailing data; because that probe waits for EOF, on a persistent connection first validate that the declared frame length equals `num_entries * record_size` and then bound the reader to that validated frame length -- noting a bounded reader cannot detect trailing bytes outside its bound -- or use `MultiLevelHintBuilder::push_bytes`).
+  - `hint_init_from_file[_with_chunk_bytes]` (native) pre-checks regular file size before allocating accumulators; the file must remain unchanged for the entire call and match the snapshot the server answers against.
 
 ## Safety invariants and `PLNKMLH1` checkpoint format
 
