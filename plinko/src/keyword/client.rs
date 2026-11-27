@@ -51,11 +51,13 @@ pub enum CachePolicy {
     /// Always issue 2 PIR queries per input key (no local bucket caching, no
     /// stash shortcut, and no batch size reduction on duplicate keys).
     ///
-    /// Both single and batch lookups fail once a segment has no remaining
-    /// uncached, non-in-flight index, even if backup hints remain: under
-    /// [`crate::protocol::Client`], querying an already-cached bucket index
-    /// substitutes a random uncached, non-in-flight decoy index and fails with
-    /// [`ProtocolError::NoDecoyIndexAvailable`] when none can be drawn.
+    /// Under [`crate::protocol::Client`], querying a bucket index that the
+    /// protocol client already cached internally substitutes a random uncached,
+    /// non-in-flight decoy index; both single and batch lookups then fail with
+    /// [`ProtocolError::NoDecoyIndexAvailable`] once a segment has no remaining
+    /// uncached, non-in-flight decoy index, even if backup hints remain. Under
+    /// [`MultiLevelClient`], no internal index cache is kept and concurrent
+    /// queries to the same bucket remain allowed while matching slots are free.
     #[default]
     Off,
     /// Answer cached/stashed hits locally and deduplicate repeated keys or shared
@@ -303,6 +305,11 @@ pub trait IndexPirClient {
         rng: &mut R,
     ) -> Result<Self::FinishPlan, Self::Error>;
 
+    /// Returns the reconstructed record bytes staged inside `plan` in `pendings`
+    /// order so callers can validate reconstructed payloads before calling
+    /// [`Self::commit_finish_batch`].
+    fn plan_finish_values(plan: &Self::FinishPlan) -> &[Vec<u8>];
+
     /// Commits a staged [`Self::FinishPlan`] produced by [`Self::plan_finish_batch`]
     /// and returns the reconstructed records in `pendings` order.
     fn commit_finish_batch(&mut self, plan: Self::FinishPlan) -> Vec<Vec<u8>>;
@@ -403,6 +410,10 @@ impl IndexPirClient for MultiLevelClient {
         rng: &mut R,
     ) -> Result<Self::FinishPlan, Self::Error> {
         MultiLevelClient::plan_finish_batch(self, pendings, answers, rng)
+    }
+
+    fn plan_finish_values(plan: &Self::FinishPlan) -> &[Vec<u8>] {
+        plan.values()
     }
 
     fn commit_finish_batch(&mut self, plan: Self::FinishPlan) -> Vec<Vec<u8>> {
@@ -521,6 +532,10 @@ impl IndexPirClient for ProtocolClient {
         _rng: &mut R,
     ) -> Result<Self::FinishPlan, Self::Error> {
         ProtocolClient::plan_finish_batch(self, pendings, answers)
+    }
+
+    fn plan_finish_values(plan: &Self::FinishPlan) -> &[Vec<u8>] {
+        plan.values()
     }
 
     fn commit_finish_batch(&mut self, plan: Self::FinishPlan) -> Vec<Vec<u8>> {
@@ -1246,6 +1261,65 @@ impl<B: IndexPirClient> KeywordClient<B> {
             .plan_finish_batch(&[p1], std::slice::from_ref(&answer.segments[1]), rng)
             .map_err(|error| KeywordClientError::Backend { segment: 1, error })?;
 
+        // Validate reconstructed bucket tags BEFORE committing either backend or writing to
+        // `bucket_cache`, so `DuplicateTagMatch` leaves backend state and cache unchanged and
+        // `pending` remains usable for `abort_lookup`.
+        let found: Option<Vec<u8>> = {
+            let vals0: &[Vec<u8>] = B::plan_finish_values(&plan0);
+            let vals1: &[Vec<u8>] = B::plan_finish_values(&plan1);
+            if vals0.len() != 1 {
+                return Err(KeywordClientError::AnswerCountMismatch {
+                    segment: 0,
+                    expected: 1,
+                    actual: vals0.len(),
+                });
+            }
+            if vals1.len() != 1 {
+                return Err(KeywordClientError::AnswerCountMismatch {
+                    segment: 1,
+                    expected: 1,
+                    actual: vals1.len(),
+                });
+            }
+            match &pending.resolution {
+                LookupResolution::StashHit(val) => Some(val.clone()),
+                LookupResolution::Buckets {
+                    bucket_seg0,
+                    bucket_seg1,
+                    tag,
+                    wire_is_real,
+                } => {
+                    let b0: &[u8] = if wire_is_real[0] {
+                        &vals0[0]
+                    } else {
+                        self.bucket_cache[0]
+                            .get(bucket_seg0)
+                            .map(Vec::as_slice)
+                            .ok_or(KeywordClientError::StateEpochMismatch {
+                                expected: self.spec.state_epoch(),
+                                got: pending.state_epoch,
+                            })?
+                    };
+                    let b1: &[u8] = if wire_is_real[1] {
+                        &vals1[0]
+                    } else {
+                        self.bucket_cache[1]
+                            .get(bucket_seg1)
+                            .map(Vec::as_slice)
+                            .ok_or(KeywordClientError::StateEpochMismatch {
+                                expected: self.spec.state_epoch(),
+                                got: pending.state_epoch,
+                            })?
+                    };
+                    let stash_val: Option<&[u8]> = self.stash_lookup(*bucket_seg0, tag);
+                    self.spec
+                        .scan_buckets(b0, b1, tag, stash_val)?
+                        .map(ToOwned::to_owned)
+                }
+            }
+        };
+
+        // All scans succeeded; commit both backends and publish real wire buckets to the cache.
         let b0_wire: Vec<u8> = self.backends[0]
             .commit_finish_batch(plan0)
             .pop()
@@ -1255,52 +1329,24 @@ impl<B: IndexPirClient> KeywordClient<B> {
             .pop()
             .expect("single-query finish plan returns one record");
 
-        match &pending.resolution {
-            LookupResolution::StashHit(val) => Ok(Some(val.clone())),
-            LookupResolution::Buckets {
+        if self.cache_policy != CachePolicy::Off {
+            if let LookupResolution::Buckets {
                 bucket_seg0,
                 bucket_seg1,
-                tag,
                 wire_is_real,
-            } => {
-                if self.cache_policy != CachePolicy::Off {
-                    if wire_is_real[0] {
-                        self.bucket_cache[0].insert(*bucket_seg0, b0_wire.clone());
-                    }
-                    if wire_is_real[1] {
-                        self.bucket_cache[1].insert(*bucket_seg1, b1_wire.clone());
-                    }
+                ..
+            } = &pending.resolution
+            {
+                if wire_is_real[0] {
+                    self.bucket_cache[0].insert(*bucket_seg0, b0_wire);
                 }
-                let b0: &[u8] = if wire_is_real[0] {
-                    &b0_wire
-                } else {
-                    self.bucket_cache[0]
-                        .get(bucket_seg0)
-                        .map(Vec::as_slice)
-                        .ok_or(KeywordClientError::StateEpochMismatch {
-                            expected: self.spec.state_epoch(),
-                            got: pending.state_epoch,
-                        })?
-                };
-                let b1: &[u8] = if wire_is_real[1] {
-                    &b1_wire
-                } else {
-                    self.bucket_cache[1]
-                        .get(bucket_seg1)
-                        .map(Vec::as_slice)
-                        .ok_or(KeywordClientError::StateEpochMismatch {
-                            expected: self.spec.state_epoch(),
-                            got: pending.state_epoch,
-                        })?
-                };
-                let stash_val: Option<&[u8]> = self.stash_lookup(*bucket_seg0, tag);
-                let found: Option<Vec<u8>> = self
-                    .spec
-                    .scan_buckets(b0, b1, tag, stash_val)?
-                    .map(ToOwned::to_owned);
-                Ok(found)
+                if wire_is_real[1] {
+                    self.bucket_cache[1].insert(*bucket_seg1, b1_wire);
+                }
             }
         }
+
+        Ok(found)
     }
 
     /// Aborts an in-flight single keyword lookup, permanently retiring both segment
@@ -1740,60 +1786,82 @@ impl<B: IndexPirClient> KeywordClient<B> {
             .plan_finish_batch(&seg_refs[1], &answer.segments[1], rng)
             .map_err(|error| KeywordClientError::Backend { segment: 1, error })?;
 
+        // Validate every batch entry's reconstructed bucket tags BEFORE committing either backend
+        // or writing to `bucket_cache`, so `DuplicateTagMatch` leaves backend state and cache
+        // unchanged and `pending` remains usable for `abort_batch`.
+        let out: Vec<Option<Vec<u8>>> = {
+            let staged_vals: [&[Vec<u8>]; NUM_SEGMENTS] =
+                [B::plan_finish_values(&plan0), B::plan_finish_values(&plan1)];
+            for (seg, vals) in staged_vals.iter().enumerate() {
+                if vals.len() != seg_refs[seg].len() {
+                    return Err(KeywordClientError::AnswerCountMismatch {
+                        segment: seg,
+                        expected: seg_refs[seg].len(),
+                        actual: vals.len(),
+                    });
+                }
+            }
+            let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(pending.entries.len());
+            for entry in &pending.entries {
+                match entry {
+                    BatchEntryPlan::Local(val) => out.push(val.clone()),
+                    BatchEntryPlan::Scan {
+                        bucket_seg0,
+                        tag,
+                        source0,
+                        source1,
+                    } => {
+                        let b0: &[u8] = match source0 {
+                            BatchBucketSource::WireSlot(idx) => &staged_vals[0][*idx],
+                            BatchBucketSource::Cached(b_idx) => self.bucket_cache[0]
+                                .get(b_idx)
+                                .map(Vec::as_slice)
+                                .ok_or(KeywordClientError::StateEpochMismatch {
+                                    expected: self.spec.state_epoch(),
+                                    got: pending.state_epoch,
+                                })?,
+                        };
+                        let b1: &[u8] = match source1 {
+                            BatchBucketSource::WireSlot(idx) => &staged_vals[1][*idx],
+                            BatchBucketSource::Cached(b_idx) => self.bucket_cache[1]
+                                .get(b_idx)
+                                .map(Vec::as_slice)
+                                .ok_or(KeywordClientError::StateEpochMismatch {
+                                    expected: self.spec.state_epoch(),
+                                    got: pending.state_epoch,
+                                })?,
+                        };
+                        let stash_val: Option<&[u8]> = self.stash_lookup(*bucket_seg0, tag);
+                        let val: Option<Vec<u8>> = self
+                            .spec
+                            .scan_buckets(b0, b1, tag, stash_val)?
+                            .map(ToOwned::to_owned);
+                        out.push(val);
+                    }
+                }
+            }
+            out
+        };
+
+        // All scans succeeded; commit both backends and publish real wire buckets to the cache.
         let recovered: [Vec<Vec<u8>>; NUM_SEGMENTS] = [
             self.backends[0].commit_finish_batch(plan0),
             self.backends[1].commit_finish_batch(plan1),
         ];
 
         if self.cache_policy != CachePolicy::Off {
-            for (seg, seg_recovered) in recovered.iter().enumerate() {
-                for (wire_idx, maybe_bucket) in pending.wire_real_buckets[seg].iter().enumerate() {
+            for (seg, seg_recovered) in recovered.into_iter().enumerate() {
+                for (bucket_bytes, maybe_bucket) in seg_recovered
+                    .into_iter()
+                    .zip(&pending.wire_real_buckets[seg])
+                {
                     if let Some(bucket_idx) = maybe_bucket {
-                        self.bucket_cache[seg].insert(*bucket_idx, seg_recovered[wire_idx].clone());
+                        self.bucket_cache[seg].insert(*bucket_idx, bucket_bytes);
                     }
                 }
             }
         }
 
-        let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(pending.entries.len());
-        for entry in &pending.entries {
-            match entry {
-                BatchEntryPlan::Local(val) => out.push(val.clone()),
-                BatchEntryPlan::Scan {
-                    bucket_seg0,
-                    tag,
-                    source0,
-                    source1,
-                } => {
-                    let b0: &[u8] = match source0 {
-                        BatchBucketSource::WireSlot(idx) => &recovered[0][*idx],
-                        BatchBucketSource::Cached(b_idx) => self.bucket_cache[0]
-                            .get(b_idx)
-                            .map(Vec::as_slice)
-                            .ok_or(KeywordClientError::StateEpochMismatch {
-                                expected: self.spec.state_epoch(),
-                                got: pending.state_epoch,
-                            })?,
-                    };
-                    let b1: &[u8] = match source1 {
-                        BatchBucketSource::WireSlot(idx) => &recovered[1][*idx],
-                        BatchBucketSource::Cached(b_idx) => self.bucket_cache[1]
-                            .get(b_idx)
-                            .map(Vec::as_slice)
-                            .ok_or(KeywordClientError::StateEpochMismatch {
-                                expected: self.spec.state_epoch(),
-                                got: pending.state_epoch,
-                            })?,
-                    };
-                    let stash_val: Option<&[u8]> = self.stash_lookup(*bucket_seg0, tag);
-                    let val: Option<Vec<u8>> = self
-                        .spec
-                        .scan_buckets(b0, b1, tag, stash_val)?
-                        .map(ToOwned::to_owned);
-                    out.push(val);
-                }
-            }
-        }
         Ok(out)
     }
 
@@ -3945,6 +4013,194 @@ mod tests {
                 ClientStateError::Invalid("client state exceeds memory budget")
             ),
             "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_tag_match_rejects_before_backend_commit_or_cache_poisoning() {
+        use crate::multilevel::{LevelBackend, LevelSpec};
+        use rand_chacha::ChaCha20Rng;
+
+        let spec = KeywordTableSpec::new(8, 2, 8, 8, Some(8), [0x51; 32], 0, 0).unwrap();
+        let rec: usize = spec.record_size();
+        let key: [u8; 8] = 7u64.to_le_bytes();
+        let val: [u8; 8] = [0x42; 8];
+        let (table, _) =
+            KvScfTable::build(spec.clone(), [(0x01, key.as_slice(), val.as_slice())]).unwrap();
+        let loc = spec.locate(0x01, &key).unwrap();
+
+        let ml_params = MultiLevelParams::custom(
+            8,
+            rec,
+            vec![LevelSpec {
+                block_size: 2,
+                num_blocks: 4,
+                num_primary: 16,
+                num_backup: 8,
+                backend: LevelBackend::FlatAes,
+            }],
+        )
+        .unwrap();
+        let seg_seeds: [[u8; 32]; 2] = [[0x21; 32], [0x22; 32]];
+        let c0 = MultiLevelClient::hint_init(
+            ml_params.clone(),
+            &seg_seeds[0],
+            table.segment_bytes(0).unwrap(),
+            1,
+        )
+        .unwrap();
+        let c1 = MultiLevelClient::hint_init(
+            ml_params.clone(),
+            &seg_seeds[1],
+            table.segment_bytes(1).unwrap(),
+            1,
+        )
+        .unwrap();
+        let mut kw = KeywordClient::new(spec, [c0, c1], CachePolicy::LocalHit).unwrap();
+        let mut rng = ChaCha20Rng::seed_from_u64(123);
+
+        // Craft a malicious server parity delta that turns the honest bucket at `loc.bucket_seg0`
+        // into one where both slots carry `loc.tag` (reconstructing a `DuplicateTagMatch`).
+        let base: usize = loc.bucket_seg0 * rec;
+        let honest_bucket: &[u8] = &table.segment_bytes(0).unwrap()[base..base + rec];
+        let mut evil_bucket: Vec<u8> = vec![0u8; rec];
+        evil_bucket[0..8].copy_from_slice(&loc.tag);
+        evil_bucket[8..16].copy_from_slice(&[0xEE; 8]);
+        evil_bucket[16..24].copy_from_slice(&loc.tag);
+        evil_bucket[24..32].copy_from_slice(&[0xFF; 8]);
+        let tamper_delta: Vec<u8> = honest_bucket
+            .iter()
+            .zip(evil_bucket.iter())
+            .map(|(a, b)| a ^ b)
+            .collect();
+        let tamper_answer = |mut ans: MultiLevelAnswer| -> MultiLevelAnswer {
+            for (p, d) in ans.parity_0.iter_mut().zip(tamper_delta.iter()) {
+                *p ^= *d;
+            }
+            for (p, d) in ans.parity_1.iter_mut().zip(tamper_delta.iter()) {
+                *p ^= *d;
+            }
+            ans
+        };
+
+        // 1) Single lookup: DuplicateTagMatch must reject before commit and before caching.
+        let backups0_before = kw.backends()[0].remaining_backups();
+        let backups1_before = kw.backends()[1].remaining_backups();
+        let LookupPlan::Query { query, mut pending } =
+            kw.prepare_lookup(0x01, &key, &mut rng).unwrap()
+        else {
+            unreachable!();
+        };
+        let evil_ans = KeywordLookupAnswer {
+            table_epoch: 0,
+            state_epoch: 0,
+            segments: [
+                tamper_answer(
+                    MultiLevelServer::answer(
+                        table.segment_bytes(0).unwrap(),
+                        &ml_params,
+                        &query.segments[0],
+                        0,
+                    )
+                    .unwrap(),
+                ),
+                MultiLevelServer::answer(
+                    table.segment_bytes(1).unwrap(),
+                    &ml_params,
+                    &query.segments[1],
+                    0,
+                )
+                .unwrap(),
+            ],
+        };
+        assert!(matches!(
+            kw.finish_lookup(&pending, &evil_ans, &mut rng),
+            Err(KeywordClientError::Keyword(KeywordError::DuplicateTagMatch))
+        ));
+        assert_eq!(kw.backends()[0].queries_in_flight(), 1);
+        assert_eq!(kw.backends()[1].queries_in_flight(), 1);
+        assert_eq!(kw.backends()[0].remaining_backups(), backups0_before);
+        assert_eq!(kw.backends()[1].remaining_backups(), backups1_before);
+        assert_eq!(kw.cached_bucket_counts(), [0, 0]);
+        kw.abort_lookup(&mut pending).unwrap();
+        assert_eq!(kw.queries_in_flight(), 0);
+
+        // 2) Batch lookup: DuplicateTagMatch must also reject before commit and before caching.
+        let BatchLookupPlan::Query {
+            query: bq,
+            pending: mut bp,
+        } = kw
+            .prepare_batch(&[(0x01, key.as_slice())], &mut rng)
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        let evil_batch_ans = KeywordBatchAnswer {
+            table_epoch: 0,
+            state_epoch: 0,
+            segments: [
+                vec![tamper_answer(
+                    MultiLevelServer::answer(
+                        table.segment_bytes(0).unwrap(),
+                        &ml_params,
+                        &bq.segments[0][0],
+                        0,
+                    )
+                    .unwrap(),
+                )],
+                vec![MultiLevelServer::answer(
+                    table.segment_bytes(1).unwrap(),
+                    &ml_params,
+                    &bq.segments[1][0],
+                    0,
+                )
+                .unwrap()],
+            ],
+        };
+        assert!(matches!(
+            kw.finish_batch(&bp, &evil_batch_ans, &mut rng),
+            Err(KeywordClientError::Keyword(KeywordError::DuplicateTagMatch))
+        ));
+        assert_eq!(kw.backends()[0].queries_in_flight(), 1);
+        assert_eq!(kw.backends()[1].queries_in_flight(), 1);
+        assert_eq!(kw.cached_bucket_counts(), [0, 0]);
+        kw.abort_batch(&mut bp).unwrap();
+        assert_eq!(kw.queries_in_flight(), 0);
+
+        // Next lookup under LocalHit must still issue a wire query (cache was never poisoned)
+        // and return the honest value when answered honestly.
+        let LookupPlan::Query {
+            query: ok_q,
+            pending: ok_p,
+        } = kw.prepare_lookup(0x01, &key, &mut rng).unwrap()
+        else {
+            panic!("cache must not have been poisoned by rejected DuplicateTagMatch");
+        };
+        let ok_ans = KeywordLookupAnswer {
+            table_epoch: 0,
+            state_epoch: 0,
+            segments: [
+                MultiLevelServer::answer(
+                    table.segment_bytes(0).unwrap(),
+                    &ml_params,
+                    &ok_q.segments[0],
+                    0,
+                )
+                .unwrap(),
+                MultiLevelServer::answer(
+                    table.segment_bytes(1).unwrap(),
+                    &ml_params,
+                    &ok_q.segments[1],
+                    0,
+                )
+                .unwrap(),
+            ],
+        };
+        assert_eq!(
+            kw.finish_lookup(&ok_p, &ok_ans, &mut rng)
+                .unwrap()
+                .as_deref(),
+            Some(val.as_slice())
         );
     }
 }

@@ -638,11 +638,20 @@ const PARALLEL_DELTA_BATCH_SIZE: usize = 256;
 /// produced for [`crate::keyword::IndexPirClient`] and committed infallibly.
 pub struct ProtocolFinishPlan {
     steps: Vec<ProtocolFinishStep>,
+    values: Vec<Vec<u8>>,
+}
+
+impl ProtocolFinishPlan {
+    /// Returns the reconstructed requested-record bytes staged by this plan in
+    /// prepared-query order.
+    #[inline]
+    pub(crate) fn values(&self) -> &[Vec<u8>] {
+        &self.values
+    }
 }
 
 struct ProtocolFinishStep {
     queried_index: usize,
-    requested_index: usize,
     hint_idx: usize,
     queried_entry: Vec<u8>,
 }
@@ -1012,6 +1021,7 @@ impl Client {
         let mut seen_indices: std::collections::HashSet<usize> =
             std::collections::HashSet::with_capacity(prepareds.len());
         let mut steps: Vec<ProtocolFinishStep> = Vec::with_capacity(prepareds.len());
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(prepareds.len());
         for (&prepared, response) in prepareds.iter().zip(responses.iter()) {
             if !seen_indices.insert(prepared.queried_index) {
                 return Err(ProtocolError::UnknownPreparedQuery);
@@ -1028,33 +1038,36 @@ impl Client {
             }
             check_record_len(&self.params, &response.parity_0)?;
             check_record_len(&self.params, &response.parity_1)?;
-            if prepared.requested_index != prepared.queried_index
-                && !self.cache.contains_key(&prepared.requested_index)
-            {
-                return Err(ProtocolError::NoHintForIndex {
-                    index: prepared.requested_index,
-                });
-            }
             let mut queried_entry: Vec<u8> = if prepared.real_is_first {
                 response.parity_0.clone()
             } else {
                 response.parity_1.clone()
             };
             xor_entry(&mut queried_entry, self.slot_parity(prepared.hint_idx));
+            let requested_value: Vec<u8> = if prepared.requested_index == prepared.queried_index {
+                queried_entry.clone()
+            } else {
+                self.cache
+                    .get(&prepared.requested_index)
+                    .ok_or(ProtocolError::NoHintForIndex {
+                        index: prepared.requested_index,
+                    })?
+                    .value
+                    .clone()
+            };
             steps.push(ProtocolFinishStep {
                 queried_index: prepared.queried_index,
-                requested_index: prepared.requested_index,
                 hint_idx: prepared.hint_idx,
                 queried_entry,
             });
+            values.push(requested_value);
         }
-        Ok(ProtocolFinishPlan { steps })
+        Ok(ProtocolFinishPlan { steps, values })
     }
 
     /// Commits a staged [`ProtocolFinishPlan`] infallibly and returns the reconstructed
     /// records in `prepareds` order.
     pub(crate) fn commit_finish_batch(&mut self, plan: ProtocolFinishPlan) -> Vec<Vec<u8>> {
-        let mut out: Vec<Vec<u8>> = Vec::with_capacity(plan.steps.len());
         for step in plan.steps {
             self.in_flight.remove(&step.queried_index);
             self.slots[step.hint_idx] = None;
@@ -1068,15 +1081,8 @@ impl Client {
                     hint_idx: promoted_hint_idx,
                 },
             );
-            let value: Vec<u8> = self
-                .cache
-                .get(&step.requested_index)
-                .expect("requested index validated in plan_finish_batch")
-                .value
-                .clone();
-            out.push(value);
         }
-        out
+        plan.values
     }
 
     /// Validates that every hint index in `hint_indices` belongs to this client.

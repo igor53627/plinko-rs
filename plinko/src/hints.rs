@@ -573,10 +573,30 @@ impl HintSet {
         })
     }
 
-    /// Reads the regular and backup hint records described by `header`.
+    /// Reads the regular and backup hint records described by `header` using
+    /// capped incremental growth (safe for unbounded standalone files whose
+    /// headers are not pre-bounded by a caller memory budget).
     pub(crate) fn read_records<R: Read>(
         input: &mut HashingReader<R>,
         header: HintHeader,
+    ) -> Result<Self, HintFileError> {
+        Self::read_records_inner(input, header, false)
+    }
+
+    /// Reads the regular and backup hint records described by `header` using
+    /// fallible exact reservations (`try_reserve_exact`) so neither amortized
+    /// vector doubling nor post-read trimming can exceed a pre-validated budget.
+    pub(crate) fn read_records_exact<R: Read>(
+        input: &mut HashingReader<R>,
+        header: HintHeader,
+    ) -> Result<Self, HintFileError> {
+        Self::read_records_inner(input, header, true)
+    }
+
+    fn read_records_inner<R: Read>(
+        input: &mut HashingReader<R>,
+        header: HintHeader,
+        exact_reserve: bool,
     ) -> Result<Self, HintFileError> {
         let size: usize = header.record_size;
         let num_regular: usize = header.num_regular;
@@ -584,13 +604,30 @@ impl HintSet {
         let regular_bytes: usize = header.regular_bytes;
         let backup_bytes: usize = header.backup_bytes;
 
-        // The counts come from the file: allocate as the records arrive.
-        let mut record: Vec<u8> = vec![0u8; CUTOFF_SIZE + 2 * size];
+        let mut record: Vec<u8> = Vec::new();
+        let rec_buf_len: usize = CUTOFF_SIZE + 2 * size;
+        record
+            .try_reserve_exact(rec_buf_len)
+            .map_err(|_| io::Error::new(io::ErrorKind::OutOfMemory, "hint scratch allocation"))?;
+        record.resize(rec_buf_len, 0u8);
 
-        let mut regular_cutoffs: Vec<u32> =
-            Vec::with_capacity(num_regular.min(MAX_PREALLOCATED_HINTS));
-        let mut regular_parities: Vec<u8> =
-            Vec::with_capacity(regular_bytes.min(MAX_PREALLOCATED_BYTES));
+        let mut regular_cutoffs: Vec<u32> = Vec::new();
+        let mut regular_parities: Vec<u8> = Vec::new();
+        if exact_reserve {
+            regular_cutoffs
+                .try_reserve_exact(num_regular)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::OutOfMemory, "regular cutoffs allocation")
+                })?;
+            regular_parities
+                .try_reserve_exact(regular_bytes)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::OutOfMemory, "regular parities allocation")
+                })?;
+        } else {
+            regular_cutoffs.reserve(num_regular.min(MAX_PREALLOCATED_HINTS));
+            regular_parities.reserve(regular_bytes.min(MAX_PREALLOCATED_BYTES));
+        }
         for _ in 0..num_regular {
             let record: &mut [u8] = &mut record[..CUTOFF_SIZE + size];
             input.read_hashed(record)?;
@@ -598,20 +635,26 @@ impl HintSet {
             regular_parities.extend_from_slice(&record[CUTOFF_SIZE..]);
         }
 
-        let mut backup_cutoffs: Vec<u32> =
-            Vec::with_capacity(num_backup.min(MAX_PREALLOCATED_HINTS));
-        let mut backup_parities: Vec<u8> =
-            Vec::with_capacity(backup_bytes.min(MAX_PREALLOCATED_BYTES));
+        let mut backup_cutoffs: Vec<u32> = Vec::new();
+        let mut backup_parities: Vec<u8> = Vec::new();
+        if exact_reserve {
+            backup_cutoffs.try_reserve_exact(num_backup).map_err(|_| {
+                io::Error::new(io::ErrorKind::OutOfMemory, "backup cutoffs allocation")
+            })?;
+            backup_parities
+                .try_reserve_exact(backup_bytes)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::OutOfMemory, "backup parities allocation")
+                })?;
+        } else {
+            backup_cutoffs.reserve(num_backup.min(MAX_PREALLOCATED_HINTS));
+            backup_parities.reserve(backup_bytes.min(MAX_PREALLOCATED_BYTES));
+        }
         for _ in 0..num_backup {
             input.read_hashed(&mut record)?;
             backup_cutoffs.push(u32_at(&record, 0));
             backup_parities.extend_from_slice(&record[CUTOFF_SIZE..]);
         }
-
-        regular_cutoffs.shrink_to_fit();
-        regular_parities.shrink_to_fit();
-        backup_cutoffs.shrink_to_fit();
-        backup_parities.shrink_to_fit();
 
         Ok(Self {
             geometry: header.geometry,

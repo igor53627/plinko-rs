@@ -176,6 +176,19 @@ impl From<TrailerError> for ClientStateError {
     }
 }
 
+/// Worst-case hashbrown bucket table + control bytes (7/8 load factor, power-of-two
+/// buckets, plus a 64-byte trailing SIMD control group bound) for `count` entries.
+fn hashmap_table_bytes<K, V>(count: usize) -> Option<usize> {
+    if count == 0 {
+        return Some(0);
+    }
+    let min_buckets: usize = count.checked_mul(8)?.div_ceil(7);
+    let table_buckets: usize = min_buckets.max(4).checked_next_power_of_two()?;
+    table_buckets
+        .checked_mul(std::mem::size_of::<(K, V)>() + 1)?
+        .checked_add(64)
+}
+
 /// Reads a count and checks it against the largest value that the hint set allows.
 fn read_count<R: Read>(
     input: &mut HashingReader<R>,
@@ -416,7 +429,11 @@ impl Client {
             ))?;
         check_budget(upfront_peak)?;
 
-        let hints: HintSet = HintSet::read_records(&mut input, hint_header)?;
+        let hints: HintSet = if max_alloc_bytes < usize::MAX {
+            HintSet::read_records_exact(&mut input, hint_header)?
+        } else {
+            HintSet::read_records(&mut input, hint_header)?
+        };
 
         // The hint set has `num_regular` hints in memory, so this allocation
         // is smaller than the data that was read.
@@ -444,6 +461,7 @@ impl Client {
         }
         slots.resize(params.num_total_hints, None);
         let any_sent: bool = sent.iter().any(|&byte| byte != 0);
+        drop(sent);
 
         let mut backup_available: Vec<bool> = hints
             .backup_cutoffs()
@@ -457,15 +475,19 @@ impl Client {
             params.num_backup_hints,
             "more answered queries than backup hints",
         )?;
-        let cache_entry_bytes: usize = std::mem::size_of::<(usize, CacheEntry)>()
-            .checked_add(16)
-            .and_then(|v| v.checked_add(size))
+        let cache_table_bytes: usize = hashmap_table_bytes::<usize, CacheEntry>(num_answered)
             .ok_or(ClientStateError::Invalid(
                 "client state exceeds memory budget",
             ))?;
-        let cache_bytes: usize =
+        let cache_values_bytes: usize =
             num_answered
-                .checked_mul(cache_entry_bytes)
+                .checked_mul(size)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        let cache_bytes: usize =
+            cache_table_bytes
+                .checked_add(cache_values_bytes)
                 .ok_or(ClientStateError::Invalid(
                     "client state exceeds memory budget",
                 ))?;
@@ -492,6 +514,9 @@ impl Client {
                 ))?,
         )?;
         let mut cache: HashMap<usize, CacheEntry> = HashMap::new();
+        cache
+            .try_reserve(num_answered)
+            .map_err(|_| ClientStateError::Invalid("client state exceeds memory budget"))?;
         if num_answered > 0 {
             let mut entry: Vec<u8> = vec![0u8; ANSWERED_FIXED_SIZE + size];
             let mut last_index: Option<usize> = None;
@@ -547,21 +572,27 @@ impl Client {
             free_backups,
             "more queries in flight than free backup hints",
         )?;
-        let in_flight_retained: usize = num_in_flight
-            .checked_mul(std::mem::size_of::<(usize, InFlight)>() + 16)
+        let in_flight_retained: usize = hashmap_table_bytes::<usize, InFlight>(num_in_flight)
             .ok_or(ClientStateError::Invalid(
                 "client state exceeds memory budget",
             ))?;
-        let per_prepared_bytes: usize = (std::mem::size_of::<usize>() * 2)
-            .checked_add(std::mem::size_of::<PreparedQuery>())
-            .and_then(|v| v.checked_add(params.num_blocks.div_ceil(8)))
+        let order_bytes: usize = num_in_flight
+            .checked_mul(std::mem::size_of::<usize>())
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let reserved_table_bytes: usize = hashmap_table_bytes::<usize, ()>(num_in_flight).ok_or(
+            ClientStateError::Invalid("client state exceeds memory budget"),
+        )?;
+        let per_prepared_bytes: usize = std::mem::size_of::<PreparedQuery>()
+            .checked_add(params.num_blocks.div_ceil(8))
             .and_then(|v| {
                 v.checked_add((params.num_blocks / 2).checked_mul(std::mem::size_of::<u32>())?)
             })
             .ok_or(ClientStateError::Invalid(
                 "client state exceeds memory budget",
             ))?;
-        let in_flight_temp: usize =
+        let prepared_bytes: usize =
             num_in_flight
                 .checked_mul(per_prepared_bytes)
                 .ok_or(ClientStateError::Invalid(
@@ -597,19 +628,35 @@ impl Client {
             } else {
                 0
             };
-        let rebuild_temp: usize =
-            in_flight_temp
-                .checked_add(build_query_temp)
+        // Overlapping temporary peaks:
+        // 1) in-flight validation loop: `order` + `reserved` (dropped after the loop)
+        // 2) `block_iprfs`: `order` + `block_keys`
+        // 3) query rebuild loop: `order` + `prepared` + `try_build_query` scratch
+        let validation_temp: usize =
+            order_bytes
+                .checked_add(reserved_table_bytes)
                 .ok_or(ClientStateError::Invalid(
                     "client state exceeds memory budget",
                 ))?;
+        let block_iprfs_temp: usize =
+            order_bytes
+                .checked_add(block_keys_bytes)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        let rebuild_temp: usize = order_bytes
+            .checked_add(prepared_bytes)
+            .and_then(|v| v.checked_add(build_query_temp))
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
         retained_bytes = retained_bytes
             .checked_add(in_flight_retained)
             .and_then(|v| v.checked_add(pmns_cache_bytes))
             .ok_or(ClientStateError::Invalid(
                 "client state exceeds memory budget",
             ))?;
-        let peak_temp: usize = block_keys_bytes.max(rebuild_temp);
+        let peak_temp: usize = validation_temp.max(block_iprfs_temp).max(rebuild_temp);
         check_budget(
             retained_bytes
                 .checked_add(peak_temp)
@@ -619,8 +666,17 @@ impl Client {
         )?;
 
         let mut in_flight: HashMap<usize, InFlight> = HashMap::new();
-        let mut order: Vec<usize> = Vec::with_capacity(num_in_flight);
+        in_flight
+            .try_reserve(num_in_flight)
+            .map_err(|_| ClientStateError::Invalid("client state exceeds memory budget"))?;
+        let mut order: Vec<usize> = Vec::new();
+        order
+            .try_reserve_exact(num_in_flight)
+            .map_err(|_| ClientStateError::Invalid("client state exceeds memory budget"))?;
         let mut reserved: HashSet<usize> = HashSet::new();
+        reserved
+            .try_reserve(num_in_flight)
+            .map_err(|_| ClientStateError::Invalid("client state exceeds memory budget"))?;
         let mut record = [0u8; IN_FLIGHT_SIZE];
         for _ in 0..num_in_flight {
             input.read_hashed(&mut record)?;
@@ -661,6 +717,7 @@ impl Client {
                 },
             );
         }
+        drop(reserved);
 
         // A retired backup hint is not promoted. After `retire_hints`, the
         // client can have more queries in flight than free backup hints.

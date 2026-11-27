@@ -1653,6 +1653,14 @@ pub struct MultiLevelFinishPlan {
     level_plans: Vec<LevelCommitPlan>,
 }
 
+impl MultiLevelFinishPlan {
+    /// Returns the reconstructed record bytes staged by this plan in pending-query order.
+    #[inline]
+    pub(crate) fn values(&self) -> &[Vec<u8>] {
+        &self.values
+    }
+}
+
 struct LevelCommitPlan {
     next_backup: usize,
     installs: Vec<(u32, PrimarySlot, Vec<u8>)>,
@@ -2394,8 +2402,10 @@ impl MultiLevelClient {
                 let ov_bytes_len: usize = ov_count
                     .checked_mul(12)
                     .ok_or(MultiLevelError::InvalidFormat("override buffer overflow"))?;
-                // Account for hashbrown's power-of-two bucket table (load factor <= 7/8, plus 1
-                // control byte per bucket) and per-override u32 payload storage.
+                // Account for hashbrown's power-of-two bucket table (load factor <= 7/8, 1 control
+                // byte per bucket, plus a trailing SIMD control group bounded by 64 bytes across
+                // all supported targets) and per-override `Vec<u32>` storage (initial capacity 4,
+                // i.e. 16 bytes per coordinate in the worst case).
                 let min_buckets: usize = ov_count
                     .checked_mul(8)
                     .map(|n| n.div_ceil(7))
@@ -2406,9 +2416,10 @@ impl MultiLevelClient {
                     .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
                 let map_table_bytes: usize = table_buckets
                     .checked_mul(std::mem::size_of::<((u32, u32), Vec<u32>)>() + 1)
+                    .and_then(|v| v.checked_add(64))
                     .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
                 let payload_bytes: usize = ov_count
-                    .checked_mul(std::mem::size_of::<u32>() * 2)
+                    .checked_mul(std::mem::size_of::<u32>() * 4)
                     .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
                 let ov_index_bytes: usize = map_table_bytes
                     .checked_add(payload_bytes)
