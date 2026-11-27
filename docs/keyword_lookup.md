@@ -1,7 +1,8 @@
 # Keyword Lookup: Design Specification
 
-Status: generalized design specification for TASK-22 (no code implements this
-document yet).
+Status: implemented in `plinko::keyword` (`plinko/src/keyword.rs`,
+`plinko/src/keyword/client.rs`), benchmarked by `bench_keyword`, and covered by
+`plinko/tests/keyword_e2e_test.rs` (TASK-22).
 
 This document specifies private key-value lookup over `plinko-rs` for a general
 fixed-size key-value database, parameterized by key length, value size, tag
@@ -136,13 +137,21 @@ avoiding up to 2x capacity padding from rounding `s` to a power of two.
 Let `t = 8 * tag_size` be the tag width in bits (`2^t - 1` non-zero tags).
 
 1. **Non-member false match (key not in table):**
-   A lookup inspects at most `d * b` occupied slots (8 slots for `d = 2, b = 4`),
-   each carrying an independent uniform non-zero tag. By union bound:
-   `P_false_match <= (d * b) / (2^t - 1)`
-   - `tag_size = 8` (`t = 64`, `d = 2, b = 4`): `<= 8 / (2^64 - 1) ~= 4.3e-19`
+   A lookup inspects at most `d * b` occupied bucket slots (8 slots for
+   `d = 2, b = 4`), each carrying an independent non-zero tag. Accounting for
+   the zero-tag remap (`tag = [0; tag_size]` remapped to `[1, 0, ...]`, which
+   doubles that single tag's mass to `2 / 2^t`), the conservative bucket-only
+   union bound reported by `KeywordTableSpec::false_match_upper_bound()` (when
+   the runtime-stash is empty or disabled) is `(d * b + 1) / 2^t`:
+   - `tag_size = 8` (`t = 64`, `d = 2, b = 4`): `<= 9 / 2^64 ~= 4.9e-19`
      (`~2^-61` per lookup).
-   - `tag_size = 16` (`t = 128`, `d = 2, b = 4`): `<= 8 / (2^128 - 1) ~= 2.4e-38`
+   - `tag_size = 16` (`t = 128`, `d = 2, b = 4`): `<= 9 / 2^128 ~= 2.6e-38`
      (`~2^-125` per lookup).
+   When the optional runtime-stash is enabled with up to `S_stash` entries
+   matching the queried `a0` (worst-case `S_stash` equals the full stash
+   capacity, for example 256), the union bound adds the stash term:
+   `(d * b + S_stash + 1) / 2^t` (`<= 265 / 2^64 ~= 1.44e-17` for
+   `tag_size = 8, S_stash = 256`).
 
 2. **All-or-nothing collision for stored keys (RisePIR Lemma 1):**
    Because `delta = h1(tag)` depends only on `tag`, two distinct keys `k != k'`
@@ -348,8 +357,8 @@ imports on `wasm32-unknown-unknown`):
        2. Pass 2 schedules all remaining slots (backend-cached buckets,
           duplicate keys, shared buckets, and keyword-cached/stashed hits).
           `IndexPirClient` exposes the reserved wire index
-          (`PreparedQuery::queried_index()` on `protocol::Client`, added in
-          `TASK-22`) so `prepare_batch` tracks every backend-reserved bucket
+          (`PreparedQuery::queried_index()` on `protocol::Client`) so
+          `prepare_batch` tracks every backend-reserved bucket
           and always picks a decoy index not currently in flight and not cached
           in segment `j`, sharing the single recovered bucket across all
           matching batch entries in `finish_batch`.
@@ -388,11 +397,11 @@ imports on `wasm32-unknown-unknown`):
      identifies both initial primary hints `0..num_primary` and promoted
      backup hints `num_primary..total_hints`), and on restore retire every
      logged hint before issuing any new query (`Client::retire_hints` for
-     `protocol::Client`, and a matching `MultiLevelClient::retire_hints` to be
-     added in `TASK-22` that retires any active primary slot holding `hint_id`
-     and permanently marks/advances past any logged backup
-     `hint_id >= num_primary` so neither original primary hints nor promoted
-     backups sent after the checkpoint can ever be reused). (Standalone
+     `protocol::Client`, and `MultiLevelClient::retire_hints`, which retires
+     any active primary slot holding `hint_id` and permanently marks/advances
+     past any logged backup `hint_id >= num_primary` so neither original
+     primary hints nor promoted backups sent after the checkpoint can ever be
+     reused). (Standalone
      `protocol::Client::write_state` also supports persisting in-flight
      queries, but the generic `KeywordClient` checkpoint contract relies on
      the idle-checkpoint + WAL-retirement path so it works identically across
@@ -428,20 +437,23 @@ imports on `wasm32-unknown-unknown`):
   streams the full `database.bin` once locally ([trust_model.md](trust_model.md)).
   `HintInit` must never be delegated to the server, a cloud, or a TEE.
 
-## Implementation Steps (TASK-22)
+## Implementation Status (TASK-22)
 
-1. Library module `plinko::keyword`: `KeywordTableSpec`, BLAKE3 keyed hashing
-   and modular partial-key eviction, `KvScfBuilder` / `KvScfTable` (build,
-   live `insert`/`update`/`delete` returning segment deltas, `database.bin`
-   writer, unplaceable key reporting).
-2. `IndexPirClient` implementations for `MultiLevelClient` and
-   `protocol::Client`, plus `KeywordClient<B>` (`prepare_lookup`,
-   `finish_lookup`, `abort_lookup`, `prepare_batch`/`finish_batch`,
-   `apply_epoch_update`, `CachePolicy`, checkpointing) and `KeywordSession`.
-3. End-to-end tests: build synthetic key-value tables at arbitrary
-   `(key_size, value_size, load)` -> verify through `plinko_hints` +
-   `protocol::Client` AND through `MultiLevelClient` (including `insert`,
-   `update`, `delete`, not-found lookups, `abort_lookup`, and `wasm32`
-   compilation).
-4. Update `docs/data_format.md` and `docs/trust_model.md` ("Not Covered" list)
-   once `plinko::keyword` lands.
+1. Library table core (`plinko/src/keyword.rs`): `KeywordTableSpec`, keyed
+   BLAKE3 hashing and modular partial-key eviction, `KvScfTable` (build with
+   unplaceable key reporting and optional seed retry, live
+   `insert`/`update`/`upsert`/`delete` returning segment deltas and stash ops,
+   `database.bin` and per-segment writers), plus `bench_keyword` CLI benchmark.
+2. Client and session layer (`plinko/src/keyword/client.rs`): `IndexPirClient`
+   implementations for `MultiLevelClient` and `protocol::Client`,
+   `KeywordClient<B>` (`prepare_lookup`/`finish_lookup`/`abort_lookup`,
+   two-pass `prepare_batch`/`finish_batch`/`abort_batch`, `apply_epoch_update`,
+   `CachePolicy`, `retire_hints`, `PLNKKEYW` checkpointing), and
+   `KeywordSession` / `KeywordTransport`.
+3. End-to-end tests (`plinko/tests/keyword_e2e_test.rs` and unit tests in
+   `plinko/src/keyword.rs` + `plinko/src/keyword/client.rs`): single-file
+   `database.bin` and 2-segment flows through `plinko_hints` +
+   `protocol::Client`, `MultiLevelClient` policies/updates/stash/checkpoints/WAL
+   recovery, and `wasm32-unknown-unknown --no-default-features` compilation.
+4. Documentation sync: `docs/data_format.md`, `docs/trust_model.md`,
+   `docs/README.md`, `README.md`, and `CHANGELOG.md`.
