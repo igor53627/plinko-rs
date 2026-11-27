@@ -1,209 +1,405 @@
-# Keyword Lookup: Design Proposal
+# Keyword Lookup: Design Specification
 
-Status: proposal for TASK-22. The layout decision is open; no code implements
-this document yet.
+Status: generalized design specification for TASK-22 (no code implements this
+document yet).
 
-The document was written for the Ethereum v3 data: its keys are addresses and
-(address, slot) pairs, and its numbers are for the mainnet snapshot. The full
-Ethereum state is no longer a target
-([protocol_overview.md](protocol_overview.md#scope)). TASK-22 now asks for the
-same lookup for a general key-value database, with the key size, the value
-size and the load as parameters; this document is the start point and is not
-general yet.
+This document specifies private key-value lookup over `plinko-rs` for a general
+fixed-size key-value database, parameterized by key length, value size, tag
+size, bucket size, and load factor. The full Ethereum state is not a target
+([protocol_overview.md](protocol_overview.md#scope)); large-scale counts below
+are scale references only.
 
 ## Problem
 
-Plinko retrieves the record at an integer index. A client has a key: an address,
-or an (address, slot) pair. Today the step from the key to the index is in
-`account-mapping.bin` and `storage-mapping.bin` (91.46 GB at mainnet, more than
-`database.bin`), and no code reads them. A client that asks a server for the
-index reveals its key.
+Index PIR (`plinko::multilevel` and `plinko::protocol`) retrieves a record at
+an integer index `0..N`. A client that knows a key (such as an identifier,
+address, or composite key) cannot ask the server for its index without
+revealing the key, and storing an explicit key-to-index map on the client costs
+`O(N)` space.
 
-The paper names the solution (Section 2, "Additions and Deletions"): "A standard
-cuckoo-hashing technique (see [ZPZS24, ALP+ 21]) can reduce keyword-PIR to
-standard PIR. In this case, add/delete/update translates to updating a couple
-array entries."
+We reduce keyword PIR to index PIR using a **2-segment Key-Value Segmented
+Cuckoo Filter (`KV-SCF`)**, adapted from RisePIR (`ePrint 2026/2082`, CANS
+2026) with modular partial-key cuckoo hashing. It replaces the earlier
+unsegmented Cuckoo proposal (`d=2, b=4`) and works over both
+`plinko::multilevel` (recommended) and 1-level `plinko::protocol`.
 
-Sources that were read for this proposal: the Plinko paper,
-`keewoolee/rms24-plinko-spec` (`pir/keyword_pir`, 2 hash functions, 1 slot per
-bucket, 3 buckets per item, a stash), and `~/pse/rms24-rs`
-(`src/keyword_pir/mod.rs`, a bucketed table with a 72-byte collision file).
+## Parameters
 
-## Design
+A table is defined by its public `KeywordTableSpec`:
 
-`database.bin` becomes a cuckoo hash table. The client computes the candidate
-positions of a key from the key and a public seed. There are no mapping files.
+| Parameter | Symbol | Default | Constraints / Notes |
+|---|---|---|---|
+| Segments | `d` | `2` | Fixed to 2 in v1; each lookup issues `d = 2` index PIR queries |
+| Slots per bucket | `b` | `4` | `>= 1`; `b = 4` balances load (0.85-0.90) and bucket size (`b = 2` lowers backup hint size) |
+| Tag size (bytes) | `tag_size` | `8` | `8` (64-bit, default) or `16` (128-bit, for adversarial key spaces) |
+| Value size (bytes) | `value_size` | caller | Fixed per table (`>= 1`); e.g. 16 B, 24 B, 32 B |
+| Key size (bytes) | `key_size` | arbitrary | Fixed or variable-length byte slices; length-prefixed in hashing |
+| Target build load | `load` | `0.85`-`0.90` | `0 < load < 0.95`; `0.90` for mostly static tables, `0.80`-`0.85` for live inserts |
+| Buckets per segment | `s` | derived | `max(1, ceil(ceil(num_keys / (b * load)) / 2))` (`s >= 1`, even for `num_keys = 0`; no power-of-two rounding required) |
+| Table seed | `table_seed` | random 32 B | Public; regenerated on build failure or major epoch rotation |
+| Table epoch (major) | `table_epoch` | `0` | Increments only on seed or geometry change (requires fresh `HintInit`) |
+| State epoch (minor) | `state_epoch` | `0` | Increments on every delta batch (`UpdateHint` / `apply_deltas_batch`) |
+
+Derived sizes:
+
+- `slot_size = tag_size + value_size`
+- `record_size = b * slot_size` (one PIR entry = one bucket)
+- `total_buckets = 2 * s`
+- `database_bytes = 2 * s * record_size`
+- **PIR queries per lookup:** **`2`** (one query in segment 0, one query in
+  segment 1).
+
+## Layout
 
 ```text
-database.bin = bucket[0] | bucket[1] | ... | bucket[num_buckets - 1]
-bucket       = slot[0] | ... | slot[b - 1]        (one PIR entry)
-slot         = tag (8 bytes) | payload (32 bytes)
+database.bin = segment_0 | segment_1                  (2 * s * record_size bytes)
+segment_j    = bucket[0] | ... | bucket[s - 1]        (s buckets, j in {0, 1})
+bucket       = slot[0] | ... | slot[b - 1]            (one PIR entry, record_size bytes)
+slot         = tag (tag_size bytes) | value (value_size bytes)
 ```
 
-- **PIR entry = bucket.** One PIR query returns all `b` slots of one bucket.
-- **Positions.** A key has `d` candidate buckets:
-  `h = keccak256(table_seed || kind || key)`,
-  `position_i = u64_le(h[8i .. 8i + 8]) mod num_buckets`.
-- **Tag.** `tag = h[24 .. 32]`. The client finds its record by the tag.
-- **Kind.** One byte that separates key spaces: `0x01` account (key = 20-byte
-  address), `0x02` storage (key = address || slot key, 52 bytes). Other data
-  sets use other kind values; the table code does not interpret the key.
-- **Payload.** Account: balance (16) | nonce (4) | CodeID (4) | zero (8).
-  Storage: value (32). These are the fields of the v3 record without its TAG.
-- **Seed.** `table_seed` (32 bytes) and `num_buckets`, `b`, `d` are in
-  `metadata.json`. They are public.
-- **Empty slot.** All bytes zero. The builder selects another seed if a key has
-  the tag 0.
-- **No stash at build time.** If a key cannot be placed, the builder selects
-  another seed and starts again.
+Storing `segment_0` followed contiguously by `segment_1` serves both execution
+modes from one file:
 
-### Lookup
+1. **Two independent segment PIR instances (recommended for
+   `plinko::multilevel`):** segment 0 is slice `[0 .. s * record_size]` and
+   segment 1 is `[s * record_size .. 2 * s * record_size]`. Each segment has
+   its own hint set, so a lookup sends both queries in **1 RTT** with zero hint
+   contention and no `pos_0 == pos_1` edge case.
+2. **Single-database PIR instance (compatible with `plinko_hints` and 1-level
+   `plinko::protocol`):** treat `database.bin` as one table of `2 * s` entries
+   and query indices `a0` and `s + a1`. Because `a0 < s <= s + a1`, the two
+   indices are still guaranteed distinct.
 
-1. The client computes the `d` positions and the tag of the key.
-2. The client sends `d` PIR queries, one per position. It always sends `d`
-   queries, also when the first answer holds the record, and also when two
-   positions are equal or an index is in its cache (the existing client sends
-   a query for a decoy index in that case).
-3. The client compares the tag with the tag of each slot of the candidate
-   buckets. If two positions are equal, it reads that bucket once. One match
-   gives the payload. No match means that the key is not in the
-   table. More than one match is an error.
+An **empty slot** is all bytes zero (`tag == [0; tag_size]` and
+`value == [0; value_size]`).
 
-The server sees `d` PIR queries per lookup. By the privacy of the index PIR the
-queries do not reveal the positions. The number of lookups stays visible.
+## Hashing And Partial-Key Eviction
 
-### Why The Slot Layout Changes
+Hashing uses keyed **BLAKE3** (deterministic across native and `wasm32`,
+already a dependency of `plinko`) with the 32-byte public `table_seed`. A
+1-byte `kind` namespace separates distinct key domains stored in one table
+(use `0x00` for single-domain tables).
 
-The v3 record has its TAG at bytes 24..32 for an account and at bytes 32..40 for
-a storage slot. In a table that mixes both kinds this is not safe: bytes 24..32
-of a storage record are value bytes, which the owner of a contract selects. A
-contract can thus write a value that looks like the tag of a victim account
-into a slot of a candidate bucket of that account. The proposal puts the tag at
-one position for all kinds and binds the kind into the tag.
+For input `(kind, key)`:
 
-## Layout Options
+1. Compute 32 bytes via BLAKE3 keyed XOF with domain separation and explicit
+   key length (`key.len() as u32` little-endian):
+   `digest = blake3_keyed(table_seed, "plinko-kvscf-v1" || kind || u32_le(key.len()) || key)`
+2. Primary bucket offset in segment 0:
+   `a0 = u64_le(digest[0..8]) mod s`
+3. Tag:
+   `tag = digest[8 .. 8 + tag_size]`.
+   If all bytes of `tag` are zero, set `tag[0] = 1` so no valid key maps to
+   the empty-slot sentinel (costs 1 of `2^t` tag values and avoids build
+   restarts on zero tags).
+4. Alternate bucket offset in segment 1 via a second keyed BLAKE3 hash of
+   `tag` alone:
+   `delta = u64_le(blake3_keyed(table_seed, "plinko-kvscf-alt-v1" || tag)[0..8]) mod s`
+   `a1 = (a0 + delta) mod s`
 
-Mainnet v3 has 1,834,095,877 keys. All numbers in this table are computed from
-the formulas of the code and from per-operation measurements (0.59 ms CPU per
-PIR entry in HintInit and 28.5 us per `forward` call, both measured at
-w = 65536 with hardware AES). No table was built at mainnet scale.
+**Partial-key eviction:** during build and live inserts, the server always
+knows which segment (`0` or `1`) an evicted slot sits in, so it recovers the
+alternate bucket strictly from `(segment, bucket_idx, tag)` without keeping
+original keys or a 4-byte `other_bucket` side array:
 
-| Option                   | Today (index) | B: d=3, b=1 | C2: d=2, b=2 | C4: d=2, b=4 | C8: d=2, b=8 |
-|--------------------------|---------------|-------------|--------------|--------------|--------------|
-| Load at build            | 1.00          | 0.85        | 0.80         | 0.90         | 0.95         |
-| PIR entries (buckets)    | 1.834e9       | 2.158e9     | 1.146e9      | 0.509e9      | 0.241e9      |
-| PIR entry size           | 40 B          | 40 B        | 80 B         | 160 B        | 320 B        |
-| `database.bin`           | 73.4 GB       | 86.3 GB     | 91.7 GB      | 81.5 GB      | 77.2 GB      |
-| w                        | 65536         | 65536       | 65536        | 32768        | 16384        |
-| c                        | 27988         | 32926       | 17492        | 15548        | 14730        |
-| Hints (lambda = 128)     | 16,777,216    | 16,777,216  | 16,777,216   | 8,388,608    | 4,194,304    |
-| Hint file                | 1.07 GB       | 1.07 GB     | 2.08 GB      | 2.05 GB      | 2.03 GB      |
-| HintInit                 | 301 core-h    | 354 core-h  | 188 core-h   | 83 core-h    | 40 core-h    |
-| PIR queries per lookup   | 1             | 3           | 2            | 2            | 2            |
-| Lookups per hint set     | 8,388,608     | 2,796,202   | 4,194,304    | 2,097,152    | 1,048,576    |
-| Upload per lookup        | 59 KB         | 210 KB      | 74 KB        | 66 KB        | 63 KB        |
-| Download per lookup      | 80 B          | 240 B       | 320 B        | 640 B        | 1280 B       |
-| Client CPU per lookup    | 0.40 s        | 1.41 s      | 0.50 s       | 0.44 s       | 0.42 s       |
+- Evicting from segment 0 at `a0`: target in segment 1 is `(a0 + delta) mod s`.
+- Evicting from segment 1 at `a1`: target in segment 0 is
+  `(a1 + s - delta) mod s`.
 
-Notes:
+Using modular addition/subtraction instead of XOR works for any `s >= 1`,
+avoiding up to 2x capacity padding from rounding `s` to a power of two.
 
-- "Today" has no keyword lookup; it is the base for the comparison. Its hint
-  file is given for a parity of 40 bytes, which is the size since TASK-31.
-- The hint file grows with the PIR entry size, because a parity has the size
-  of one PIR entry.
-- HintInit cost follows the number of PIR entries, because the iPRF inverse is
-  the cost and it is paid once per PIR entry.
-- "Lookups per hint set" is the number of backup hints divided by `d`.
-- The option of the reference spec (d = 2, b = 1) is not in the table. In the
-  simulation below it does not build without a stash at a load of 0.45, and it
-  needs more than 160 GB.
+## Lookup Protocol
 
-### Simulation Of The Table Build
+1. The client computes `(a0, a1, tag)` locally from `KeywordTableSpec` and
+   `(kind, key)`. The key never leaves the client.
+2. The client prepares 2 index PIR queries: `a0` against segment 0 and `a1`
+   against segment 1 (sent together in 1 RTT).
+3. Upon receiving both buckets, the client verifies `table_epoch`, global
+   `state_epoch`, and each segment's own backend epoch (see
+   [Client Interface](#client-interface-plinkokeyword)), then scans all `2 * b`
+   slots for `slot.tag == tag`.
+   - Zero matches: return `None` (not found).
+   - One match: return `Some(slot.value)`.
+   - More than one match: return `Err(DuplicateTagMatch)`.
+4. If a bounded public runtime-stash is present in epoch metadata, the client
+   also checks the stash for `(a0, tag)` locally while still issuing the 2 PIR
+   queries (unless `CachePolicy::LocalHit` is explicitly enabled). A match in
+   both a bucket and the stash returns `Err(DuplicateTagMatch)`.
 
-Measured with a scratch program (67,108,864 slots, random-walk insertion, at
-most 500 evictions per key). "Evictions" are counted for the last 1 percent of
-the inserted keys, where the table is at its final load. The table gives the
-run with the first seed. In the run with a second seed the mean values differ
-by less than 2 percent, and the keys not placed are 487, 0, 24,905, 0, 67, 0,
-1 and 0.
+## Tag Size And False-Match Probability
 
-| d | b | Load | Keys not placed | Evictions: mean | p99 | max |
-|---|---|------|-----------------|-----------------|-----|-----|
-| 2 | 1 | 0.45 | 470             | 2.8             | 59  | 500 |
-| 3 | 1 | 0.85 | 0               | 15.5            | 120 | 420 |
-| 3 | 1 | 0.90 | 24,966          | 104             | 500 | 500 |
-| 2 | 2 | 0.80 | 0               | 7.5             | 74  | 268 |
-| 2 | 2 | 0.85 | 50              | 26.8            | 222 | 500 |
-| 2 | 4 | 0.90 | 0               | 5.4             | 41  | 177 |
-| 2 | 4 | 0.95 | 3               | 25.9            | 159 | 500 |
-| 2 | 8 | 0.95 | 0               | 5.3             | 35  | 102 |
+Let `t = 8 * tag_size` be the tag width in bits (`2^t - 1` non-zero tags).
 
-The mainnet table has about 30 times more slots; that size was not simulated.
+1. **Non-member false match (key not in table):**
+   A lookup inspects at most `d * b` occupied slots (8 slots for `d = 2, b = 4`),
+   each carrying an independent uniform non-zero tag. By union bound:
+   `P_false_match <= (d * b) / (2^t - 1)`
+   - `tag_size = 8` (`t = 64`, `d = 2, b = 4`): `<= 8 / (2^64 - 1) ~= 4.3e-19`
+     (`~2^-61` per lookup).
+   - `tag_size = 16` (`t = 128`, `d = 2, b = 4`): `<= 8 / (2^128 - 1) ~= 2.4e-38`
+     (`~2^-125` per lookup).
 
-## Recommendation
+2. **All-or-nothing collision for stored keys (RisePIR Lemma 1):**
+   Because `delta = h1(tag)` depends only on `tag`, two distinct keys `k != k'`
+   with `tag(k) == tag(k')` satisfy `a1(k) == a1(k')` if and only if
+   `a0(k) == a0(k')`. Thus two keys with the same tag either share both
+   candidate buckets or share neither.
+   - For a table of `N` honest keys, a given key collides with another stored
+     key with probability `<= N / (s * (2^t - 1)) = (d * b * load) / (2^t - 1)`
+     (`~3.9e-19` at `t = 64, load = 0.90`).
+   - Across the entire table (birthday bound), the probability that any pair
+     collides on `(a0, tag)` is `~= (d * b * load * N) / (2 * 2^t)`:
+     `~2^-38` at `N = 2^24` and `~2e-11` at `N = 10^8` for `t = 64`. The
+     builder rejects duplicate `(a0, tag)` pairs during build.
+   - **Adversarial keys (public `table_seed`):** grinding a collision against
+     one specific victim key requires `~s * 2^t` hashes (`~2^88` for
+     `s = 1.5e7, t = 64`); grinding a collision against any of `N` stored keys
+     requires `~2^t / (d * b * load)` hashes (`~2^61` for `t = 64`, `~2^125`
+     for `t = 128`). Use `tag_size = 16` when untrusted parties can freely
+     grind keys against a known `table_seed`.
 
-**C4: 2 hash functions, 4 slots per bucket, load 0.90 at build.**
+## Mutations After Build (Inserts, Updates, Deletes)
 
-- 2 PIR queries per lookup, where option B needs 3.
-- HintInit drops from about 300 to about 83 core-hours, because there are 3.6
-  times fewer PIR entries.
-- An insert at the final load moves 5.4 records on average, where option B
-  moves 15.5. Each moved record is one changed PIR entry for all clients.
-- At a load of 0.95 the simulation does not place 3 keys (1 key with the
-  second seed), so a load of 0.90 leaves room for growth before a rebuild or
-  a stash is necessary.
-- Cost: the hint file is 2.05 GB, where it is 1.07 GB with 40-byte entries.
+Every mutation on the table produces a small batch of `(segment, bucket_idx,
+xor_delta)` updates that feed directly into `MultiLevelClient::apply_deltas_batch`
+or `protocol::Client::apply_delta`:
 
-C8 halves HintInit again at the same hint file size, but it also halves the
-lookups per hint set, and a change of one record changes a 320-byte entry.
+- **Value update:** locate the slot matching `tag` in `(seg 0, a0)` or
+  `(seg 1, a1)` (or, when the optional runtime-stash is enabled, the stash
+  entry matching `(a0, tag)`). Overwriting a bucket slot produces **1 bucket
+  delta** and does not change load; overwriting a stash entry emits
+  `StashOp::Update(a0, tag, new_value)` and no bucket delta.
+- **Delete:** locate the matching slot in `(seg 0, a0)` or `(seg 1, a1)` and
+  zero it out (**1 bucket delta**), or remove the matching `(a0, tag)` entry
+  from the runtime-stash (`StashOp::Delete(a0, tag)`). Deletion is weak in the
+  preprocessing PIR model: future lookups return `None`, while clients that
+  logged earlier deltas retain old values.
+- **Insert:**
+  1. Reject if a slot with the same `tag` already exists in `(seg 0, a0)` or
+     `(seg 1, a1)` -- or, when the runtime-stash is enabled, if `(a0, tag)` is
+     already present in the stash (duplicate key or `(a0, tag)` collision).
+  2. If either candidate bucket has a free slot, write `tag || value` there
+     (**1 bucket delta**).
+  3. Otherwise run random-walk partial-key eviction for up to `max_kicks`
+     steps (default `500`), alternating between segment 0 and segment 1 and
+     computing each displaced slot's alternate bucket from its stored `tag`.
+     At `d = 2, b = 4`, an insert touches ~2-3 buckets on average at
+     `load = 0.80-0.85` and ~5.4 buckets on average at `load = 0.90`.
+  4. If `max_kicks` is exhausted, roll back the tentative walk and report
+     `InsertError::TableFull` (no partial state left behind).
 
-## Consequences For The Code
+**Handling saturation without immediate rebuild:**
 
-1. **The PIR entry size is a parameter** (done in TASK-31): `plinko::hints`,
-   `plinko::protocol` and `plinko_hints --record-size` take the record size of
-   the database, and the parity covers the full record. A bucket of this
-   proposal is one record.
-2. **A table builder.** The cuckoo build needs random access to the table.
-   With d = 2 the builder keeps, for each slot, the index of the other
-   candidate bucket of its key (4 bytes), so that it can move a record without
-   its key: 8.2 GB in addition to the 81.5 GB table at mainnet (computed).
-3. **The extractor** writes (kind, key, payload) records for the builder, not
-   `database.bin` and the mapping files. `gen_synthetic` does the same, so
-   that tests have keys.
-4. **A keyword client** on top of `protocol::Client`: `lookup(kind, key)`
-   sends `d` queries and checks the tags.
-5. **`docs/data_format.md`** describes the new layout as v4. The mapping files
-   and the v3 record order are removed.
+- Choose `load = 0.80-0.85` at build time when live inserts are expected
+  (leaves 15-25% free slots and keeps eviction walks short).
+- Optional **bounded public runtime-stash** (for example up to 256 entries,
+  ~12 KB in epoch metadata): when a live insert hits `TableFull`, the server
+  can append `(a0, tag, value)` to the public stash (`StashOp::Insert`) until a
+  scheduled major epoch rotation (`table_epoch += 1` with larger `s` and fresh
+  `table_seed`, which triggers a new `HintInit` on clients). Keying the stash
+  by `(a0, tag)` matches the table's exact key identity (preventing a stashed
+  key from matching a different or absent key that shares only `tag` with a
+  different `a0`). Because the stash is public, each stashed entry publicly
+  exposes `(a0, tag, value)` -- the same bucket offset, tag, and value that an
+  on-table slot already exposes publicly in `database.bin` and delta streams.
+- Build-time construction never uses a stash: if a key fails to place during
+  build, the builder reports the unplaceable key (or retries with a new
+  `table_seed` when retry is requested).
+
+## Comparison With Other Keyword PIR Constructions
+
+```text
++------------------------------+---------+---------+------------+-------------+----------------------------+
+| Construction                 | Queries | Record  | Extra      | Dynamic     | Fit for plinko::multilevel |
+|                              | /lookup | size    | client RAM | inserts     |                            |
++------------------------------+---------+---------+------------+-------------+----------------------------+
+| Unsegmented Cuckoo C4        | 2       | 4*(t+v) | 32 B seed  | Yes (O(1))  | Shared hint pool; needs    |
+| (prior docs/keyword_lookup)  |         |         |            |             | other_bucket + Rewind/Skip |
++------------------------------+---------+---------+------------+-------------+----------------------------+
+| 2-segment KV-SCF (selected)  | 2       | 4*(t+v) | 32 B seed  | Yes (O(1))  | 2 disjoint PIR instances,  |
+| (RisePIR, ePrint 2026/2082)  | (1/seg) |         |            |             | 1 RTT, partial-key evict   |
++------------------------------+---------+---------+------------+-------------+----------------------------+
+| MPHF-KVS (future static opt) | 1       | 1*(t+v) | 1.5-2.7    | No (value   | 1 query, load 1.0, b=1;    |
+| (ePrint 2025/2252)           |         | (b=1)   | bits/key   | update only)| rebuild on any key insert  |
++------------------------------+---------+---------+------------+-------------+----------------------------+
+| BFF-KVS (ChalametPIR /       | 3       | 1*(t+v) | 32 B seed  | No (rebuild | 3x queries; ChalametPIR's  |
+| KPIR_kvs / 2025/2252)        |         | (~1.13x)|            | on update)  | 1-query trick needs LWE    |
++------------------------------+---------+---------+------------+-------------+----------------------------+
+| KPIR_index / KPIR_hash       | 1       | wide    | 0.5-8      | No / update | Built for Row-KOPIR; wide  |
+| (USENIX Security 2025)       |         | window  | bits/key   | only        | records bloat XOR hints    |
++------------------------------+---------+---------+------------+-------------+----------------------------+
+```
+
+Note on sublinear PIR scaling: on linear-server PIR (SimplePIR/FrodoPIR),
+splitting into `d = 2` segments halves server work. On sublinear `sqrt(N)`
+PIR (`S * T = Omega(M)`), splitting preserves the `2x` space-time product, but
+with `plinko::multilevel` (where hints are already 15-35x smaller than 1-level
+Plinko) it delivers 1-RTT parallel lookup without hint contention, removes the
+`other_bucket` side array, eliminates `pos_0 == pos_1` decoy logic, and lets
+callers tune `b = 4` vs `b = 2` cleanly.
+
+## Concrete Costs With `plinko::multilevel` (`FlatB`, `kappa = 100`)
+
+All rows use exact `MultiLevelParams::two_level(..., kappa = 100, FlatB)`
+geometry (`> 137` bits of session security across `2 * Q` segment queries).
+CPU timings are calibrated extrapolations from Apple M3 Ultra (`--cfg
+aes_armv8`, `docs/multilevel_pir.md`).
+
+```text
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| Workload (d=2 KV-SCF, kappa=100)  | DB size   | Hints     | Primary /  | Upload L0  | Download / | HintInit  | 1k deltas |
+|                                   | (stream)  | (2 segs)  | Backup     | (expected) | Server L0  | (8T / 32T)| (1 core)  |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 2^24 index-only baseline (40 B)   | 640.0 MiB |  1.90 MiB | 0.90/1.00  | 12.0 KiB   | 80 B /     | ~4.4 s /  | ~0.6 ms   |
+| (no keyword lookup, Q=4096)       |           |           | MiB        | (18.4 KiB) | 0.31 MiB   | ~1.1 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 2^24 keys, 40 B slot, b=4         | 711.1 MiB | 11.27 MiB | 3.45/7.82  |  6.1 KiB   | 640 B /    | ~2.4 s /  | ~0.6 ms   |
+| load=0.90, Q=4096 (142.6 b/sess)  | (0.75 GB) |           | MiB        | (9.0 KiB)  | 0.69 MiB   | ~0.6 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 2^24 keys, 40 B slot, b=2         | 800.0 MiB |  7.44 MiB | 3.53/3.91  |  7.5 KiB   | 320 B /    | ~3.2 s /  | ~0.9 ms   |
+| load=0.80, Q=4096 (141.6 b/sess)  | (0.84 GB) |           | MiB        | (11.5 KiB) | 0.39 MiB   | ~0.8 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 100M EOA, 24 B slot, b=4          |  2.82 GB  |  8.90 MiB | 4.21/4.69  | 21.0 KiB   | 384 B /    | ~10.3 s / | ~0.89 ms  |
+| load=0.85, Q=4096 (140.2 b/sess)  | (2.63 GiB)|           | MiB        | (32.3 KiB) | 1.31 MiB   | ~2.6 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 100M EOA, 32 B slot, b=4          |  3.76 GB  | 11.81 MiB | 5.55/6.26  | 21.0 KiB   | 512 B /    | ~11.8 s / | ~0.89 ms  |
+| load=0.85, Q=4096 (140.2 b/sess)  | (3.51 GiB)|           | MiB        | (32.3 KiB) | 1.75 MiB   | ~2.9 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 300M scale ref, 32 B slot, b=4    | 11.29 GB  | 17.36 MiB | 11.11/6.26 | 34.2 KiB   | 512 B /    | ~32.5 s / | ~1.5 ms   |
+| load=0.85, Q=4096 (139.1 b/sess)  | (10.52GiB)|           | MiB        | (54.4 KiB) | 2.63 MiB   | ~8.1 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+| 300M scale ref, 40 B slot, b=4    | 14.12 GB  | 21.62 MiB | 13.80/7.82 | 34.2 KiB   | 640 B /    | ~36.6 s / | ~1.5 ms   |
+| load=0.85, Q=4096 (139.1 b/sess)  | (13.15GiB)|           | MiB        | (54.4 KiB) | 3.29 MiB   | ~9.1 s    |           |
++-----------------------------------+-----------+-----------+------------+------------+------------+-----------+-----------+
+```
+
+Notice that packing `b = 4` slots per bucket shrinks the number of PIR entries
+by `3.6x`, which roughly **halves online upload and `HintInit` CPU** relative
+to the 40-byte index-only baseline, while backup hints scale linearly with
+`Q * record_size` (using `b = 2` or a smaller session budget `Q` halves backup
+memory when RAM is tighter than upload).
+
+### Simulation Reference For `(d, b, load)`
+
+Random-walk cuckoo simulation (67,108,864 slots, `max_kicks = 500`, evictions
+measured on the last 1% of inserted keys):
+
+| `d` | `b` | Load | Keys not placed | Evictions: mean | p99 | max |
+|---|---|---|---|---|---|---|
+| 2 | 1 | 0.45 | 470 | 2.8 | 59 | 500 |
+| 3 | 1 | 0.85 | 0 | 15.5 | 120 | 420 |
+| 2 | 2 | 0.80 | 0 | 7.5 | 74 | 268 |
+| 2 | 2 | 0.85 | 50 | 26.8 | 222 | 500 |
+| 2 | 4 | 0.90 | 0 | 5.4 | 41 | 177 |
+| 2 | 4 | 0.95 | 3 | 25.9 | 159 | 500 |
+| 2 | 8 | 0.95 | 0 | 5.3 | 35 | 102 |
+
+RisePIR (`ePrint 2026/2082`, Table 2) further confirms that 2-segment `KV-SCF`
+with `b = 4` achieves up to **97.4%** maximum load before insertion fails,
+leaving comfortable margin at `load = 0.85-0.90`.
+
+## Client Interface (`plinko::keyword`)
+
+The library exposes a **sans-I/O state machine** matching `MultiLevelClient`
+and `protocol::Client` (no async runtime or networking in `plinko`, zero host
+imports on `wasm32-unknown-unknown`):
+
+1. **`IndexPirClient` trait:** minimal adapter (~8 methods: `num_entries`,
+   `record_size`, `epoch`, `remaining_queries`, `prepare_index_query`,
+   `finish_index_query`, `abort_index_query`, `apply_index_deltas`),
+   implemented out of the box for both `MultiLevelClient` and
+   `protocol::Client`.
+2. **`KeywordClient<B: IndexPirClient>`:** owns `[B; 2]` (segment 0 and
+   segment 1), `KeywordTableSpec`, optional runtime-stash, and optional
+   XOR-updated bucket cache:
+   - `prepare_lookup(kind, key, rng) -> Result<LookupPlan<Q, P>>`
+   - `finish_lookup(pending, answer, rng) -> Result<Option<Vec<u8>>>`
+   - `abort_lookup(pending) -> Result<()>` (atomically rolls back both
+     segments on transport failure or epoch mismatch)
+   - `prepare_batch` / `finish_batch` / `abort_batch` (leverages
+     `MultiLevelClient`'s existing `slot.reserved` tracking for 1-RTT multi-key
+     batches). Under `CachePolicy::LocalHit`, `prepare_batch` deduplicates
+     repeated keys and skips cached/stashed hits locally, which makes the
+     deduplicated non-cached batch count visible to the server. Under
+     `CachePolicy::Off` and `CachePolicy::ConstantTraffic`, `prepare_batch`
+     always emits one query pair per input key (substituting decoy pairs for
+     cached, stashed, or duplicate keys under `ConstantTraffic`), so
+     within-batch key equality is hidden from the server (the caller's nominal
+     batch size remains visible on the wire).
+   - `apply_epoch_update(&KeywordEpochUpdate)`: validates `table_epoch` and
+     `from_state_epoch == self.state_epoch`, applies each non-empty
+     `segment_deltas[j]` to `backend[j]`, XORs deltas into cached buckets in
+     place, applies `stash_ops` to the runtime-stash, and advances global
+     `state_epoch` to `to_state_epoch`.
+     **Per-segment epoch mapping:** `MultiLevelClient::epoch()` does not
+     advance on an empty delta batch (`docs/multilevel_pir.md`), so after an
+     update that touches only segment 0, `backend[0].epoch()` advances while
+     `backend[1].epoch()` stays unchanged. Each segment answer `segments[j]`
+     therefore carries its own segment backend epoch `seg_epoch_j` (not the
+     global `state_epoch`), and `finish_lookup` checks both
+     `answer.state_epoch == self.state_epoch` (global keyword state, covering
+     the runtime-stash as well) and `seg_epoch_j == backend[j].epoch()` per
+     segment independently.
+   - `write_checkpoint` / `read_checkpoint` and `to_bytes` / `from_bytes`:
+     persists `KeywordTableSpec`, `(table_epoch, state_epoch)`, runtime-stash,
+     and both segment client states. **Restart and hint-reuse rule:** a
+     checkpoint must never cause a previously sent hint to be sent a second
+     time. Callers must follow the same durable recovery rule as
+     [docs/online_protocol.md, "Client State And Restart"](online_protocol.md#client-state-and-restart):
+     either persist the checkpoint atomically after `prepare_lookup` before
+     transmitting the query, or durably append each sent segment hint
+     identifier (`PreparedQuery::hint_index` for `protocol::Client`, or the
+     corresponding segment `(level, slot_idx)` / query record for
+     `MultiLevelClient`) to a write-ahead log before transmission and retire
+     every logged hint on restore (via `Client::retire_hints` / segment
+     retirement) before issuing any new query.
+3. **Explicit `CachePolicy`:**
+   - `Off` (default): always issues 2 PIR queries per input key (no local
+     cache bypass, no batch deduplication).
+   - `LocalHit`: returns cached/stash hits locally and deduplicates repeated
+     keys in batches without spending backup hints `Q` (useful for local RPC
+     proxies or repeated reads in one call; reveals hit/dedup counts on the
+     wire).
+   - `ConstantTraffic`: returns cached/stash/duplicate hits locally while still
+     issuing 2 decoy queries per such input key to keep wire traffic uniform.
+4. **Thin transport wrapper (`KeywordTransport` + `KeywordSession`):** optional
+   sync convenience layer providing `get(kind, key)` and `get_batch(&keys)`
+   with automatic `abort_lookup` on transport error.
+5. **OHTTP compatibility:** `KeywordLookupQuery` carries only
+   `(table_epoch, state_epoch, segments: [Q; 2])` and never puts `session_id`
+   or `query_id` on the wire, so online lookups can be routed through an OHTTP
+   relay (RFC 9458) to hide client IP while PIR protects the queried key even
+   if relay and server collude.
 
 ## Limits
 
-- **Tag collisions.** A tag has 64 bits. A false match needs another key with
-  the same tag in a candidate bucket of the key. For keys that nobody selects
-  this is negligible. An attacker who selects keys, for example slot keys of
-  its own contract, needs about 2^91 hash evaluations for one given victim key
-  and about 2^60 for some key of the table (estimate: 2^-64 for the tag, about
-  2^-27 for a shared bucket, 2^31 keys). The result is a lookup error for that
-  key, or a wrong value for a key that is not in the table. A 16-byte tag
-  removes this at a cost of 8 bytes per slot; the proposal does not select it.
-- **Wrong answers of the server** are not covered
-  ([integrity.md](integrity.md)).
-- **Inserts after the build** move records, and a key that cannot be placed
-  needs a stash or a rebuild with a new seed. A new seed moves all records, so
-  all clients must run HintInit again. An insert that moves records in a table
-  of fixed capacity is a delta
-  ([update_strategy.md](update_strategy.md#a-database-that-grows)).
-- **The seed is public.** An attacker can search for keys that share both
-  buckets. More than 8 such keys cannot be placed with b = 4. At build time the
-  builder answers with a new seed; for inserts there is no answer yet.
+- **Server integrity:** wrong answers from a malicious server are not detected
+  by PIR ([integrity.md](integrity.md)). Clients should verify a committed
+  snapshot digest during `HintInit`.
+- **Public seed:** an adversary who can freely insert keys into a table with a
+  known `table_seed` can craft > `2 * b` keys sharing `(a0, a1)` to force
+  eviction failure. Mitigations are build-time seed rotation, bounded
+  runtime-stash, and 16-byte tags.
+- **Client-side `HintInit` download:** as in index PIR, every new client
+  streams the full `database.bin` once locally ([trust_model.md](trust_model.md)).
+  `HintInit` must never be delegated to the server, a cloud, or a TEE.
 
-## Implementation Steps
+## Implementation Steps (TASK-22)
 
-1. Library module `plinko::keyword`: hashing, slot and bucket codec, in-memory
-   cuckoo builder, tag match. Unit tests with a build at a load of 0.90.
-2. Entry size as a parameter in `hints`, `protocol` and `plinko_hints` (done
-   in TASK-31; the end-to-end tests run with 1, 13, 40, 45 and 256 bytes).
-3. Builder binary and the changes of `gen_synthetic` and the extractor.
-4. Keyword client and an end-to-end test: build a table from synthetic
-   accounts and slots, run `plinko_hints`, look up an address, an
-   (address, slot) pair and a key that is not in the table.
-5. Documents: `data_format.md` v4, `trust_model.md` ("Not Covered" list).
+1. Library module `plinko::keyword`: `KeywordTableSpec`, BLAKE3 keyed hashing
+   and modular partial-key eviction, `KvScfBuilder` / `KvScfTable` (build,
+   live `insert`/`update`/`delete` returning segment deltas, `database.bin`
+   writer, unplaceable key reporting).
+2. `IndexPirClient` implementations for `MultiLevelClient` and
+   `protocol::Client`, plus `KeywordClient<B>` (`prepare_lookup`,
+   `finish_lookup`, `abort_lookup`, `prepare_batch`/`finish_batch`,
+   `apply_epoch_update`, `CachePolicy`, checkpointing) and `KeywordSession`.
+3. End-to-end tests: build synthetic key-value tables at arbitrary
+   `(key_size, value_size, load)` -> verify through `plinko_hints` +
+   `protocol::Client` AND through `MultiLevelClient` (including `insert`,
+   `update`, `delete`, not-found lookups, `abort_lookup`, and `wasm32`
+   compilation).
+4. Update `docs/data_format.md` and `docs/trust_model.md` ("Not Covered" list)
+   once `plinko::keyword` lands.
