@@ -89,7 +89,9 @@ These points are outside the privacy claim today.
   residual boundaries are: `table_seed` and any optional runtime-stash entries
   are public; `CachePolicy::LocalHit` reveals cache-hit and batch-deduplication
   counts on the wire (use `CachePolicy::Off` or `CachePolicy::ConstantTraffic`
-  to avoid this); and non-member lookups have false-match probability at most
+  to avoid this); and for a fresh non-member query whose digest is modeled as
+  random relative to the stored identities (not a key chosen against a known
+  `table_seed` and snapshot), the false-match probability is at most
   `(d * b + 1) / 2^(8 * tag_size)` when the runtime-stash is disabled
   (`<= 4.9e-19` for 8-byte tags, `<= 2.6e-38` for 16-byte tags), or
   `(d * b + S_stash + 1) / 2^(8 * tag_size)` with a runtime-stash of up to

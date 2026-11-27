@@ -459,10 +459,13 @@ impl KeywordTableSpec {
         NUM_SEGMENTS
     }
 
-    /// Conservative union-bound non-member false-match probability over the
-    /// `d * b` bucket slots (excluding any public runtime-stash), accounting for
-    /// the zero-tag remap (`[0; tag_size] -> [1, 0, ...]`, which adds at most 1
-    /// extra raw digest preimage): `(d * b + 1) / 2^(8 * tag_size)`.
+    /// Conservative union-bound non-member false-match probability for a fresh
+    /// non-member digest modeled as random relative to the stored identities
+    /// (not keys chosen against a known `table_seed` and snapshot).
+    ///
+    /// Covers the `d * b` bucket slots (excluding any public runtime-stash),
+    /// accounting for the zero-tag remap (`[0; tag_size] -> [1, 0, ...]`, which
+    /// adds at most 1 extra raw digest preimage): `(d * b + 1) / 2^(8 * tag_size)`.
     pub fn false_match_upper_bound(&self) -> f64 {
         let bits: i32 = (self.tag_size * 8) as i32;
         ((NUM_SEGMENTS * self.bucket_size) + 1) as f64 / 2.0_f64.powi(bits)
@@ -981,8 +984,30 @@ impl KvScfTable {
                 Ok(built) => return Ok(built),
                 Err(build_err) => match build_err.error {
                     KeywordError::TableFull => continue,
+                    KeywordError::DuplicateKey => {
+                        let is_duplicate_input: bool =
+                            entries[..build_err.entry_index]
+                                .iter()
+                                .any(|&(k_kind, k_bytes, _)| {
+                                    k_kind == build_err.kind && k_bytes == build_err.key.as_slice()
+                                });
+                        if is_duplicate_input {
+                            return Err(KeywordError::DuplicateKey);
+                        }
+                        // Distinct (kind, key) inputs collided on (a0, tag) under this seed.
+                        continue;
+                    }
                     other => return Err(other),
                 },
+            }
+        }
+        // Before reporting seed exhaustion, check whether any repeated `(kind, key)` input
+        // was masked by an earlier seed-dependent collision on a different key.
+        let mut seen_inputs: std::collections::HashSet<(u8, &[u8])> =
+            std::collections::HashSet::with_capacity(entries.len());
+        for &(kind, key, _) in entries {
+            if !seen_inputs.insert((kind, key)) {
+                return Err(KeywordError::DuplicateKey);
             }
         }
         Err(KeywordError::SeedAttemptsExhausted {
@@ -2083,5 +2108,69 @@ mod tests {
 
         let bad_tag = json.replace("\"tag_size\":8", "\"tag_size\":64");
         assert!(serde_json::from_str::<KeywordTableSpec>(&bad_tag).is_err());
+    }
+
+    #[test]
+    fn build_with_seed_retry_retries_seed_collision_but_rejects_duplicate_input() {
+        let initial_seed: [u8; 32] = [0x11; 32];
+        // Precomputed pair of distinct 8-byte keys whose keyed BLAKE3 4-byte tags collide
+        // under `initial_seed` with `s = 1`.
+        let spec0: KeywordTableSpec =
+            KeywordTableSpec::with_layout(2, Some(8), 8, 4, 4, 0.5, initial_seed).unwrap();
+        let k1: [u8; 8] = 49_079u64.to_le_bytes();
+        let k2: [u8; 8] = 125_553u64.to_le_bytes();
+        assert_ne!(k1, k2);
+        let loc1: KeyLocation = spec0.locate(0x01, &k1).unwrap();
+        let loc2: KeyLocation = spec0.locate(0x01, &k2).unwrap();
+        assert_eq!((loc1.bucket_seg0, loc1.tag), (loc2.bucket_seg0, loc2.tag));
+        let v1: [u8; 8] = [0xAA; 8];
+        let v2: [u8; 8] = [0xBB; 8];
+
+        // Direct build with `initial_seed` fails with DuplicateKey due to the seed collision.
+        let direct_err = KvScfTable::build(
+            spec0,
+            [
+                (0x01, k1.as_slice(), v1.as_slice()),
+                (0x01, k2.as_slice(), v2.as_slice()),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(direct_err.error, KeywordError::DuplicateKey);
+
+        // `build_with_seed_retry` detects that k1 != k2 and rotates the seed to succeed.
+        let (built, _stats) = KvScfTable::build_with_seed_retry(
+            &[
+                (0x01, k1.as_slice(), v1.as_slice()),
+                (0x01, k2.as_slice(), v2.as_slice()),
+            ],
+            Some(8),
+            8,
+            4,
+            4,
+            0.5,
+            initial_seed,
+            16,
+        )
+        .expect("seed retry must resolve seed-dependent collision between distinct keys");
+        assert_ne!(built.spec().table_seed(), &initial_seed);
+        assert_eq!(built.get(0x01, &k1).unwrap(), Some(v1.as_slice()));
+        assert_eq!(built.get(0x01, &k2).unwrap(), Some(v2.as_slice()));
+
+        // A true repeated (kind, key) input must still be rejected immediately as DuplicateKey.
+        let dup_err = KvScfTable::build_with_seed_retry(
+            &[
+                (0x01, k1.as_slice(), v1.as_slice()),
+                (0x01, k1.as_slice(), v2.as_slice()),
+            ],
+            Some(8),
+            8,
+            4,
+            4,
+            0.5,
+            initial_seed,
+            16,
+        )
+        .unwrap_err();
+        assert_eq!(dup_err, KeywordError::DuplicateKey);
     }
 }

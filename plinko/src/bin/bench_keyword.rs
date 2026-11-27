@@ -253,7 +253,6 @@ fn main() {
     // 1) Updates
     let t_upd: Instant = Instant::now();
     let mut upd_deltas: usize = 0;
-    let mut batch_deltas: Vec<BucketDelta> = Vec::new();
     for i in 0..mut_count {
         let k: &[u8] = &keys_flat[i * args.key_size..(i + 1) * args.key_size];
         synth_val(
@@ -264,7 +263,6 @@ fn main() {
         let out = table.update(0x01, k, &tmp_val).expect("update existing");
         upd_deltas += out.deltas.len();
         apply_deltas_to_mirror(&mut mirror, &spec, &out.deltas);
-        batch_deltas.extend(out.deltas);
     }
     let upd_ms: f64 = t_upd.elapsed().as_secs_f64() * 1e3;
 
@@ -279,7 +277,6 @@ fn main() {
         let out = table.delete(0x01, k).expect("delete existing");
         del_deltas += out.deltas.len();
         apply_deltas_to_mirror(&mut mirror, &spec, &out.deltas);
-        batch_deltas.extend(out.deltas);
         deleted_count += 1;
     }
     let del_ms: f64 = t_del.elapsed().as_secs_f64() * 1e3;
@@ -306,7 +303,6 @@ fn main() {
         ins_kicks += out.kicks;
         ins_max_deltas = ins_max_deltas.max(out.deltas.len());
         apply_deltas_to_mirror(&mut mirror, &spec, &out.deltas);
-        batch_deltas.extend(out.deltas);
         inserted_new += 1;
     }
     let ins_ms: f64 = t_ins.elapsed().as_secs_f64() * 1e3;

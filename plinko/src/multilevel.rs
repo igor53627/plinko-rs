@@ -834,14 +834,31 @@ impl LevelState {
         x_offset: u32,
         value: &[u8],
     ) -> Result<(PrimarySlot, Vec<u8>), MultiLevelError> {
-        if self.next_backup >= self.spec.num_backup {
+        let mut next_backup: usize = self.next_backup;
+        let out =
+            self.promote_in_with_backup(level_idx, &mut next_backup, x_block, x_offset, value)?;
+        self.next_backup = next_backup;
+        Ok(out)
+    }
+
+    /// Read-only variant of [`Self::promote_in`] that advances an external staged `next_backup`
+    /// cursor instead of mutating `self`.
+    fn promote_in_with_backup(
+        &self,
+        level_idx: usize,
+        next_backup: &mut usize,
+        x_block: u32,
+        x_offset: u32,
+        value: &[u8],
+    ) -> Result<(PrimarySlot, Vec<u8>), MultiLevelError> {
+        if *next_backup >= self.spec.num_backup {
             return Err(MultiLevelError::BackupExhausted {
                 level: level_idx,
                 recovered: None,
             });
         }
-        let b: usize = self.next_backup;
-        self.next_backup += 1;
+        let b: usize = *next_backup;
+        *next_backup += 1;
         let local_b: usize = b - self.backup_offset;
         let hint_id: u32 = (self.spec.num_primary + b) as u32;
         let (s_old, _delta_old) = self.forward(x_block as usize, hint_id);
@@ -877,14 +894,31 @@ impl LevelState {
         x_offset: u32,
         rng: &mut R,
     ) -> Result<(PrimarySlot, Vec<u8>), MultiLevelError> {
-        if self.next_backup >= self.spec.num_backup {
+        let mut next_backup: usize = self.next_backup;
+        let out =
+            self.promote_out_with_backup(level_idx, &mut next_backup, x_block, x_offset, rng)?;
+        self.next_backup = next_backup;
+        Ok(out)
+    }
+
+    /// Read-only variant of [`Self::promote_out`] that advances an external staged `next_backup`
+    /// cursor instead of mutating `self`.
+    fn promote_out_with_backup<R: Rng + ?Sized>(
+        &self,
+        level_idx: usize,
+        next_backup: &mut usize,
+        x_block: u32,
+        x_offset: u32,
+        rng: &mut R,
+    ) -> Result<(PrimarySlot, Vec<u8>), MultiLevelError> {
+        if *next_backup >= self.spec.num_backup {
             return Err(MultiLevelError::BackupExhausted {
                 level: level_idx,
                 recovered: None,
             });
         }
-        let b: usize = self.next_backup;
-        self.next_backup += 1;
+        let b: usize = *next_backup;
+        *next_backup += 1;
         let local_b: usize = b - self.backup_offset;
         let hint_id: u32 = (self.spec.num_primary + b) as u32;
         let (s_old, delta_old) = self.forward(x_block as usize, hint_id);
@@ -1611,6 +1645,159 @@ struct InFlightReservation {
     epoch: u64,
 }
 
+/// Staged, validated batch of multi-level answer reconstructions and hint refreshes
+/// produced for [`crate::keyword::IndexPirClient`] and committed infallibly.
+pub struct MultiLevelFinishPlan {
+    query_ids: Vec<u64>,
+    values: Vec<Vec<u8>>,
+    level_plans: Vec<LevelCommitPlan>,
+}
+
+struct LevelCommitPlan {
+    next_backup: usize,
+    installs: Vec<(u32, PrimarySlot, Vec<u8>)>,
+}
+
+struct StagedLevel {
+    next_backup: usize,
+    slots: HashMap<u32, PrimarySlot>,
+    hint_id_to_slot: HashMap<u32, u32>,
+    added_overrides: HashMap<(u32, u32), Vec<u32>>,
+    installs: Vec<(u32, PrimarySlot, Vec<u8>)>,
+}
+
+impl StagedLevel {
+    fn new(level: &LevelState) -> Self {
+        Self {
+            next_backup: level.next_backup,
+            slots: HashMap::new(),
+            hint_id_to_slot: HashMap::new(),
+            added_overrides: HashMap::new(),
+            installs: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn slot_at<'a>(&'a self, base: &'a LevelState, slot_idx: u32) -> &'a PrimarySlot {
+        self.slots
+            .get(&slot_idx)
+            .unwrap_or(&base.slots[slot_idx as usize])
+    }
+
+    #[inline]
+    fn hint_slot(&self, base: &LevelState, hint_id: u32) -> u32 {
+        self.hint_id_to_slot
+            .get(&hint_id)
+            .copied()
+            .unwrap_or(base.hint_id_to_slot[hint_id as usize])
+    }
+
+    fn find_matching_slots(
+        &self,
+        base: &LevelState,
+        entry_idx: usize,
+        scratch: &mut Vec<(u32, u8)>,
+    ) -> Vec<u32> {
+        let block: usize = entry_idx / base.spec.block_size;
+        let offset: u32 = (entry_idx % base.spec.block_size) as u32;
+        base.inverse(block, offset, scratch);
+
+        let mut matches: Vec<u32> = Vec::new();
+        for &(hint_id, color_old) in scratch.iter() {
+            let slot_idx: u32 = self.hint_slot(base, hint_id);
+            if slot_idx == NO_SLOT {
+                continue;
+            }
+            let slot: &PrimarySlot = self.slot_at(base, slot_idx);
+            if slot.reserved || slot.retired {
+                continue;
+            }
+            if let Some(ov) = slot.override_entry {
+                if ov.block as usize == block {
+                    continue;
+                }
+            }
+            if color_old == slot.selector {
+                matches.push(slot_idx);
+            }
+        }
+
+        let key: (u32, u32) = (block as u32, offset);
+        if let Some(ov_slots) = base.override_index.get(&key) {
+            for &slot_idx in ov_slots {
+                if self.slots.contains_key(&slot_idx) {
+                    continue;
+                }
+                let slot: &PrimarySlot = &base.slots[slot_idx as usize];
+                if slot.reserved || slot.retired {
+                    continue;
+                }
+                if let Some(ov) = slot.override_entry {
+                    if ov.color == slot.selector {
+                        matches.push(slot_idx);
+                    }
+                }
+            }
+        }
+        if let Some(ov_slots) = self.added_overrides.get(&key) {
+            for &slot_idx in ov_slots {
+                let slot: &PrimarySlot = self.slot_at(base, slot_idx);
+                if slot.reserved || slot.retired {
+                    continue;
+                }
+                if let Some(ov) = slot.override_entry {
+                    if ov.color == slot.selector {
+                        matches.push(slot_idx);
+                    }
+                }
+            }
+        }
+        matches
+    }
+
+    fn stage_install(
+        &mut self,
+        base: &LevelState,
+        slot_idx: u32,
+        new_slot: PrimarySlot,
+        new_parity: Vec<u8>,
+    ) {
+        let old: PrimarySlot = self.slot_at(base, slot_idx).clone();
+        let had_staged: bool = self.slots.contains_key(&slot_idx);
+        self.hint_id_to_slot.insert(old.hint_id, NO_SLOT);
+        if had_staged {
+            if let Some(ov) = old.override_entry {
+                let key: (u32, u32) = (ov.block, ov.offset);
+                if let Some(list) = self.added_overrides.get_mut(&key) {
+                    if let Some(pos) = list.iter().position(|&s| s == slot_idx) {
+                        list.swap_remove(pos);
+                    }
+                    if list.is_empty() {
+                        self.added_overrides.remove(&key);
+                    }
+                }
+            }
+        }
+
+        self.hint_id_to_slot.insert(new_slot.hint_id, slot_idx);
+        if let Some(ov) = new_slot.override_entry {
+            self.added_overrides
+                .entry((ov.block, ov.offset))
+                .or_default()
+                .push(slot_idx);
+        }
+        self.slots.insert(slot_idx, new_slot.clone());
+        self.installs.push((slot_idx, new_slot, new_parity));
+    }
+
+    fn into_commit_plan(self) -> LevelCommitPlan {
+        LevelCommitPlan {
+            next_backup: self.next_backup,
+            installs: self.installs,
+        }
+    }
+}
+
 /// Client for the multi-level PIR prototype.
 pub struct MultiLevelClient {
     params: MultiLevelParams,
@@ -1993,6 +2180,17 @@ impl MultiLevelClient {
         seed: &[u8; 32],
         max_alloc_bytes: usize,
     ) -> Result<Self, MultiLevelError> {
+        Self::read_hints_with_limit_accounted(reader, seed, max_alloc_bytes).map(|(c, _)| c)
+    }
+
+    /// Deserializes a multi-level hint set like [`Self::read_hints_with_limit`] and also
+    /// returns the total retained heap bytes accounted for the decoded client (`hint_id_to_slot`,
+    /// `slots`, parities, `override_index`, and per-level vectors).
+    pub(crate) fn read_hints_with_limit_accounted<R: Read>(
+        reader: R,
+        seed: &[u8; 32],
+        max_alloc_bytes: usize,
+    ) -> Result<(Self, usize), MultiLevelError> {
         let mut inp: HashingReader<R> = HashingReader::new(reader);
 
         let mut header: [u8; 36] = [0u8; 36];
@@ -2012,9 +2210,8 @@ impl MultiLevelClient {
             return Err(MultiLevelError::InvalidFormat("num_levels out of range"));
         }
 
-        let mut specs: Vec<LevelSpec> = Vec::with_capacity(num_levels);
-        let mut levels: Vec<LevelState> = Vec::with_capacity(num_levels);
         let mut budget_used: usize = 0;
+        let mut retained_bytes: usize = 0;
 
         let mut charge_budget = |bytes: usize| -> Result<(), MultiLevelError> {
             let next: usize =
@@ -2031,6 +2228,17 @@ impl MultiLevelClient {
             budget_used = next;
             Ok(())
         };
+
+        let level_vec_bytes: usize = num_levels
+            .checked_mul(std::mem::size_of::<LevelSpec>() + std::mem::size_of::<LevelState>())
+            .ok_or(MultiLevelError::InvalidFormat("level vector overflow"))?;
+        charge_budget(level_vec_bytes)?;
+        retained_bytes = retained_bytes
+            .checked_add(level_vec_bytes)
+            .ok_or(MultiLevelError::InvalidFormat("retained size overflow"))?;
+
+        let mut specs: Vec<LevelSpec> = Vec::with_capacity(num_levels);
+        let mut levels: Vec<LevelState> = Vec::with_capacity(num_levels);
 
         for level_idx in 0..num_levels {
             let mut lvl_hdr: [u8; 36] = [0u8; 36];
@@ -2089,14 +2297,19 @@ impl MultiLevelClient {
             let rem_backup_bytes: usize = remaining_backups
                 .checked_mul(record_size)
                 .ok_or(MultiLevelError::InvalidFormat("backup parity overflow"))?;
-            let level_alloc: usize = meta_len
-                .checked_add(id_map_bytes)
-                .and_then(|v| v.checked_add(slot_vec_bytes))
+            let retained_level: usize = id_map_bytes
+                .checked_add(slot_vec_bytes)
                 .and_then(|v| v.checked_add(primary_bytes))
                 .and_then(|v| v.checked_add(rem_backup_bytes))
                 .and_then(|v| v.checked_add(rem_backup_bytes))
                 .ok_or(MultiLevelError::InvalidFormat("level allocation overflow"))?;
+            let level_alloc: usize = meta_len
+                .checked_add(retained_level)
+                .ok_or(MultiLevelError::InvalidFormat("level allocation overflow"))?;
             charge_budget(level_alloc)?;
+            retained_bytes = retained_bytes
+                .checked_add(retained_level)
+                .ok_or(MultiLevelError::InvalidFormat("retained size overflow"))?;
 
             let mut slot_meta: Vec<u8> = try_alloc_zeroed(meta_len)?;
             inp.read_hashed(&mut slot_meta)?;
@@ -2181,17 +2394,33 @@ impl MultiLevelClient {
                 let ov_bytes_len: usize = ov_count
                     .checked_mul(12)
                     .ok_or(MultiLevelError::InvalidFormat("override buffer overflow"))?;
-                // Account for the HashMap bucket table, per-key Vec header, and per-override u32 payload.
-                let per_ov_index_bytes: usize =
-                    std::mem::size_of::<((u32, u32), Vec<u32>)>() + std::mem::size_of::<u32>() + 16;
-                let ov_index_bytes: usize = ov_count
-                    .checked_mul(per_ov_index_bytes)
+                // Account for hashbrown's power-of-two bucket table (load factor <= 7/8, plus 1
+                // control byte per bucket) and per-override u32 payload storage.
+                let min_buckets: usize = ov_count
+                    .checked_mul(8)
+                    .map(|n| n.div_ceil(7))
+                    .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
+                let table_buckets: usize = min_buckets
+                    .max(4)
+                    .checked_next_power_of_two()
+                    .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
+                let map_table_bytes: usize = table_buckets
+                    .checked_mul(std::mem::size_of::<((u32, u32), Vec<u32>)>() + 1)
+                    .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
+                let payload_bytes: usize = ov_count
+                    .checked_mul(std::mem::size_of::<u32>() * 2)
+                    .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
+                let ov_index_bytes: usize = map_table_bytes
+                    .checked_add(payload_bytes)
                     .ok_or(MultiLevelError::InvalidFormat("override index overflow"))?;
                 charge_budget(
                     ov_bytes_len
                         .checked_add(ov_index_bytes)
                         .ok_or(MultiLevelError::InvalidFormat("override budget overflow"))?,
                 )?;
+                retained_bytes = retained_bytes
+                    .checked_add(ov_index_bytes)
+                    .ok_or(MultiLevelError::InvalidFormat("retained size overflow"))?;
                 override_index
                     .try_reserve(ov_count)
                     .map_err(|_| MultiLevelError::InvalidFormat("allocation failed"))?;
@@ -2260,14 +2489,17 @@ impl MultiLevelClient {
         }
 
         let params: MultiLevelParams = MultiLevelParams::custom(num_entries, record_size, specs)?;
-        Ok(Self {
-            params,
-            levels,
-            session_id: next_session_id(),
-            epoch,
-            next_query_id: 1,
-            in_flight: HashMap::new(),
-        })
+        Ok((
+            Self {
+                params,
+                levels,
+                session_id: next_session_id(),
+                epoch,
+                next_query_id: 1,
+                in_flight: HashMap::new(),
+            },
+            retained_bytes,
+        ))
     }
 
     /// Computes the exact serialized byte length of this client's checkpoint, accounting
@@ -2320,6 +2552,16 @@ impl MultiLevelClient {
         max_alloc_bytes: usize,
     ) -> Result<Self, MultiLevelError> {
         Self::read_hints_with_limit(bytes, seed, max_alloc_bytes)
+    }
+
+    /// Deserializes a client hint set from an in-memory byte slice like
+    /// [`Self::from_bytes_with_limit`] and returns the retained allocation byte count.
+    pub(crate) fn from_bytes_with_limit_accounted(
+        bytes: &[u8],
+        seed: &[u8; 32],
+        max_alloc_bytes: usize,
+    ) -> Result<(Self, usize), MultiLevelError> {
+        Self::read_hints_with_limit_accounted(bytes, seed, max_alloc_bytes)
     }
 
     /// Prepares a private query for `index` by probing levels `0..d` locally until one matches.
@@ -2530,97 +2772,218 @@ impl MultiLevelClient {
         Ok(())
     }
 
-    /// Validates `answer` against `pending` and current client state without mutating hints.
-    pub(crate) fn validate_answer(
-        &self,
-        pending: &PendingMultiLevelQuery,
-        answer: &MultiLevelAnswer,
-    ) -> Result<(), MultiLevelError> {
-        let r: usize = self.params.record_size;
-        if answer.parity_0.len() != r || answer.parity_1.len() != r {
-            return Err(MultiLevelError::AnswerLengthMismatch {
-                expected: r,
-                actual: (answer.parity_0.len(), answer.parity_1.len()),
-            });
-        }
-        if pending.session_id != self.session_id {
-            return Err(MultiLevelError::UnknownPendingQuery {
-                query_id: pending.query_id,
-            });
-        }
-        let Some(&res) = self.in_flight.get(&pending.query_id) else {
-            return Err(MultiLevelError::UnknownPendingQuery {
-                query_id: pending.query_id,
-            });
-        };
-        if res.index != pending.index
-            || res.level != pending.level
-            || res.slot_idx != pending.slot_idx
-            || res.hint_id != pending.hint_id
-            || res.selector != pending.selector
-        {
-            return Err(MultiLevelError::UnknownPendingQuery {
-                query_id: pending.query_id,
-            });
-        }
-        if res.epoch != self.epoch {
-            return Err(MultiLevelError::SnapshotMismatch {
-                query_epoch: res.epoch,
-                current_epoch: self.epoch,
-            });
-        }
-        if answer.snapshot_epoch != self.epoch {
-            return Err(MultiLevelError::SnapshotMismatch {
-                query_epoch: answer.snapshot_epoch,
-                current_epoch: self.epoch,
-            });
-        }
-        if self.levels[res.level].next_backup >= self.levels[res.level].spec.num_backup {
-            return Err(MultiLevelError::BackupExhausted {
-                level: res.level,
-                recovered: None,
-            });
-        }
-        Ok(())
-    }
-
-    /// Validates a batch of `(pending, answer)` pairs without mutating hints, including
-    /// duplicate `query_id` rejection and minimum per-level backup demand checks.
-    pub(crate) fn validate_batch_answers(
+    /// Validates a batch of `(pending, answer)` pairs and plans every hint refresh (including
+    /// random failed-level `PromoteIn` draws and successful-level `PromoteOut` sweeps in exact
+    /// finish order) against staged state without mutating `self`.
+    ///
+    /// Returning `Ok(plan)` guarantees [`Self::commit_finish_batch`] succeeds infallibly if
+    /// `self` is not mutated in between. Preserves the case where a failed level with zero
+    /// remaining backups draws zero replacements.
+    pub(crate) fn plan_finish_batch<R: Rng + ?Sized>(
         &self,
         pendings: &[&PendingMultiLevelQuery],
         answers: &[MultiLevelAnswer],
-    ) -> Result<(), MultiLevelError> {
+        rng: &mut R,
+    ) -> Result<MultiLevelFinishPlan, MultiLevelError> {
         if pendings.len() != answers.len() {
             return Err(MultiLevelError::InvalidParams(
                 "pending query count does not match answer count",
             ));
         }
-        let mut seen_ids: std::collections::HashSet<u64> =
-            std::collections::HashSet::with_capacity(pendings.len());
-        let mut min_backup_demand: Vec<usize> = vec![0usize; self.levels.len()];
+
+        let r: usize = self.params.record_size;
+        let mut seen_ids: HashSet<u64> = HashSet::with_capacity(pendings.len());
+        let mut reservations: Vec<InFlightReservation> = Vec::with_capacity(pendings.len());
+        let mut query_ids: Vec<u64> = Vec::with_capacity(pendings.len());
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(pendings.len());
+
         for (&pending, answer) in pendings.iter().zip(answers.iter()) {
             if !seen_ids.insert(pending.query_id) {
                 return Err(MultiLevelError::UnknownPendingQuery {
                     query_id: pending.query_id,
                 });
             }
-            self.validate_answer(pending, answer)?;
-            min_backup_demand[pending.level] += 1;
-        }
-        for (lvl_idx, &need) in min_backup_demand.iter().enumerate() {
-            let rem: usize = self.levels[lvl_idx]
-                .spec
-                .num_backup
-                .saturating_sub(self.levels[lvl_idx].next_backup);
-            if need > rem {
-                return Err(MultiLevelError::BackupExhausted {
-                    level: lvl_idx,
-                    recovered: None,
+            if answer.parity_0.len() != r || answer.parity_1.len() != r {
+                return Err(MultiLevelError::AnswerLengthMismatch {
+                    expected: r,
+                    actual: (answer.parity_0.len(), answer.parity_1.len()),
                 });
             }
+            if pending.session_id != self.session_id {
+                return Err(MultiLevelError::UnknownPendingQuery {
+                    query_id: pending.query_id,
+                });
+            }
+            let Some(&res) = self.in_flight.get(&pending.query_id) else {
+                return Err(MultiLevelError::UnknownPendingQuery {
+                    query_id: pending.query_id,
+                });
+            };
+            if res.index != pending.index
+                || res.level != pending.level
+                || res.slot_idx != pending.slot_idx
+                || res.hint_id != pending.hint_id
+                || res.selector != pending.selector
+            {
+                return Err(MultiLevelError::UnknownPendingQuery {
+                    query_id: pending.query_id,
+                });
+            }
+            if res.epoch != self.epoch {
+                return Err(MultiLevelError::SnapshotMismatch {
+                    query_epoch: res.epoch,
+                    current_epoch: self.epoch,
+                });
+            }
+            if answer.snapshot_epoch != self.epoch {
+                return Err(MultiLevelError::SnapshotMismatch {
+                    query_epoch: answer.snapshot_epoch,
+                    current_epoch: self.epoch,
+                });
+            }
+
+            let s: usize = res.slot_idx as usize;
+            let mut value: Vec<u8> =
+                self.levels[res.level].primary_parities[s * r..(s + 1) * r].to_vec();
+            let server_parity: &[u8] = if res.selector == 0 {
+                &answer.parity_0
+            } else {
+                &answer.parity_1
+            };
+            xor_bytes(&mut value, server_parity);
+
+            reservations.push(res);
+            query_ids.push(pending.query_id);
+            values.push(value);
         }
-        Ok(())
+
+        let mut staged: Vec<StagedLevel> = self.levels.iter().map(StagedLevel::new).collect();
+        let mut scratch: Vec<(u32, u8)> = Vec::new();
+
+        for (res, value) in reservations.iter().zip(values.iter()) {
+            let mut failed_plans: Vec<Vec<u32>> = Vec::with_capacity(res.level);
+            for (lvl_idx, level) in self.levels.iter().enumerate().take(res.level) {
+                let st: &StagedLevel = &staged[lvl_idx];
+                let avail_slots: Vec<u32> = (0..level.spec.num_primary as u32)
+                    .filter(|&pos| {
+                        let slot: &PrimarySlot = st.slot_at(level, pos);
+                        !slot.reserved && !slot.retired
+                    })
+                    .collect();
+                let p_in: f64 = 1.0 / (2.0 * level.spec.block_size as f64);
+                let k: usize = sample_binomial_exact(avail_slots.len(), p_in, rng);
+                let chosen: Vec<u32> = sample_distinct_from(&avail_slots, k, rng);
+                let remaining: usize = level.spec.num_backup.saturating_sub(st.next_backup);
+                if chosen.len() > remaining {
+                    return Err(MultiLevelError::BackupExhausted {
+                        level: lvl_idx,
+                        recovered: Some(value.clone()),
+                    });
+                }
+                failed_plans.push(chosen);
+            }
+
+            let (promote_out_slots, needed_succ_backups): (Vec<u32>, usize) = {
+                let level: &LevelState = &self.levels[res.level];
+                let st: &StagedLevel = &staged[res.level];
+                let active_slots: usize = (0..level.spec.num_primary as u32)
+                    .filter(|&pos| {
+                        let slot: &PrimarySlot = st.slot_at(level, pos);
+                        !slot.retired && (!slot.reserved || pos == res.slot_idx)
+                    })
+                    .count();
+                let neg_log_p0: f64 =
+                    -(active_slots as f64) * (-1.0 / (2.0 * level.spec.block_size as f64)).ln_1p();
+                if sample_bernoulli_neg_exp(neg_log_p0, rng) {
+                    let mut containing: Vec<u32> =
+                        st.find_matching_slots(level, res.index, &mut scratch);
+                    containing.push(res.slot_idx);
+                    let needed: usize = 1 + containing.len();
+                    (containing, needed)
+                } else {
+                    (Vec::new(), 1)
+                }
+            };
+            let succ_remaining: usize = self.levels[res.level]
+                .spec
+                .num_backup
+                .saturating_sub(staged[res.level].next_backup);
+            if needed_succ_backups > succ_remaining {
+                return Err(MultiLevelError::BackupExhausted {
+                    level: res.level,
+                    recovered: Some(value.clone()),
+                });
+            }
+
+            for (lvl_idx, chosen) in failed_plans.into_iter().enumerate() {
+                let level: &LevelState = &self.levels[lvl_idx];
+                let st: &mut StagedLevel = &mut staged[lvl_idx];
+                let x_block: u32 = (res.index / level.spec.block_size) as u32;
+                let x_offset: u32 = (res.index % level.spec.block_size) as u32;
+                for slot_pos in chosen {
+                    let (new_slot, new_parity) = level.promote_in_with_backup(
+                        lvl_idx,
+                        &mut st.next_backup,
+                        x_block,
+                        x_offset,
+                        value,
+                    )?;
+                    st.stage_install(level, slot_pos, new_slot, new_parity);
+                }
+            }
+
+            {
+                let lvl_idx: usize = res.level;
+                let level: &LevelState = &self.levels[lvl_idx];
+                let st: &mut StagedLevel = &mut staged[lvl_idx];
+                let x_block: u32 = (res.index / level.spec.block_size) as u32;
+                let x_offset: u32 = (res.index % level.spec.block_size) as u32;
+
+                let (repl_slot, repl_parity) = level.promote_in_with_backup(
+                    lvl_idx,
+                    &mut st.next_backup,
+                    x_block,
+                    x_offset,
+                    value,
+                )?;
+                st.stage_install(level, res.slot_idx, repl_slot, repl_parity);
+
+                for slot_pos in promote_out_slots {
+                    let (out_slot, out_parity) = level.promote_out_with_backup(
+                        lvl_idx,
+                        &mut st.next_backup,
+                        x_block,
+                        x_offset,
+                        rng,
+                    )?;
+                    st.stage_install(level, slot_pos, out_slot, out_parity);
+                }
+            }
+        }
+
+        let level_plans: Vec<LevelCommitPlan> = staged
+            .into_iter()
+            .map(StagedLevel::into_commit_plan)
+            .collect();
+        Ok(MultiLevelFinishPlan {
+            query_ids,
+            values,
+            level_plans,
+        })
+    }
+
+    /// Commits a staged [`MultiLevelFinishPlan`] infallibly and returns the reconstructed records.
+    pub(crate) fn commit_finish_batch(&mut self, plan: MultiLevelFinishPlan) -> Vec<Vec<u8>> {
+        for qid in plan.query_ids {
+            self.in_flight.remove(&qid);
+        }
+        for (level, lplan) in self.levels.iter_mut().zip(plan.level_plans) {
+            level.next_backup = lplan.next_backup;
+            for (slot_idx, new_slot, new_parity) in lplan.installs {
+                level.install_slot(slot_idx, new_slot, &new_parity);
+            }
+        }
+        plan.values
     }
 
     /// Reconstructs `DB[index]` from the server's answer and runs failure-private `Refresh`

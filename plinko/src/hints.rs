@@ -514,6 +514,15 @@ impl HintSet {
 
     /// Reads the header and the hints: the file format without its checksum.
     pub(crate) fn read_body<R: Read>(input: &mut HashingReader<R>) -> Result<Self, HintFileError> {
+        let header: HintHeader = Self::read_header(input)?;
+        Self::read_records(input, header)
+    }
+
+    /// Reads and validates the fixed-size hint header without allocating any
+    /// per-hint or per-block buffers.
+    pub(crate) fn read_header<R: Read>(
+        input: &mut HashingReader<R>,
+    ) -> Result<HintHeader, HintFileError> {
         // The header of an older version is shorter, so the magic and the
         // version are checked before the other fields are read.
         let mut header = [0u8; HEADER_SIZE];
@@ -532,11 +541,11 @@ impl HintSet {
             block_size: u64_at(&header, 24),
             num_blocks: u64_at(&header, 32),
         };
-        let size: usize = checked_record_size(geometry.record_size)?;
+        let record_size: usize = checked_record_size(geometry.record_size)?;
         let num_regular: usize = hint_count(u64_at(&header, 40))?;
         let num_backup: usize = hint_count(u64_at(&header, 48))?;
-        let regular_bytes: usize = parity_bytes(num_regular, 1, size)?;
-        let backup_bytes: usize = parity_bytes(num_backup, 2, size)?;
+        let regular_bytes: usize = parity_bytes(num_regular, 1, record_size)?;
+        let backup_bytes: usize = parity_bytes(num_backup, 2, record_size)?;
         let mut seed_check = [0u8; 8];
         seed_check.copy_from_slice(&header[56..64]);
         let database_version: u64 = u64_at(&header, 64);
@@ -551,6 +560,29 @@ impl HintSet {
                 init_version: init.version,
             });
         }
+        Ok(HintHeader {
+            geometry,
+            record_size,
+            num_regular,
+            num_backup,
+            regular_bytes,
+            backup_bytes,
+            seed_check,
+            database_version,
+            init,
+        })
+    }
+
+    /// Reads the regular and backup hint records described by `header`.
+    pub(crate) fn read_records<R: Read>(
+        input: &mut HashingReader<R>,
+        header: HintHeader,
+    ) -> Result<Self, HintFileError> {
+        let size: usize = header.record_size;
+        let num_regular: usize = header.num_regular;
+        let num_backup: usize = header.num_backup;
+        let regular_bytes: usize = header.regular_bytes;
+        let backup_bytes: usize = header.backup_bytes;
 
         // The counts come from the file: allocate as the records arrive.
         let mut record: Vec<u8> = vec![0u8; CUTOFF_SIZE + 2 * size];
@@ -576,17 +608,35 @@ impl HintSet {
             backup_parities.extend_from_slice(&record[CUTOFF_SIZE..]);
         }
 
+        regular_cutoffs.shrink_to_fit();
+        regular_parities.shrink_to_fit();
+        backup_cutoffs.shrink_to_fit();
+        backup_parities.shrink_to_fit();
+
         Ok(Self {
-            geometry,
-            seed_check,
-            database_version,
-            init,
+            geometry: header.geometry,
+            seed_check: header.seed_check,
+            database_version: header.database_version,
+            init: header.init,
             regular_cutoffs,
             regular_parities,
             backup_cutoffs,
             backup_parities,
         })
     }
+}
+
+/// Parsed, validated fixed-size header of a hint file before reading hint records.
+pub(crate) struct HintHeader {
+    pub(crate) geometry: HintGeometry,
+    pub(crate) record_size: usize,
+    pub(crate) num_regular: usize,
+    pub(crate) num_backup: usize,
+    pub(crate) regular_bytes: usize,
+    pub(crate) backup_bytes: usize,
+    pub(crate) seed_check: [u8; 8],
+    pub(crate) database_version: u64,
+    pub(crate) init: DatabaseSnapshot,
 }
 
 #[cfg(test)]

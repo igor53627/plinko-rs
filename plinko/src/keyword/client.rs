@@ -9,10 +9,11 @@ use super::{KeywordError, KeywordTableSpec, MutationOutcome, StashEntry, StashOp
 use crate::checked_io::{u32_at, u64_at, HashingReader, HashingWriter, TrailerError};
 use crate::delta::{Delta, DeltaHeader};
 use crate::multilevel::{
-    MultiLevelAnswer, MultiLevelClient, MultiLevelError, MultiLevelQuery, PendingMultiLevelQuery,
+    MultiLevelAnswer, MultiLevelClient, MultiLevelError, MultiLevelFinishPlan, MultiLevelQuery,
+    PendingMultiLevelQuery,
 };
 use crate::protocol::{
-    Client as ProtocolClient, ClientStateError, PreparedQuery, ProtocolError,
+    Client as ProtocolClient, ClientStateError, PreparedQuery, ProtocolError, ProtocolFinishPlan,
     Query as ProtocolQuery, Response as ProtocolResponse,
 };
 use rand::Rng;
@@ -49,6 +50,12 @@ fn next_keyword_session_id() -> u64 {
 pub enum CachePolicy {
     /// Always issue 2 PIR queries per input key (no local bucket caching, no
     /// stash shortcut, and no batch size reduction on duplicate keys).
+    ///
+    /// Both single and batch lookups fail once a segment has no remaining
+    /// uncached, non-in-flight index, even if backup hints remain: under
+    /// [`crate::protocol::Client`], querying an already-cached bucket index
+    /// substitutes a random uncached, non-in-flight decoy index and fails with
+    /// [`ProtocolError::NoDecoyIndexAvailable`] when none can be drawn.
     #[default]
     Off,
     /// Answer cached/stashed hits locally and deduplicate repeated keys or shared
@@ -59,6 +66,15 @@ pub enum CachePolicy {
     /// Answer cached/stashed/duplicate hits locally while still issuing 2 decoy
     /// PIR queries per such input key so wire traffic stays uniform (`1` query
     /// pair per input key).
+    ///
+    /// For cached, stashed, or duplicate entries that need a decoy index, both
+    /// single and batch lookups fail with
+    /// [`KeywordClientError::NoDecoyIndexAvailable`] once a segment has no
+    /// remaining uncached, non-in-flight index, even if backup hints remain. For
+    /// an uncached bucket whose index is already in flight on
+    /// [`crate::protocol::Client`], the backend rejects the concurrent query with
+    /// [`ProtocolError::QueryInFlight`] (surfaced as
+    /// [`KeywordClientError::Backend`]).
     ConstantTraffic,
 }
 
@@ -225,6 +241,14 @@ pub trait IndexPirClient {
     /// Stable hint identifier logged to a WAL before transmission and passed to
     /// [`IndexPirClient::retire_index_hints`] after a crash/reload.
     type HintId: Copy + Eq + fmt::Debug;
+    /// Staged, validated batch of answer reconstructions and hint refreshes
+    /// produced by [`IndexPirClient::plan_finish_batch`] and committed infallibly
+    /// by [`IndexPirClient::commit_finish_batch`].
+    type FinishPlan;
+    /// Staged, validated batch of XOR bucket deltas produced by
+    /// [`IndexPirClient::prepare_index_deltas`] and committed infallibly by
+    /// [`IndexPirClient::commit_index_deltas`].
+    type DeltaPlan;
     /// Backend error type.
     type Error: Error + Send + Sync + 'static;
 
@@ -267,27 +291,21 @@ pub trait IndexPirClient {
     /// Returns the WAL hint identifier exposed by `pending`.
     fn pending_hint_id(pending: &Self::Pending) -> Self::HintId;
 
-    /// Validates `answer` against `pending` and current state without mutating hints.
-    fn validate_index_answer(
-        &self,
-        pending: &Self::Pending,
-        answer: &Self::Answer,
-    ) -> Result<(), Self::Error>;
-
-    /// Validates a batch of `(pending, answer)` pairs without mutating hints.
-    fn validate_batch_answers(
+    /// Validates `(pendings, answers)` and plans all answer reconstructions and
+    /// hint refreshes (including any random draws) without mutating `self`.
+    ///
+    /// Returning `Ok(plan)` guarantees [`Self::commit_finish_batch`] will succeed
+    /// infallibly when `self` is not mutated in between.
+    fn plan_finish_batch<R: Rng + ?Sized>(
         &self,
         pendings: &[&Self::Pending],
         answers: &[Self::Answer],
-    ) -> Result<(), Self::Error>;
-
-    /// Reconstructs the record from `answer` and updates backend hint state.
-    fn finish_index_query<R: Rng + ?Sized>(
-        &mut self,
-        pending: &Self::Pending,
-        answer: &Self::Answer,
         rng: &mut R,
-    ) -> Result<Vec<u8>, Self::Error>;
+    ) -> Result<Self::FinishPlan, Self::Error>;
+
+    /// Commits a staged [`Self::FinishPlan`] produced by [`Self::plan_finish_batch`]
+    /// and returns the reconstructed records in `pendings` order.
+    fn commit_finish_batch(&mut self, plan: Self::FinishPlan) -> Vec<Vec<u8>>;
 
     /// Aborts a potentially-sent in-flight query, permanently retiring its hint.
     fn abort_index_query(&mut self, pending: Self::Pending) -> Result<(), Self::Error>;
@@ -301,18 +319,20 @@ pub trait IndexPirClient {
     /// Retires WAL-logged hint identifiers after reloading a checkpoint.
     fn retire_index_hints(&mut self, hints: &[Self::HintId]) -> Result<(), Self::Error>;
 
-    /// Validates that a batch of `(bucket_idx, xor_delta)` updates can be applied
-    /// to this segment without mutating backend state.
-    fn validate_index_deltas(&self, deltas: &[(usize, Vec<u8>)]) -> Result<(), Self::Error>;
-
-    /// Applies a non-empty batch of `(bucket_idx, xor_delta)` updates to this segment.
+    /// Validates and stages a batch of `(bucket_idx, xor_delta)` updates without
+    /// mutating `self`.
     ///
-    /// An empty slice must be a no-op that does not advance [`IndexPirClient::epoch`].
-    fn apply_index_deltas(
-        &mut self,
+    /// An empty slice must produce a no-op plan that does not advance
+    /// [`IndexPirClient::epoch`]. Returning `Ok(plan)` guarantees
+    /// [`Self::commit_index_deltas`] will succeed infallibly when `self` is not
+    /// mutated in between.
+    fn prepare_index_deltas(
+        &self,
         deltas: &[(usize, Vec<u8>)],
-        threads: usize,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<Self::DeltaPlan, Self::Error>;
+
+    /// Commits a staged [`Self::DeltaPlan`] produced by [`Self::prepare_index_deltas`].
+    fn commit_index_deltas(&mut self, plan: Self::DeltaPlan, threads: usize);
 }
 
 impl IndexPirClient for MultiLevelClient {
@@ -320,6 +340,8 @@ impl IndexPirClient for MultiLevelClient {
     type Answer = MultiLevelAnswer;
     type Pending = PendingMultiLevelQuery;
     type HintId = (usize, u32);
+    type FinishPlan = MultiLevelFinishPlan;
+    type DeltaPlan = Vec<(usize, Vec<u8>)>;
     type Error = MultiLevelError;
 
     fn num_entries(&self) -> usize {
@@ -374,29 +396,17 @@ impl IndexPirClient for MultiLevelClient {
         pending.hint_id()
     }
 
-    fn validate_index_answer(
-        &self,
-        pending: &Self::Pending,
-        answer: &Self::Answer,
-    ) -> Result<(), Self::Error> {
-        self.validate_answer(pending, answer)
-    }
-
-    fn validate_batch_answers(
+    fn plan_finish_batch<R: Rng + ?Sized>(
         &self,
         pendings: &[&Self::Pending],
         answers: &[Self::Answer],
-    ) -> Result<(), Self::Error> {
-        MultiLevelClient::validate_batch_answers(self, pendings, answers)
+        rng: &mut R,
+    ) -> Result<Self::FinishPlan, Self::Error> {
+        MultiLevelClient::plan_finish_batch(self, pendings, answers, rng)
     }
 
-    fn finish_index_query<R: Rng + ?Sized>(
-        &mut self,
-        pending: &Self::Pending,
-        answer: &Self::Answer,
-        rng: &mut R,
-    ) -> Result<Vec<u8>, Self::Error> {
-        self.finish_query(pending, answer, rng)
+    fn commit_finish_batch(&mut self, plan: Self::FinishPlan) -> Vec<Vec<u8>> {
+        MultiLevelClient::commit_finish_batch(self, plan)
     }
 
     fn abort_index_query(&mut self, pending: Self::Pending) -> Result<(), Self::Error> {
@@ -415,7 +425,10 @@ impl IndexPirClient for MultiLevelClient {
         self.retire_hints(hints)
     }
 
-    fn validate_index_deltas(&self, deltas: &[(usize, Vec<u8>)]) -> Result<(), Self::Error> {
+    fn prepare_index_deltas(
+        &self,
+        deltas: &[(usize, Vec<u8>)],
+    ) -> Result<Self::DeltaPlan, Self::Error> {
         let n: usize = self.params().num_entries;
         let r: usize = self.params().record_size;
         for (idx, delta) in deltas {
@@ -432,15 +445,14 @@ impl IndexPirClient for MultiLevelClient {
                 });
             }
         }
-        Ok(())
+        Ok(deltas.to_vec())
     }
 
-    fn apply_index_deltas(
-        &mut self,
-        deltas: &[(usize, Vec<u8>)],
-        threads: usize,
-    ) -> Result<(), Self::Error> {
-        self.apply_deltas_batch(deltas, threads)
+    fn commit_index_deltas(&mut self, plan: Self::DeltaPlan, threads: usize) {
+        if !plan.is_empty() {
+            self.apply_deltas_batch(&plan, threads)
+                .expect("deltas validated in prepare_index_deltas");
+        }
     }
 }
 
@@ -449,6 +461,8 @@ impl IndexPirClient for ProtocolClient {
     type Answer = ProtocolResponse;
     type Pending = PreparedQuery;
     type HintId = usize;
+    type FinishPlan = ProtocolFinishPlan;
+    type DeltaPlan = Option<Delta>;
     type Error = ProtocolError;
 
     fn num_entries(&self) -> usize {
@@ -500,29 +514,17 @@ impl IndexPirClient for ProtocolClient {
         pending.hint_index()
     }
 
-    fn validate_index_answer(
-        &self,
-        pending: &Self::Pending,
-        answer: &Self::Answer,
-    ) -> Result<(), Self::Error> {
-        self.validate_response(pending, answer)
-    }
-
-    fn validate_batch_answers(
+    fn plan_finish_batch<R: Rng + ?Sized>(
         &self,
         pendings: &[&Self::Pending],
         answers: &[Self::Answer],
-    ) -> Result<(), Self::Error> {
-        self.validate_batch_responses(pendings, answers)
+        _rng: &mut R,
+    ) -> Result<Self::FinishPlan, Self::Error> {
+        ProtocolClient::plan_finish_batch(self, pendings, answers)
     }
 
-    fn finish_index_query<R: Rng + ?Sized>(
-        &mut self,
-        pending: &Self::Pending,
-        answer: &Self::Answer,
-        _rng: &mut R,
-    ) -> Result<Vec<u8>, Self::Error> {
-        self.reconstruct_and_replenish(pending, answer)
+    fn commit_finish_batch(&mut self, plan: Self::FinishPlan) -> Vec<Vec<u8>> {
+        ProtocolClient::commit_finish_batch(self, plan)
     }
 
     fn abort_index_query(&mut self, pending: Self::Pending) -> Result<(), Self::Error> {
@@ -541,44 +543,22 @@ impl IndexPirClient for ProtocolClient {
         self.retire_hints(hints)
     }
 
-    fn validate_index_deltas(&self, deltas: &[(usize, Vec<u8>)]) -> Result<(), Self::Error> {
-        if deltas.is_empty() {
-            return Ok(());
-        }
-        let from_version: u64 = self.database_version();
-        let to_version: u64 = from_version
-            .checked_add(1)
-            .ok_or(ProtocolError::InvalidParams("database_version overflow"))?;
-        let header: DeltaHeader = DeltaHeader {
-            num_entries: self.params().num_entries as u64,
-            record_size: self.params().record_size as u32,
-            from_version,
-            to_version,
-        };
-        let changes: Vec<(u64, Vec<u8>)> = deltas
-            .iter()
-            .map(|(idx, xor_delta)| (*idx as u64, xor_delta.clone()))
-            .collect();
-        Delta::new(header, changes)
-            .map(|_| ())
-            .map_err(|_| ProtocolError::InvalidParams("invalid keyword segment delta"))
-    }
-
-    fn apply_index_deltas(
-        &mut self,
+    fn prepare_index_deltas(
+        &self,
         deltas: &[(usize, Vec<u8>)],
-        _threads: usize,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<Self::DeltaPlan, Self::Error> {
         if deltas.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let from_version: u64 = self.database_version();
         let to_version: u64 = from_version
             .checked_add(1)
             .ok_or(ProtocolError::InvalidParams("database_version overflow"))?;
+        let record_size: u32 = u32::try_from(self.params().record_size)
+            .map_err(|_| ProtocolError::InvalidParams("record_size exceeds u32::MAX"))?;
         let header: DeltaHeader = DeltaHeader {
             num_entries: self.params().num_entries as u64,
-            record_size: self.params().record_size as u32,
+            record_size,
             from_version,
             to_version,
         };
@@ -588,14 +568,22 @@ impl IndexPirClient for ProtocolClient {
             .collect();
         let delta: Delta = Delta::new(header, changes)
             .map_err(|_| ProtocolError::InvalidParams("invalid keyword segment delta"))?;
-        self.apply_delta(&delta)
+        Ok(Some(delta))
+    }
+
+    fn commit_index_deltas(&mut self, plan: Self::DeltaPlan, _threads: usize) {
+        if let Some(delta) = plan {
+            self.apply_delta(&delta)
+                .expect("delta validated in prepare_index_deltas");
+        }
     }
 }
 
 /// Wire query for a single 2-segment keyword lookup.
 ///
-/// Carries no `session_id` or `query_id`, so callers can forward it through an
-/// OHTTP relay (RFC 9458) without cross-request linkability.
+/// Omits local `session_id` and `query_id` fields so callers can route requests
+/// through an OHTTP relay (RFC 9458) without forwarding those identifiers. Any
+/// cross-request unlinkability guarantees depend on the transport and deployment.
 #[derive(Debug, Clone)]
 pub struct KeywordLookupQuery<Q> {
     /// Expected table major epoch.
@@ -1250,20 +1238,22 @@ impl<B: IndexPirClient> KeywordClient<B> {
         let Some(p1) = pending.segments[1].as_ref() else {
             return Err(KeywordClientError::SessionMismatch);
         };
-        // Pre-validate both segments before mutating either backend.
-        self.backends[0]
-            .validate_index_answer(p0, &answer.segments[0])
+        // Plan and validate both segments (including all refresh draws) before committing either.
+        let plan0: B::FinishPlan = self.backends[0]
+            .plan_finish_batch(&[p0], std::slice::from_ref(&answer.segments[0]), rng)
             .map_err(|error| KeywordClientError::Backend { segment: 0, error })?;
-        self.backends[1]
-            .validate_index_answer(p1, &answer.segments[1])
+        let plan1: B::FinishPlan = self.backends[1]
+            .plan_finish_batch(&[p1], std::slice::from_ref(&answer.segments[1]), rng)
             .map_err(|error| KeywordClientError::Backend { segment: 1, error })?;
 
         let b0_wire: Vec<u8> = self.backends[0]
-            .finish_index_query(p0, &answer.segments[0], rng)
-            .map_err(|error| KeywordClientError::Backend { segment: 0, error })?;
+            .commit_finish_batch(plan0)
+            .pop()
+            .expect("single-query finish plan returns one record");
         let b1_wire: Vec<u8> = self.backends[1]
-            .finish_index_query(p1, &answer.segments[1], rng)
-            .map_err(|error| KeywordClientError::Backend { segment: 1, error })?;
+            .commit_finish_batch(plan1)
+            .pop()
+            .expect("single-query finish plan returns one record");
 
         match &pending.resolution {
             LookupResolution::StashHit(val) => Ok(Some(val.clone())),
@@ -1740,30 +1730,20 @@ impl<B: IndexPirClient> KeywordClient<B> {
                 };
                 refs.push(p);
             }
-            self.backends[seg]
-                .validate_batch_answers(refs, &answer.segments[seg])
-                .map_err(|error| KeywordClientError::Backend {
-                    segment: seg,
-                    error,
-                })?;
         }
 
-        let mut recovered: [Vec<Vec<u8>>; NUM_SEGMENTS] = [
-            Vec::with_capacity(seg_refs[0].len()),
-            Vec::with_capacity(seg_refs[1].len()),
+        // Plan both segments against staged state before committing either.
+        let plan0: B::FinishPlan = self.backends[0]
+            .plan_finish_batch(&seg_refs[0], &answer.segments[0], rng)
+            .map_err(|error| KeywordClientError::Backend { segment: 0, error })?;
+        let plan1: B::FinishPlan = self.backends[1]
+            .plan_finish_batch(&seg_refs[1], &answer.segments[1], rng)
+            .map_err(|error| KeywordClientError::Backend { segment: 1, error })?;
+
+        let recovered: [Vec<Vec<u8>>; NUM_SEGMENTS] = [
+            self.backends[0].commit_finish_batch(plan0),
+            self.backends[1].commit_finish_batch(plan1),
         ];
-        for (seg, seg_recovered) in recovered.iter_mut().enumerate() {
-            for (&p, a) in seg_refs[seg].iter().zip(answer.segments[seg].iter()) {
-                let bucket: Vec<u8> =
-                    self.backends[seg]
-                        .finish_index_query(p, a, rng)
-                        .map_err(|error| KeywordClientError::Backend {
-                            segment: seg,
-                            error,
-                        })?;
-                seg_recovered.push(bucket);
-            }
-        }
 
         if self.cache_policy != CachePolicy::Off {
             for (seg, seg_recovered) in recovered.iter().enumerate() {
@@ -1946,30 +1926,18 @@ impl<B: IndexPirClient> KeywordClient<B> {
             }
         }
 
-        // Pre-validate both segment backends before mutating either so a segment-1
-        // rejection never leaves segment 0 advanced.
-        for seg in 0..NUM_SEGMENTS {
-            if !update.segment_deltas[seg].is_empty() {
-                self.backends[seg]
-                    .validate_index_deltas(&update.segment_deltas[seg])
-                    .map_err(|error| KeywordClientError::Backend {
-                        segment: seg,
-                        error,
-                    })?;
-            }
-        }
+        // Validate and stage both segment backends before committing either so a
+        // segment-1 rejection can never leave segment 0 advanced.
+        let plan0: B::DeltaPlan = self.backends[0]
+            .prepare_index_deltas(&update.segment_deltas[0])
+            .map_err(|error| KeywordClientError::Backend { segment: 0, error })?;
+        let plan1: B::DeltaPlan = self.backends[1]
+            .prepare_index_deltas(&update.segment_deltas[1])
+            .map_err(|error| KeywordClientError::Backend { segment: 1, error })?;
 
-        // Apply non-empty segment deltas to each backend.
-        for seg in 0..NUM_SEGMENTS {
-            if !update.segment_deltas[seg].is_empty() {
-                self.backends[seg]
-                    .apply_index_deltas(&update.segment_deltas[seg], threads)
-                    .map_err(|error| KeywordClientError::Backend {
-                        segment: seg,
-                        error,
-                    })?;
-            }
-        }
+        // Commit both staged backend delta plans infallibly.
+        self.backends[0].commit_index_deltas(plan0, threads);
+        self.backends[1].commit_index_deltas(plan1, threads);
 
         // Maintain keyword bucket cache via XOR in place.
         if self.cache_policy != CachePolicy::Off {
@@ -2029,6 +1997,13 @@ impl<B: IndexPirClient> KeywordClient<B> {
             return Err(KeywordClientError::QueryInFlight);
         }
 
+        let bucket_size_u32: u32 = u32::try_from(self.spec.bucket_size())
+            .map_err(|_| KeywordClientError::Checkpoint("bucket_size exceeds u32::MAX"))?;
+        let tag_size_u32: u32 = u32::try_from(self.spec.tag_size())
+            .map_err(|_| KeywordClientError::Checkpoint("tag_size exceeds u32::MAX"))?;
+        let value_size_u32: u32 = u32::try_from(self.spec.value_size())
+            .map_err(|_| KeywordClientError::Checkpoint("value_size exceeds u32::MAX"))?;
+
         let mut seg_blobs: [Vec<u8>; NUM_SEGMENTS] = [Vec::new(), Vec::new()];
         for (seg, blob) in seg_blobs.iter_mut().enumerate() {
             write_backend(seg, &self.backends[seg], blob)?;
@@ -2042,9 +2017,9 @@ impl<B: IndexPirClient> KeywordClient<B> {
         out.write_hashed(&self.spec.table_epoch().to_le_bytes())?;
         out.write_hashed(&self.spec.state_epoch().to_le_bytes())?;
         out.write_hashed(&(self.spec.buckets_per_segment() as u64).to_le_bytes())?;
-        out.write_hashed(&(self.spec.bucket_size() as u32).to_le_bytes())?;
-        out.write_hashed(&(self.spec.tag_size() as u32).to_le_bytes())?;
-        out.write_hashed(&(self.spec.value_size() as u32).to_le_bytes())?;
+        out.write_hashed(&bucket_size_u32.to_le_bytes())?;
+        out.write_hashed(&tag_size_u32.to_le_bytes())?;
+        out.write_hashed(&value_size_u32.to_le_bytes())?;
         let (has_key_size, key_size_val): (u8, u64) = match self.spec.key_size() {
             Some(k) => (1, k as u64),
             None => (0, 0),
@@ -2368,14 +2343,12 @@ impl KeywordClient<MultiLevelClient> {
         max_bytes: usize,
     ) -> Result<Self, KeywordClientError<MultiLevelError>> {
         Self::read_checkpoint_with_limit(reader, max_bytes, |seg, blob, limit| {
-            let client: MultiLevelClient =
-                MultiLevelClient::from_bytes_with_limit(blob, &seg_seeds[seg], limit).map_err(
-                    |error| KeywordClientError::Backend {
+            let (client, retained): (MultiLevelClient, usize) =
+                MultiLevelClient::from_bytes_with_limit_accounted(blob, &seg_seeds[seg], limit)
+                    .map_err(|error| KeywordClientError::Backend {
                         segment: seg,
                         error,
-                    },
-                )?;
-            let retained: usize = client.hint_memory_bytes();
+                    })?;
             Ok((client, retained))
         })
     }
@@ -2434,30 +2407,27 @@ impl KeywordClient<ProtocolClient> {
         max_bytes: usize,
     ) -> Result<Self, KeywordClientError<ProtocolError>> {
         Self::read_checkpoint_with_limit(reader, max_bytes, |seg, blob, limit| {
-            // ProtocolClient::read_state retains the full hint set + cache in memory,
-            // sized closely to the uncompressed state blob.
-            if blob.len() > limit {
-                return Err(KeywordClientError::Checkpoint(
-                    "protocol backend checkpoint exceeds memory budget",
-                ));
-            }
-            let (client, in_flight) =
-                ProtocolClient::read_state(seg_seeds[seg], query_seeds[seg], blob).map_err(
-                    |err| match err {
-                        ClientStateError::Mismatch(p) => KeywordClientError::Backend {
-                            segment: seg,
-                            error: p,
-                        },
-                        ClientStateError::Io(io_err) => KeywordClientError::Io(io_err),
-                        _ => KeywordClientError::Checkpoint("invalid protocol client state blob"),
-                    },
-                )?;
+            let (client, in_flight, retained) = ProtocolClient::read_state_with_limit(
+                seg_seeds[seg],
+                query_seeds[seg],
+                blob,
+                limit,
+            )
+            .map_err(|err| match err {
+                ClientStateError::Mismatch(p) => KeywordClientError::Backend {
+                    segment: seg,
+                    error: p,
+                },
+                ClientStateError::Io(io_err) => KeywordClientError::Io(io_err),
+                ClientStateError::Invalid(msg) => KeywordClientError::Checkpoint(msg),
+                _ => KeywordClientError::Checkpoint("invalid protocol client state blob"),
+            })?;
             if !in_flight.is_empty() {
                 return Err(KeywordClientError::Checkpoint(
                     "restored protocol backend contains in-flight queries",
                 ));
             }
-            Ok((client, blob.len()))
+            Ok((client, retained))
         })
     }
 
@@ -2596,6 +2566,13 @@ where
 
     /// Performs a private lookup for `(kind, key)`, aborting in-flight hints
     /// automatically on transport or completion error.
+    ///
+    /// Note: this convenience method does not expose `pending.hint_ids()` before
+    /// sending, so it cannot perform the WAL-before-send step required for
+    /// checkpoint-and-WAL crash recovery. Callers that need WAL recovery must use
+    /// [`Self::client_mut`] to call [`KeywordClient::prepare_lookup`], durably log
+    /// `pending.hint_ids()` before sending, and finish via
+    /// [`KeywordClient::finish_lookup`] or [`KeywordClient::abort_lookup`].
     pub fn get(&mut self, kind: u8, key: &[u8]) -> SessionResult<Option<Vec<u8>>, B, T> {
         let in_flight_before: usize = self.client.queries_in_flight();
         match self
@@ -2634,6 +2611,12 @@ where
 
     /// Performs a 1-RTT batch of private lookups for `keys`, aborting in-flight
     /// hints automatically on transport or completion error.
+    ///
+    /// Note: like [`Self::get`], this convenience method does not expose
+    /// `pending.hint_ids()` before sending; callers needing checkpoint-and-WAL
+    /// crash recovery must drive [`KeywordClient::prepare_batch`], WAL logging,
+    /// and [`KeywordClient::finish_batch`] / [`KeywordClient::abort_batch`]
+    /// directly via [`Self::client_mut`].
     pub fn get_batch(&mut self, keys: &[(u8, &[u8])]) -> SessionResult<Vec<Option<Vec<u8>>>, B, T> {
         let in_flight_before: usize = self.client.queries_in_flight();
         match self
@@ -3526,5 +3509,442 @@ mod tests {
                 Some(expected_val.as_slice())
             );
         }
+    }
+
+    #[test]
+    fn multilevel_failed_level_refresh_and_promote_out_batch_atomicity() {
+        use crate::multilevel::{LevelBackend, LevelSpec};
+        use rand_chacha::ChaCha20Rng;
+
+        // Part A: single lookup where segment 1 answers on level 1 while segment 1's level 0 has
+        // zero backups left and active unreserved slots. Must fail atomically (leaving segment 0
+        // untouched) when level 0 draws >= 1 replacement, and succeed when level 0 draws 0.
+        let spec: KeywordTableSpec =
+            KeywordTableSpec::new(8, 2, 8, 8, Some(8), [0x61; 32], 0, 0).unwrap();
+        let rec: usize = spec.record_size();
+        let key_a: [u8; 8] = 1u64.to_le_bytes();
+        let val_a: [u8; 8] = [0xA1; 8];
+        let key_b: [u8; 8] = 2u64.to_le_bytes();
+        let val_b: [u8; 8] = [0xB2; 8];
+        let (table, _) = KvScfTable::build(
+            spec.clone(),
+            [
+                (0x01, key_a.as_slice(), val_a.as_slice()),
+                (0x01, key_b.as_slice(), val_b.as_slice()),
+            ],
+        )
+        .unwrap();
+
+        let ml_params = MultiLevelParams::custom(
+            8,
+            rec,
+            vec![
+                LevelSpec {
+                    block_size: 2,
+                    num_blocks: 4,
+                    num_primary: 4,
+                    num_backup: 1,
+                    backend: LevelBackend::FlatAes,
+                },
+                LevelSpec {
+                    block_size: 2,
+                    num_blocks: 4,
+                    num_primary: 32,
+                    num_backup: 8,
+                    backend: LevelBackend::FlatAes,
+                },
+            ],
+        )
+        .unwrap();
+        let seg_seeds: [[u8; 32]; 2] = [[0xA5; 32], [0x5A; 32]];
+        let c0 = MultiLevelClient::hint_init(
+            ml_params.clone(),
+            &seg_seeds[0],
+            table.segment_bytes(0).unwrap(),
+            1,
+        )
+        .unwrap();
+        let mut c1 = MultiLevelClient::hint_init(
+            ml_params.clone(),
+            &seg_seeds[1],
+            table.segment_bytes(1).unwrap(),
+            1,
+        )
+        .unwrap();
+
+        // Exhaust segment 1's level 0 backup budget (hint_id = num_primary + 0 = 4) and retire
+        // only the level-0 primary hint(s) that match `key_a`'s bucket_seg1, leaving active
+        // unreserved slots on level 0 so segment 1 must fall through to level 1.
+        let loc_a = spec.locate(0x01, &key_a).unwrap();
+        c1.retire_hints(&[(0, 4)]).unwrap();
+        let mut prep_rng = ChaCha20Rng::seed_from_u64(42);
+        let mut retired_l0: usize = 0;
+        loop {
+            let p = c1.prepare_query(loc_a.bucket_seg1, &mut prep_rng).unwrap();
+            let (lvl, hid) = p.hint_id();
+            c1.cancel_unsent_query(&p).unwrap();
+            if lvl == 0 {
+                c1.retire_hints(&[(0, hid)]).unwrap();
+                retired_l0 += 1;
+            } else {
+                break;
+            }
+        }
+        assert!(
+            retired_l0 < 4,
+            "at least one active level-0 slot must remain on segment 1"
+        );
+        assert_eq!(c1.remaining_backups()[0], 0);
+
+        let mut kw = KeywordClient::new(spec.clone(), [c0, c1], CachePolicy::Off).unwrap();
+        let LookupPlan::Query { query, mut pending } =
+            kw.prepare_lookup(0x01, &key_a, &mut prep_rng).unwrap()
+        else {
+            unreachable!();
+        };
+        assert_eq!(pending.hint_ids()[1].0, 1, "segment 1 must match level 1");
+        let answer = KeywordLookupAnswer {
+            table_epoch: 0,
+            state_epoch: 0,
+            segments: [
+                MultiLevelServer::answer(
+                    table.segment_bytes(0).unwrap(),
+                    &ml_params,
+                    &query.segments[0],
+                    0,
+                )
+                .unwrap(),
+                MultiLevelServer::answer(
+                    table.segment_bytes(1).unwrap(),
+                    &ml_params,
+                    &query.segments[1],
+                    0,
+                )
+                .unwrap(),
+            ],
+        };
+        let seg0_backups_before = kw.backends()[0].remaining_backups();
+
+        // Probe read-only plans to pick a seed where segment 1 fails on level-0 refresh and a
+        // seed where level 0 draws zero replacements (both tested against the exact same state).
+        let p0_ref = pending.segments[0].as_ref().unwrap();
+        let p1_ref = pending.segments[1].as_ref().unwrap();
+        let mut failing_seed: Option<u64> = None;
+        let mut succeeding_seed: Option<u64> = None;
+        for seed in 0u64..1024 {
+            let mut probe_rng = ChaCha20Rng::seed_from_u64(seed);
+            if kw.backends()[0]
+                .plan_finish_batch(
+                    &[p0_ref],
+                    std::slice::from_ref(&answer.segments[0]),
+                    &mut probe_rng,
+                )
+                .is_err()
+            {
+                continue;
+            }
+            match kw.backends()[1].plan_finish_batch(
+                &[p1_ref],
+                std::slice::from_ref(&answer.segments[1]),
+                &mut probe_rng,
+            ) {
+                Err(MultiLevelError::BackupExhausted { level: 0, .. })
+                    if failing_seed.is_none() =>
+                {
+                    failing_seed = Some(seed);
+                }
+                Ok(_) if succeeding_seed.is_none() => {
+                    succeeding_seed = Some(seed);
+                }
+                _ => {}
+            }
+            if failing_seed.is_some() && succeeding_seed.is_some() {
+                break;
+            }
+        }
+        let fail_seed: u64 =
+            failing_seed.expect("must find seed hitting failed-level BackupExhausted");
+        let ok_seed: u64 =
+            succeeding_seed.expect("must find seed with zero failed-level replacements");
+
+        let mut fail_rng = ChaCha20Rng::seed_from_u64(fail_seed);
+        let err = kw
+            .finish_lookup(&pending, &answer, &mut fail_rng)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            KeywordClientError::Backend {
+                segment: 1,
+                error: MultiLevelError::BackupExhausted { level: 0, .. }
+            }
+        ));
+        assert_eq!(kw.backends()[0].queries_in_flight(), 1);
+        assert_eq!(kw.backends()[1].queries_in_flight(), 1);
+        assert_eq!(kw.backends()[0].remaining_backups(), seg0_backups_before);
+
+        // Zero-replacement failed-level refresh succeeds on the same untouched pending lookup.
+        let mut ok_rng = ChaCha20Rng::seed_from_u64(ok_seed);
+        let val = kw.finish_lookup(&pending, &answer, &mut ok_rng).unwrap();
+        assert_eq!(val.as_deref(), Some(val_a.as_slice()));
+        assert_eq!(kw.queries_in_flight(), 0);
+        let _ = kw.abort_lookup(&mut pending);
+
+        // Part B: 2-query batch where segment 1 has only 2 backups left on level 0 and query 0
+        // triggers a PromoteOut sweep consuming >= 2 backups -> query 1 fails before segment 0 commits.
+        let batch_params = MultiLevelParams::custom(
+            8,
+            rec,
+            vec![
+                LevelSpec {
+                    block_size: 2,
+                    num_blocks: 4,
+                    num_primary: 4,
+                    num_backup: 2,
+                    backend: LevelBackend::FlatAes,
+                },
+                LevelSpec {
+                    block_size: 2,
+                    num_blocks: 4,
+                    num_primary: 32,
+                    num_backup: 8,
+                    backend: LevelBackend::FlatAes,
+                },
+            ],
+        )
+        .unwrap();
+        let bc0 = MultiLevelClient::hint_init(
+            batch_params.clone(),
+            &seg_seeds[0],
+            table.segment_bytes(0).unwrap(),
+            1,
+        )
+        .unwrap();
+        let bc1 = MultiLevelClient::hint_init(
+            batch_params.clone(),
+            &seg_seeds[1],
+            table.segment_bytes(1).unwrap(),
+            1,
+        )
+        .unwrap();
+        let mut bkw = KeywordClient::new(spec, [bc0, bc1], CachePolicy::Off).unwrap();
+        let mut b_rng = ChaCha20Rng::seed_from_u64(99);
+        let BatchLookupPlan::Query {
+            query: bq,
+            pending: mut bp,
+        } = bkw
+            .prepare_batch(
+                &[(0x01, key_a.as_slice()), (0x01, key_b.as_slice())],
+                &mut b_rng,
+            )
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        let b_ans = KeywordBatchAnswer {
+            table_epoch: 0,
+            state_epoch: 0,
+            segments: [
+                bq.segments[0]
+                    .iter()
+                    .map(|q| {
+                        MultiLevelServer::answer(
+                            table.segment_bytes(0).unwrap(),
+                            &batch_params,
+                            q,
+                            0,
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+                bq.segments[1]
+                    .iter()
+                    .map(|q| {
+                        MultiLevelServer::answer(
+                            table.segment_bytes(1).unwrap(),
+                            &batch_params,
+                            q,
+                            0,
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            ],
+        };
+        let b_seg0_backups_before = bkw.backends()[0].remaining_backups();
+        let b_seg1_backups_before = bkw.backends()[1].remaining_backups();
+
+        // Find a seed where segment 0 succeeds and segment 1 exhausts level-0 backups mid-batch
+        // (due to PromoteOut sweep on query 0 or failed-level refresh).
+        let bp0_refs: Vec<&PendingMultiLevelQuery> =
+            bp.segments[0].iter().map(|o| o.as_ref().unwrap()).collect();
+        let bp1_refs: Vec<&PendingMultiLevelQuery> =
+            bp.segments[1].iter().map(|o| o.as_ref().unwrap()).collect();
+        let mut batch_fail_seed: Option<u64> = None;
+        for seed in 0u64..1024 {
+            let mut probe_rng = ChaCha20Rng::seed_from_u64(seed);
+            if bkw.backends()[0]
+                .plan_finish_batch(&bp0_refs, &b_ans.segments[0], &mut probe_rng)
+                .is_err()
+            {
+                continue;
+            }
+            let mut seg1_prefix_rng = probe_rng.clone();
+            if bkw.backends()[1]
+                .plan_finish_batch(
+                    &bp1_refs[..1],
+                    &b_ans.segments[1][..1],
+                    &mut seg1_prefix_rng,
+                )
+                .is_err()
+            {
+                continue;
+            }
+            if matches!(
+                bkw.backends()[1].plan_finish_batch(&bp1_refs, &b_ans.segments[1], &mut probe_rng),
+                Err(MultiLevelError::BackupExhausted { .. })
+            ) {
+                batch_fail_seed = Some(seed);
+                break;
+            }
+        }
+        let batch_fail_seed: u64 =
+            batch_fail_seed.expect("must find seed exhausting segment 1 backups mid-batch");
+        let mut trial_rng = ChaCha20Rng::seed_from_u64(batch_fail_seed);
+        let batch_err = bkw.finish_batch(&bp, &b_ans, &mut trial_rng).unwrap_err();
+        assert!(matches!(
+            batch_err,
+            KeywordClientError::Backend {
+                segment: 1,
+                error: MultiLevelError::BackupExhausted { .. }
+            }
+        ));
+        assert_eq!(bkw.backends()[0].queries_in_flight(), 2);
+        assert_eq!(bkw.backends()[1].queries_in_flight(), 2);
+        assert_eq!(bkw.backends()[0].remaining_backups(), b_seg0_backups_before);
+        assert_eq!(bkw.backends()[1].remaining_backups(), b_seg1_backups_before);
+        bkw.abort_batch(&mut bp).unwrap();
+        assert_eq!(bkw.queries_in_flight(), 0);
+    }
+
+    #[test]
+    fn checkpoint_budgets_charge_multilevel_retained_and_protocol_per_block_state() {
+        use crate::checked_io::HashingWriter;
+        use crate::hints::{seed_check, DatabaseSnapshot, HintGeometry, HintSet};
+        use crate::multilevel::{LevelBackend, LevelSpec};
+        use crate::protocol::{CLIENT_STATE_MAGIC, CLIENT_STATE_VERSION};
+
+        // 1) MultiLevelClient: retained decoder allocations exceed `hint_memory_bytes()` because
+        // of `hint_id_to_slot` and `PrimarySlot` arrays; a budget sized using `hint_memory_bytes()`
+        // must be rejected while the exact retained + decode budget succeeds.
+        let spec = KeywordTableSpec::new(16, 1, 4, 4, Some(8), [0x33; 32], 0, 0).unwrap();
+        let (table, _) = KvScfTable::build(
+            spec.clone(),
+            [(0x01, &1u64.to_le_bytes()[..], &[7u8; 4][..])],
+        )
+        .unwrap();
+        let ml_params = MultiLevelParams::custom(
+            16,
+            spec.record_size(),
+            vec![LevelSpec {
+                block_size: 4,
+                num_blocks: 4,
+                num_primary: 32,
+                num_backup: 16,
+                backend: LevelBackend::FlatAes,
+            }],
+        )
+        .unwrap();
+        let seeds: [[u8; 32]; 2] = [[0x12; 32], [0x34; 32]];
+        let c0 = MultiLevelClient::hint_init(
+            ml_params.clone(),
+            &seeds[0],
+            table.segment_bytes(0).unwrap(),
+            1,
+        )
+        .unwrap();
+        let c1 =
+            MultiLevelClient::hint_init(ml_params, &seeds[1], table.segment_bytes(1).unwrap(), 1)
+                .unwrap();
+        let b0_raw: Vec<u8> = c0.to_bytes().unwrap();
+        let b1_raw: Vec<u8> = c1.to_bytes().unwrap();
+        let (_, retained0): (MultiLevelClient, usize) =
+            MultiLevelClient::from_bytes_with_limit_accounted(&b0_raw, &seeds[0], usize::MAX)
+                .unwrap();
+        let estimate0: usize = c0.hint_memory_bytes();
+        assert!(
+            retained0 > estimate0,
+            "retained0 ({retained0}) must strictly exceed hint_memory_bytes() ({estimate0})"
+        );
+        let kw = KeywordClient::new(spec, [c0, c1], CachePolicy::Off).unwrap();
+        let ckpt: Vec<u8> = kw.to_bytes().unwrap();
+
+        // A budget equal to raw blobs + estimate0 + retained0 leaves less than retained0 for seg1
+        // once seg0's true `retained0` is deducted, so segment 1 decode must fail.
+        let insufficient_budget: usize = b0_raw.len() + b1_raw.len() + estimate0 + retained0;
+        assert!(
+            KeywordClient::<MultiLevelClient>::read_checkpoint_with_budget(
+                ckpt.as_slice(),
+                &seeds,
+                insufficient_budget,
+            )
+            .is_err()
+        );
+
+        // 2) ProtocolClient: tiny state blob with huge `num_blocks` must be rejected by
+        // `read_state_with_limit` BEFORE allocating millions of per-block `Iprf` structs.
+        let master_seed: [u8; 32] = [0x77; 32];
+        let query_seed: [u8; 32] = [0x88; 32];
+        let huge_num_entries: u64 = 1u64 << 24;
+        let small_block_size: u64 = 2;
+        let huge_num_blocks: u64 = huge_num_entries / small_block_size;
+        let tiny_hints = HintSet::new(
+            HintGeometry {
+                num_entries: huge_num_entries,
+                record_size: 8,
+                block_size: small_block_size,
+                num_blocks: huge_num_blocks,
+            },
+            seed_check(&master_seed),
+            DatabaseSnapshot {
+                version: 0,
+                hash: [0u8; 32],
+            },
+            vec![1u32; 2], // lambda = 1, num_regular = 2 -> tiny 24-byte hint payload!
+            vec![1u32; 1], // num_backup = 1 (required > 0) -> tiny 20-byte backup payload!
+        )
+        .unwrap();
+        let mut tiny_state: Vec<u8> = Vec::new();
+        {
+            let mut out = HashingWriter::new(&mut tiny_state);
+            out.write_hashed(&CLIENT_STATE_MAGIC).unwrap();
+            out.write_hashed(&CLIENT_STATE_VERSION.to_le_bytes())
+                .unwrap();
+            tiny_hints.write_body(&mut out).unwrap();
+            out.write_hashed(&[0u8; 1]).unwrap(); // sent bitset (2 regular hints -> 1 byte)
+            out.write_hashed(&0u64.to_le_bytes()).unwrap(); // num_answered
+            out.write_hashed(&0u64.to_le_bytes()).unwrap(); // num_in_flight
+            out.write_hashed(&0u64.to_le_bytes()).unwrap(); // num_retired
+            out.finish().unwrap();
+        }
+        assert!(
+            tiny_state.len() < 512,
+            "crafted state blob must be tiny ({} bytes)",
+            tiny_state.len()
+        );
+        let err = ProtocolClient::read_state_with_limit(
+            master_seed,
+            query_seed,
+            tiny_state.as_slice(),
+            1024 * 1024, // 1 MiB limit, >> tiny_state.len(), << 8.39M * size_of::<Iprf>()
+        )
+        .err()
+        .expect("huge num_blocks must be rejected before per-block Iprf allocation");
+        assert!(
+            matches!(
+                err,
+                ClientStateError::Invalid("client state exceeds memory budget")
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 }

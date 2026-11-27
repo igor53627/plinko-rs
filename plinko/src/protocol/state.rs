@@ -76,10 +76,11 @@
 
 use super::{
     block_iprfs, CacheEntry, Client, HintSlot, InFlight, PreparedQuery, ProtocolError,
-    ProtocolParams,
+    ProtocolParams, CLIENT_CACHED_PMNS_LEVELS,
 };
 use crate::checked_io::{u32_at, u64_at, HashingReader, HashingWriter, TrailerError};
-use crate::hints::{self, HintFileError, HintSet};
+use crate::hints::{self, HintFileError, HintHeader, HintSet};
+use crate::iprf::{Iprf, PrfKey128};
 use crate::subsets::{SubsetPrf, INVALID_CUTOFF};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -304,6 +305,20 @@ impl Client {
         query_rng_seed: [u8; 32],
         reader: R,
     ) -> Result<(Self, Vec<PreparedQuery>), ClientStateError> {
+        Self::read_state_with_limit(master_seed, query_rng_seed, reader, usize::MAX)
+            .map(|(client, prepared, _)| (client, prepared))
+    }
+
+    /// Reads a client state like [`Self::read_state`] while enforcing an explicit
+    /// memory budget `max_alloc_bytes` across every decoded structure — including
+    /// per-block [`Iprf`] and key allocations that scale with `params.num_blocks` —
+    /// before allocating, and returns `(client, in_flight, retained_bytes)`.
+    pub(crate) fn read_state_with_limit<R: Read>(
+        master_seed: [u8; 32],
+        query_rng_seed: [u8; 32],
+        reader: R,
+        max_alloc_bytes: usize,
+    ) -> Result<(Self, Vec<PreparedQuery>, usize), ClientStateError> {
         let mut input = HashingReader::new(reader);
 
         let mut prefix = [0u8; PREFIX_SIZE];
@@ -316,20 +331,96 @@ impl Client {
             return Err(ClientStateError::UnsupportedVersion(version));
         }
 
-        let hints: HintSet = HintSet::read_body(&mut input)?;
-        let params: ProtocolParams =
-            ProtocolParams::for_hint_set(&hints).map_err(ClientStateError::Mismatch)?;
-        if hints.seed_check() != hints::seed_check(&master_seed) {
+        let hint_header: HintHeader = HintSet::read_header(&mut input)?;
+        let params: ProtocolParams = ProtocolParams::for_hint_geometry(
+            hint_header.geometry,
+            hint_header.num_regular,
+            hint_header.num_backup,
+        )
+        .map_err(ClientStateError::Mismatch)?;
+        if hint_header.seed_check != hints::seed_check(&master_seed) {
             return Err(ClientStateError::Mismatch(ProtocolError::HintSetMismatch(
                 "master seed",
             )));
         }
+
+        let check_budget = |bytes: usize| -> Result<(), ClientStateError> {
+            if bytes > max_alloc_bytes {
+                return Err(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ));
+            }
+            Ok(())
+        };
+
         let num_regular: usize = params.num_regular_hints;
         let size: usize = params.record_size;
 
+        // Account for every per-hint and per-block allocation before reading records
+        // or deriving per-block keys/iPRFs.
+        let reg_cutoff_bytes: usize = num_regular.checked_mul(std::mem::size_of::<u32>()).ok_or(
+            ClientStateError::Invalid("client state exceeds memory budget"),
+        )?;
+        let bak_cutoff_bytes: usize = params
+            .num_backup_hints
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let slots_bytes: usize = params
+            .num_total_hints
+            .checked_mul(std::mem::size_of::<Option<HintSlot>>())
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let backup_avail_bytes: usize = params
+            .num_backup_hints
+            .checked_mul(std::mem::size_of::<bool>())
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let iprfs_bytes: usize = params
+            .num_blocks
+            .checked_mul(std::mem::size_of::<Iprf>())
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let block_keys_bytes: usize = params
+            .num_blocks
+            .checked_mul(std::mem::size_of::<PrfKey128>())
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let sent_bytes: usize = num_regular.div_ceil(8);
+        let hint_record_scratch: usize =
+            size.checked_mul(2)
+                .and_then(|v| v.checked_add(4))
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+
+        let mut retained_bytes: usize = reg_cutoff_bytes
+            .checked_add(hint_header.regular_bytes)
+            .and_then(|v| v.checked_add(bak_cutoff_bytes))
+            .and_then(|v| v.checked_add(hint_header.backup_bytes))
+            .and_then(|v| v.checked_add(slots_bytes))
+            .and_then(|v| v.checked_add(backup_avail_bytes))
+            .and_then(|v| v.checked_add(iprfs_bytes))
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let upfront_peak: usize = retained_bytes
+            .checked_add(block_keys_bytes.max(sent_bytes).max(hint_record_scratch))
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        check_budget(upfront_peak)?;
+
+        let hints: HintSet = HintSet::read_records(&mut input, hint_header)?;
+
         // The hint set has `num_regular` hints in memory, so this allocation
         // is smaller than the data that was read.
-        let mut sent: Vec<u8> = vec![0u8; num_regular.div_ceil(8)];
+        let mut sent: Vec<u8> = vec![0u8; sent_bytes];
         input.read_hashed(&mut sent)?;
         let mut slots: Vec<Option<HintSlot>> = Vec::with_capacity(params.num_total_hints);
         for (j, &cutoff) in hints.regular_cutoffs().iter().enumerate() {
@@ -366,51 +457,87 @@ impl Client {
             params.num_backup_hints,
             "more answered queries than backup hints",
         )?;
+        let cache_entry_bytes: usize = std::mem::size_of::<(usize, CacheEntry)>()
+            .checked_add(16)
+            .and_then(|v| v.checked_add(size))
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let cache_bytes: usize =
+            num_answered
+                .checked_mul(cache_entry_bytes)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        let answer_scratch: usize = if num_answered > 0 {
+            ANSWERED_FIXED_SIZE
+                .checked_add(size)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?
+        } else {
+            0
+        };
+        retained_bytes =
+            retained_bytes
+                .checked_add(cache_bytes)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        check_budget(
+            retained_bytes
+                .checked_add(block_keys_bytes.max(answer_scratch))
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?,
+        )?;
         let mut cache: HashMap<usize, CacheEntry> = HashMap::new();
-        let mut entry: Vec<u8> = vec![0u8; ANSWERED_FIXED_SIZE + size];
-        let mut last_index: Option<usize> = None;
-        for _ in 0..num_answered {
-            input.read_hashed(&mut entry)?;
-            let index: usize = index_below(&entry, 0, params.num_entries)
-                .ok_or(ClientStateError::Invalid("index of an answered query"))?;
-            if last_index.is_some_and(|last| index <= last) {
-                return Err(ClientStateError::Invalid(
-                    "the answered queries are not in the order of their indices",
-                ));
-            }
-            last_index = Some(index);
+        if num_answered > 0 {
+            let mut entry: Vec<u8> = vec![0u8; ANSWERED_FIXED_SIZE + size];
+            let mut last_index: Option<usize> = None;
+            for _ in 0..num_answered {
+                input.read_hashed(&mut entry)?;
+                let index: usize = index_below(&entry, 0, params.num_entries)
+                    .ok_or(ClientStateError::Invalid("index of an answered query"))?;
+                if last_index.is_some_and(|last| index <= last) {
+                    return Err(ClientStateError::Invalid(
+                        "the answered queries are not in the order of their indices",
+                    ));
+                }
+                last_index = Some(index);
 
-            let backup_idx: usize = index_below(&entry, 8, params.num_backup_hints).ok_or(
-                ClientStateError::Invalid("backup hint of an answered query"),
-            )?;
-            if !backup_available[backup_idx] {
-                return Err(ClientStateError::Invalid(
-                    "a backup hint is promoted two times, or it has no valid cutoff",
-                ));
-            }
-            backup_available[backup_idx] = false;
+                let backup_idx: usize = index_below(&entry, 8, params.num_backup_hints).ok_or(
+                    ClientStateError::Invalid("backup hint of an answered query"),
+                )?;
+                if !backup_available[backup_idx] {
+                    return Err(ClientStateError::Invalid(
+                        "a backup hint is promoted two times, or it has no valid cutoff",
+                    ));
+                }
+                backup_available[backup_idx] = false;
 
-            let flags: u8 = entry[16];
-            let present: bool = flags & FLAG_PRESENT != 0;
-            let complemented: bool = flags & FLAG_COMPLEMENTED != 0;
-            if flags > (FLAG_PRESENT | FLAG_COMPLEMENTED) || (complemented && !present) {
-                return Err(ClientStateError::Invalid("flags of an answered query"));
+                let flags: u8 = entry[16];
+                let present: bool = flags & FLAG_PRESENT != 0;
+                let complemented: bool = flags & FLAG_COMPLEMENTED != 0;
+                if flags > (FLAG_PRESENT | FLAG_COMPLEMENTED) || (complemented && !present) {
+                    return Err(ClientStateError::Invalid("flags of an answered query"));
+                }
+                let hint_idx: usize = num_regular + backup_idx;
+                if present {
+                    slots[hint_idx] = Some(HintSlot {
+                        cutoff: hints.backup_cutoffs()[backup_idx],
+                        complemented,
+                        extra_index: Some(index),
+                    });
+                }
+                cache.insert(
+                    index,
+                    CacheEntry {
+                        value: entry[ANSWERED_FIXED_SIZE..].to_vec(),
+                        hint_idx,
+                    },
+                );
             }
-            let hint_idx: usize = num_regular + backup_idx;
-            if present {
-                slots[hint_idx] = Some(HintSlot {
-                    cutoff: hints.backup_cutoffs()[backup_idx],
-                    complemented,
-                    extra_index: Some(index),
-                });
-            }
-            cache.insert(
-                index,
-                CacheEntry {
-                    value: entry[ANSWERED_FIXED_SIZE..].to_vec(),
-                    hint_idx,
-                },
-            );
         }
 
         // Each query in flight reserves one backup hint that is not promoted.
@@ -420,6 +547,77 @@ impl Client {
             free_backups,
             "more queries in flight than free backup hints",
         )?;
+        let in_flight_retained: usize = num_in_flight
+            .checked_mul(std::mem::size_of::<(usize, InFlight)>() + 16)
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let per_prepared_bytes: usize = (std::mem::size_of::<usize>() * 2)
+            .checked_add(std::mem::size_of::<PreparedQuery>())
+            .and_then(|v| v.checked_add(params.num_blocks.div_ceil(8)))
+            .and_then(|v| {
+                v.checked_add((params.num_blocks / 2).checked_mul(std::mem::size_of::<u32>())?)
+            })
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let in_flight_temp: usize =
+            num_in_flight
+                .checked_mul(per_prepared_bytes)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        let build_query_temp: usize = if num_in_flight > 0 {
+            params
+                .num_blocks
+                .checked_mul(std::mem::size_of::<u32>())
+                .and_then(|v| {
+                    v.checked_add(
+                        (params.num_blocks / 2).checked_mul(std::mem::size_of::<&Iprf>())?,
+                    )
+                })
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?
+        } else {
+            0
+        };
+        let pmns_cache_bytes: usize =
+            if num_in_flight > 0 && (params.num_total_hints as u64) <= u64::from(u32::MAX) {
+                let cached_levels: u32 =
+                    CLIENT_CACHED_PMNS_LEVELS.min(params.block_size.trailing_zeros());
+                let nodes_per_block: usize = (1usize << cached_levels).saturating_sub(1);
+                params
+                    .num_blocks
+                    .checked_mul(nodes_per_block)
+                    .and_then(|v| v.checked_mul(std::mem::size_of::<u32>()))
+                    .ok_or(ClientStateError::Invalid(
+                        "client state exceeds memory budget",
+                    ))?
+            } else {
+                0
+            };
+        let rebuild_temp: usize =
+            in_flight_temp
+                .checked_add(build_query_temp)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        retained_bytes = retained_bytes
+            .checked_add(in_flight_retained)
+            .and_then(|v| v.checked_add(pmns_cache_bytes))
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        let peak_temp: usize = block_keys_bytes.max(rebuild_temp);
+        check_budget(
+            retained_bytes
+                .checked_add(peak_temp)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?,
+        )?;
+
         let mut in_flight: HashMap<usize, InFlight> = HashMap::new();
         let mut order: Vec<usize> = Vec::with_capacity(num_in_flight);
         let mut reserved: HashSet<usize> = HashSet::new();
@@ -470,6 +668,24 @@ impl Client {
             &mut input,
             free_backups,
             "more retired backup hints than free backup hints",
+        )?;
+        let retired_bytes: usize = num_retired
+            .checked_mul(std::mem::size_of::<usize>() + 16)
+            .ok_or(ClientStateError::Invalid(
+                "client state exceeds memory budget",
+            ))?;
+        retained_bytes =
+            retained_bytes
+                .checked_add(retired_bytes)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+        check_budget(
+            retained_bytes
+                .checked_add(peak_temp)
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?,
         )?;
         let mut retired_backups: BTreeSet<usize> = BTreeSet::new();
         let mut number = [0u8; 8];
@@ -551,7 +767,7 @@ impl Client {
             });
         }
 
-        Ok((client, prepared))
+        Ok((client, prepared, retained_bytes))
     }
 
     /// Removes hints that the client sent in queries that its state does not hold.
