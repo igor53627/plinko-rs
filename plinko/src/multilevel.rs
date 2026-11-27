@@ -1581,10 +1581,23 @@ pub struct PendingMultiLevelQuery {
     pub level: usize,
     /// Primary slot index reserved on `level`.
     pub slot_idx: u32,
+    /// Immutable hint ID (`0..total_hints`) of the reserved slot, logged to a WAL
+    /// before transmission and passed to [`MultiLevelClient::retire_hints`] on recovery.
+    pub hint_id: u32,
     /// Selector bit of the reserved slot.
     pub selector: u8,
     /// Wire query to send to the server.
     pub query: MultiLevelQuery,
+}
+
+impl PendingMultiLevelQuery {
+    /// Returns the immutable hint identifier `(level, hint_id)` exposed by this query.
+    ///
+    /// Record this identifier durably in a write-ahead log before transmitting `query`
+    /// so [`MultiLevelClient::retire_hints`] can prevent hint reuse after a crash.
+    pub fn hint_id(&self) -> (usize, u32) {
+        (self.level, self.hint_id)
+    }
 }
 
 /// Active query reservation tracked by [`MultiLevelClient`].
@@ -1593,6 +1606,7 @@ struct InFlightReservation {
     index: usize,
     level: usize,
     slot_idx: u32,
+    hint_id: u32,
     selector: u8,
     epoch: u64,
 }
@@ -1865,6 +1879,11 @@ impl MultiLevelClient {
             .iter()
             .map(|l| l.spec.num_backup.saturating_sub(l.next_backup))
             .collect()
+    }
+
+    /// Returns the number of queries currently in flight.
+    pub fn queries_in_flight(&self) -> usize {
+        self.in_flight.len()
     }
 
     /// Estimated hint storage footprint in bytes (primary parities, 4B compact slot metadata,
@@ -2366,6 +2385,7 @@ impl MultiLevelClient {
                     index,
                     level: level_idx,
                     slot_idx,
+                    hint_id,
                     selector,
                     epoch: self.epoch,
                 },
@@ -2377,6 +2397,7 @@ impl MultiLevelClient {
                 index,
                 level: level_idx,
                 slot_idx,
+                hint_id,
                 selector,
                 query: MultiLevelQuery {
                     level: level_idx,
@@ -2409,6 +2430,7 @@ impl MultiLevelClient {
         if res.index != pending.index
             || res.level != pending.level
             || res.slot_idx != pending.slot_idx
+            || res.hint_id != pending.hint_id
             || res.selector != pending.selector
         {
             return Err(MultiLevelError::UnknownPendingQuery {
@@ -2419,6 +2441,185 @@ impl MultiLevelClient {
         let slot: &mut PrimarySlot = &mut self.levels[res.level].slots[res.slot_idx as usize];
         slot.reserved = false;
         slot.retired = true;
+        Ok(())
+    }
+
+    /// Cancels an unsent in-flight query without retiring its primary slot.
+    ///
+    /// # Security
+    /// Call this **only** if `pending.query` has never left the client (for example when
+    /// rolling back a multi-segment or batch preparation after a later segment fails locally).
+    /// If the query may have reached the server, call [`MultiLevelClient::abort_query`]
+    /// instead so the exposed hint is permanently retired.
+    pub fn cancel_unsent_query(
+        &mut self,
+        pending: &PendingMultiLevelQuery,
+    ) -> Result<(), MultiLevelError> {
+        if pending.session_id != self.session_id {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
+        let Some(&res) = self.in_flight.get(&pending.query_id) else {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        };
+        if res.index != pending.index
+            || res.level != pending.level
+            || res.slot_idx != pending.slot_idx
+            || res.hint_id != pending.hint_id
+            || res.selector != pending.selector
+        {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
+        self.in_flight.remove(&pending.query_id);
+        self.levels[res.level].slots[res.slot_idx as usize].reserved = false;
+        Ok(())
+    }
+
+    /// Validates that every `(level_idx, hint_id)` belongs to this client without mutating state.
+    pub(crate) fn validate_retire_hints(
+        &self,
+        hints: &[(usize, u32)],
+    ) -> Result<(), MultiLevelError> {
+        for &(level_idx, hint_id) in hints {
+            let Some(level) = self.levels.get(level_idx) else {
+                return Err(MultiLevelError::InvalidParams(
+                    "hint to retire references an out-of-range level",
+                ));
+            };
+            if (hint_id as usize) >= level.spec.total_hints() {
+                return Err(MultiLevelError::InvalidParams(
+                    "hint_id to retire is out of range for its level",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Retires WAL-logged `(level, hint_id)` identifiers after reloading a checkpoint so
+    /// neither original primary hints nor promoted backup hints transmitted since that
+    /// checkpoint can ever be reused.
+    ///
+    /// Validates every entry before mutating client state. Any active primary slot currently
+    /// holding `hint_id` is marked `retired` (and any matching in-flight reservation is
+    /// cleared); any backup `hint_id >= num_primary` advances that level's `next_backup`
+    /// past it so the backup can never be promoted again.
+    pub fn retire_hints(&mut self, hints: &[(usize, u32)]) -> Result<(), MultiLevelError> {
+        self.validate_retire_hints(hints)?;
+        for &(level_idx, hint_id) in hints {
+            let level: &mut LevelState = &mut self.levels[level_idx];
+            let h: usize = hint_id as usize;
+            let slot_idx: u32 = level.hint_id_to_slot[h];
+            if slot_idx != NO_SLOT {
+                let slot: &mut PrimarySlot = &mut level.slots[slot_idx as usize];
+                slot.reserved = false;
+                slot.retired = true;
+                self.in_flight
+                    .retain(|_, res| !(res.level == level_idx && res.slot_idx == slot_idx));
+            }
+            if let Some(backup_idx) = h.checked_sub(level.spec.num_primary) {
+                if backup_idx >= level.next_backup {
+                    level.next_backup = backup_idx + 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates `answer` against `pending` and current client state without mutating hints.
+    pub(crate) fn validate_answer(
+        &self,
+        pending: &PendingMultiLevelQuery,
+        answer: &MultiLevelAnswer,
+    ) -> Result<(), MultiLevelError> {
+        let r: usize = self.params.record_size;
+        if answer.parity_0.len() != r || answer.parity_1.len() != r {
+            return Err(MultiLevelError::AnswerLengthMismatch {
+                expected: r,
+                actual: (answer.parity_0.len(), answer.parity_1.len()),
+            });
+        }
+        if pending.session_id != self.session_id {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
+        let Some(&res) = self.in_flight.get(&pending.query_id) else {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        };
+        if res.index != pending.index
+            || res.level != pending.level
+            || res.slot_idx != pending.slot_idx
+            || res.hint_id != pending.hint_id
+            || res.selector != pending.selector
+        {
+            return Err(MultiLevelError::UnknownPendingQuery {
+                query_id: pending.query_id,
+            });
+        }
+        if res.epoch != self.epoch {
+            return Err(MultiLevelError::SnapshotMismatch {
+                query_epoch: res.epoch,
+                current_epoch: self.epoch,
+            });
+        }
+        if answer.snapshot_epoch != self.epoch {
+            return Err(MultiLevelError::SnapshotMismatch {
+                query_epoch: answer.snapshot_epoch,
+                current_epoch: self.epoch,
+            });
+        }
+        if self.levels[res.level].next_backup >= self.levels[res.level].spec.num_backup {
+            return Err(MultiLevelError::BackupExhausted {
+                level: res.level,
+                recovered: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validates a batch of `(pending, answer)` pairs without mutating hints, including
+    /// duplicate `query_id` rejection and minimum per-level backup demand checks.
+    pub(crate) fn validate_batch_answers(
+        &self,
+        pendings: &[&PendingMultiLevelQuery],
+        answers: &[MultiLevelAnswer],
+    ) -> Result<(), MultiLevelError> {
+        if pendings.len() != answers.len() {
+            return Err(MultiLevelError::InvalidParams(
+                "pending query count does not match answer count",
+            ));
+        }
+        let mut seen_ids: std::collections::HashSet<u64> =
+            std::collections::HashSet::with_capacity(pendings.len());
+        let mut min_backup_demand: Vec<usize> = vec![0usize; self.levels.len()];
+        for (&pending, answer) in pendings.iter().zip(answers.iter()) {
+            if !seen_ids.insert(pending.query_id) {
+                return Err(MultiLevelError::UnknownPendingQuery {
+                    query_id: pending.query_id,
+                });
+            }
+            self.validate_answer(pending, answer)?;
+            min_backup_demand[pending.level] += 1;
+        }
+        for (lvl_idx, &need) in min_backup_demand.iter().enumerate() {
+            let rem: usize = self.levels[lvl_idx]
+                .spec
+                .num_backup
+                .saturating_sub(self.levels[lvl_idx].next_backup);
+            if need > rem {
+                return Err(MultiLevelError::BackupExhausted {
+                    level: lvl_idx,
+                    recovered: None,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -2457,6 +2658,7 @@ impl MultiLevelClient {
         if res.index != pending.index
             || res.level != pending.level
             || res.slot_idx != pending.slot_idx
+            || res.hint_id != pending.hint_id
             || res.selector != pending.selector
         {
             return Err(MultiLevelError::UnknownPendingQuery {

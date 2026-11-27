@@ -22,6 +22,9 @@ use std::io::{self, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+mod client;
+pub use client::*;
+
 /// Number of disjoint cuckoo segments (`d = 2`).
 pub const NUM_SEGMENTS: usize = 2;
 

@@ -604,6 +604,12 @@ impl PreparedQuery {
     pub fn hint_index(&self) -> usize {
         self.hint_idx
     }
+
+    /// Returns the database index queried on the wire (equals the requested
+    /// index on a cache miss, or the chosen decoy index on a cache hit).
+    pub fn queried_index(&self) -> usize {
+        self.queried_index
+    }
 }
 
 /// Minimum number of real blocks in a query before [`Client::prepare_query`]
@@ -770,6 +776,11 @@ impl Client {
         } else {
             threads.max(1)
         };
+    }
+
+    /// Returns the protocol parameters of this client.
+    pub fn params(&self) -> &ProtocolParams {
+        &self.params
     }
 
     /// Version of the database that the hints belong to.
@@ -944,6 +955,83 @@ impl Client {
     /// `docs/online_protocol.md`).
     pub fn abandon_query(&mut self, prepared: PreparedQuery) -> Result<(), ProtocolError> {
         self.take_in_flight(&prepared).map(|_| ())
+    }
+
+    /// Cancels an unsent in-flight query without retiring its hint slot.
+    ///
+    /// # Security
+    /// Call this **only** if `prepared.query` has never left the client (for
+    /// example when rolling back a multi-segment or batch preparation after a
+    /// later segment fails locally). If the query may have reached the server,
+    /// call [`Client::abandon_query`] instead so the exposed hint is retired.
+    pub fn cancel_unsent_query(&mut self, prepared: PreparedQuery) -> Result<(), ProtocolError> {
+        self.check_in_flight(&prepared)?;
+        self.in_flight.remove(&prepared.queried_index);
+        Ok(())
+    }
+
+    /// Validates `response` against `prepared` and current client state without
+    /// mutating any hints or reservations.
+    pub(crate) fn validate_response(
+        &self,
+        prepared: &PreparedQuery,
+        response: &Response,
+    ) -> Result<(), ProtocolError> {
+        self.check_in_flight(prepared)?;
+        let expected: u64 = self.database_version();
+        if response.database_version != expected {
+            return Err(ProtocolError::DatabaseVersionMismatch {
+                expected,
+                got: response.database_version,
+            });
+        }
+        check_record_len(&self.params, &response.parity_0)?;
+        check_record_len(&self.params, &response.parity_1)?;
+        if self.remaining_backups == 0 {
+            return Err(ProtocolError::NoBackupHintsLeft);
+        }
+        Ok(())
+    }
+
+    /// Validates a batch of `(prepared, response)` pairs without mutating hints.
+    pub(crate) fn validate_batch_responses(
+        &self,
+        prepareds: &[&PreparedQuery],
+        responses: &[Response],
+    ) -> Result<(), ProtocolError> {
+        if prepareds.len() != responses.len() {
+            return Err(ProtocolError::InvalidParams(
+                "prepared query count does not match response count",
+            ));
+        }
+        let mut seen_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::with_capacity(prepareds.len());
+        for (&prepared, response) in prepareds.iter().zip(responses.iter()) {
+            if !seen_indices.insert(prepared.queried_index) {
+                return Err(ProtocolError::UnknownPreparedQuery);
+            }
+            self.validate_response(prepared, response)?;
+        }
+        if self.remaining_backups < prepareds.len() {
+            return Err(ProtocolError::NoBackupHintsLeft);
+        }
+        Ok(())
+    }
+
+    /// Validates that every hint index in `hint_indices` belongs to this client.
+    pub(crate) fn validate_retire_hints(
+        &self,
+        hint_indices: &[usize],
+    ) -> Result<(), ProtocolError> {
+        if hint_indices
+            .iter()
+            .any(|&hint_idx| hint_idx >= self.params.num_total_hints)
+        {
+            return Err(ProtocolError::InvalidParams(
+                "a hint to retire is not a hint of this client",
+            ));
+        }
+        Ok(())
     }
 
     /// Applies a delta to the hints and moves the client to the version
@@ -1124,6 +1212,18 @@ impl Client {
     #[inline]
     pub fn num_cached_entries(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Returns `true` if `index` is currently cached locally by this client.
+    #[inline]
+    pub fn is_cached(&self, index: usize) -> bool {
+        self.cache.contains_key(&index)
+    }
+
+    /// Returns `true` if a query targeting wire index `index` is currently in flight.
+    #[inline]
+    pub fn is_in_flight(&self, index: usize) -> bool {
+        self.in_flight.contains_key(&index)
     }
 
     /// Returns the number of queries that have no answer yet.
