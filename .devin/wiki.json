@@ -62,6 +62,10 @@
     {
       "content": "WebAssembly and experimental multi-level PIR (v0.3.0): building `plinko` with `--no-default-features` disables the `cli` and `logging` features and compiles cleanly to `wasm32-unknown-unknown` with zero host imports. `SwapOrNotSr::forward_many` and `Iprf::forward_many` evaluate 8 independent lanes in lockstep, and `plinko::protocol::Client` parallelizes `prepare_query` and `apply_delta` across worker threads (clamped to 1 on `wasm32`). `plinko::multilevel` (docs/multilevel_pir.md) is an experimental multi-level PIR prototype based on ePrint 2026/1273 Section 4 with `Iprf` and batched `FlatAes` backends, failure-private Lemma 9 Refresh, dynamic `apply_delta`/`apply_deltas_batch`, single-pass streaming `HintInit` (`MultiLevelHintBuilder`, `hint_init_from_reader`, `hint_init_from_file`), `PLNKMLH1` checkpoints, `bench_multilevel`, and a zero-import WASM smoke test (`scripts/test_wasm_multilevel.sh`). The interactive EN/RU tutorial (including Part 6 for 2-level PIR) is published via `.github/workflows/pages.yml`.",
       "author": "maintainer"
+    },
+    {
+      "content": "Keyword PIR (`plinko::keyword`, v0.4.0, docs/keyword_lookup.md): 2-segment Key-Value Segmented Cuckoo Filter (`KV-SCF`, adapted from RisePIR ePrint 2026/2082) for private key-value lookup over fixed-size records. `KeywordTableSpec` and `KvScfTable` provide keyed BLAKE3 hashing, modular partial-key eviction with zero-tag remap, seed-retry builds, live segment XOR deltas and optional runtime-stash operations, and `bench_keyword` (`--features cli`). `KeywordClient<B>` runs sans-I/O over any `IndexPirClient` backend (`MultiLevelClient` or `protocol::Client`) with single and 1-RTT batch lookups, explicit `CachePolicy` (`Off`, `LocalHit`, `ConstantTraffic`), atomic `apply_epoch_update`, staged pre-commit bucket validation, `PLNKKEYW` v1 BLAKE3-checksummed checkpoints with shared memory budgets, WAL `retire_hints`, `KeywordSession`/`KeywordTransport`, and `wasm32-unknown-unknown` (`--no-default-features`) compatibility.",
+      "author": "maintainer"
     }
   ],
   "pages": [
