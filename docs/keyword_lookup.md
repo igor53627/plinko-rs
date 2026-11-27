@@ -338,15 +338,24 @@ imports on `wasm32-unknown-unknown`):
        server.
      - Under `CachePolicy::Off` and `CachePolicy::ConstantTraffic`,
        `prepare_batch` emits one query pair per input key whenever each segment
-       has enough distinct indices: if an input key's candidate `a_j` is
-       already scheduled or in flight in segment `j` (from a duplicate key, a
-       shared bucket, or a cached/stashed hit under `ConstantTraffic`),
-       `prepare_batch` substitutes a random decoy index not currently in flight
-       in segment `j` and shares the single recovered bucket across all
-       matching batch entries in `finish_batch`. If segment `j` has no
-       available non-in-flight decoy index (for example `batch_len > s` on
-       `protocol::Client`), `prepare_batch` rolls back its tentative
-       reservations and returns an error instead of breaking the
+       has enough distinct indices, using two-pass scheduling per segment so
+       internal backend decoys cannot collide with real buckets in the same
+       batch:
+       1. Pass 1 schedules all distinct real bucket indices required by the
+          batch that are not already cached inside the segment backend (so
+          `protocol::Client` never performs internal decoy substitution during
+          Pass 1).
+       2. Pass 2 schedules all remaining slots (backend-cached buckets,
+          duplicate keys, shared buckets, and keyword-cached/stashed hits).
+          `IndexPirClient` exposes the reserved wire index
+          (`PreparedQuery::queried_index()` on `protocol::Client`, added in
+          `TASK-22`) so `prepare_batch` tracks every backend-reserved bucket
+          and always picks a decoy index not currently in flight and not cached
+          in segment `j`, sharing the single recovered bucket across all
+          matching batch entries in `finish_batch`.
+       If segment `j` has no available non-in-flight decoy index (for example
+       `batch_len > s` on `protocol::Client`), `prepare_batch` rolls back its
+       tentative reservations and returns an error instead of breaking the
        one-pair-per-key guarantee. Within-batch key equality and bucket
        collisions therefore stay hidden from the server (the caller's nominal
        batch size remains visible on the wire).
@@ -374,14 +383,20 @@ imports on `wasm32-unknown-unknown`):
      [docs/online_protocol.md, "Client State And Restart"](online_protocol.md#client-state-and-restart),
      callers persist checkpoints at idle boundaries, durably append each sent
      segment hint identifier to a write-ahead log before transmitting the
-     query (`PreparedQuery::hint_index` for `protocol::Client`, and
-     `(level, slot_idx)` for `MultiLevelClient`), and on restore retire every
+     query (`PreparedQuery::hint_index` for `protocol::Client`, and the
+     immutable `(level, hint_id)` for `MultiLevelClient`, which uniquely
+     identifies both initial primary hints `0..num_primary` and promoted
+     backup hints `num_primary..total_hints`), and on restore retire every
      logged hint before issuing any new query (`Client::retire_hints` for
-     `protocol::Client`, and a matching `MultiLevelClient::retire_slot` to be
-     added in `TASK-22`). (Standalone `protocol::Client::write_state` also
-     supports persisting in-flight queries, but the generic `KeywordClient`
-     checkpoint contract relies on the idle-checkpoint + WAL-retirement path so
-     it works identically across both backends.)
+     `protocol::Client`, and a matching `MultiLevelClient::retire_hints` to be
+     added in `TASK-22` that retires any active primary slot holding `hint_id`
+     and permanently marks/advances past any logged backup
+     `hint_id >= num_primary` so neither original primary hints nor promoted
+     backups sent after the checkpoint can ever be reused). (Standalone
+     `protocol::Client::write_state` also supports persisting in-flight
+     queries, but the generic `KeywordClient` checkpoint contract relies on
+     the idle-checkpoint + WAL-retirement path so it works identically across
+     both backends.)
 3. **Explicit `CachePolicy`:**
    - `Off` (default): always issues 2 PIR queries per input key (no local
      cache bypass, no batch deduplication).
