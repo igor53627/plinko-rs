@@ -118,15 +118,18 @@ avoiding up to 2x capacity padding from rounding `s` to a power of two.
    against segment 1 (sent together in 1 RTT).
 3. Upon receiving both buckets, the client verifies `table_epoch`, global
    `state_epoch`, and each segment's own backend epoch (see
-   [Client Interface](#client-interface-plinkokeyword)), then scans all `2 * b`
-   slots for `slot.tag == tag`.
-   - Zero matches: return `None` (not found).
-   - One match: return `Some(slot.value)`.
-   - More than one match: return `Err(DuplicateTagMatch)`.
-4. If a bounded public runtime-stash is present in epoch metadata, the client
-   also checks the stash for `(a0, tag)` locally while still issuing the 2 PIR
-   queries (unless `CachePolicy::LocalHit` is explicitly enabled). A match in
-   both a bucket and the stash returns `Err(DuplicateTagMatch)`.
+   [Client Interface](#client-interface-plinkokeyword)), then collects all
+   matches across both sources:
+   - Scan all `2 * b` slots of the two buckets for `slot.tag == tag`.
+   - If a bounded public runtime-stash is present in epoch metadata, also
+     check the stash for `(a0, tag)` locally (while still issuing the 2 PIR
+     queries unless `CachePolicy::LocalHit` is explicitly enabled).
+4. Combine the bucket matches and runtime-stash matches before choosing the
+   outcome:
+   - Zero total matches: return `None` (not found).
+   - One total match: return `Some(value)`.
+   - More than one total match (whether within the buckets or across a bucket
+     and the stash): return `Err(DuplicateTagMatch)`.
 
 ## Tag Size And False-Match Probability
 
@@ -320,14 +323,33 @@ imports on `wasm32-unknown-unknown`):
      segments on transport failure or epoch mismatch)
    - `prepare_batch` / `finish_batch` / `abort_batch` (leverages
      `MultiLevelClient`'s existing `slot.reserved` tracking for 1-RTT multi-key
-     batches). Under `CachePolicy::LocalHit`, `prepare_batch` deduplicates
-     repeated keys and skips cached/stashed hits locally, which makes the
-     deduplicated non-cached batch count visible to the server. Under
-     `CachePolicy::Off` and `CachePolicy::ConstantTraffic`, `prepare_batch`
-     always emits one query pair per input key (substituting decoy pairs for
-     cached, stashed, or duplicate keys under `ConstantTraffic`), so
-     within-batch key equality is hidden from the server (the caller's nominal
-     batch size remains visible on the wire).
+     batches). Because `protocol::Client::prepare_query` rejects a second
+     concurrent query for the same bucket index with `QueryInFlight` (whether
+     from a duplicate key or from two distinct keys sharing a bucket `a0` or
+     `a1`), `prepare_batch` tracks already-scheduled bucket indices per segment
+     within the batch:
+     - Under `CachePolicy::LocalHit`, `prepare_batch` deduplicates repeated
+       keys and skips cached/stashed hits locally; if two distinct uncached
+       keys share a segment bucket `a_j`, `a_j` is queried once and its
+       recovered bucket is shared across both entries in `finish_batch` (a
+       decoy is substituted only if needed to keep wire pairs balanced, or the
+       segment query is omitted when the transport supports unbalanced per-segment
+       lists). This reveals the deduplicated non-cached batch count to the
+       server.
+     - Under `CachePolicy::Off` and `CachePolicy::ConstantTraffic`,
+       `prepare_batch` emits one query pair per input key whenever each segment
+       has enough distinct indices: if an input key's candidate `a_j` is
+       already scheduled or in flight in segment `j` (from a duplicate key, a
+       shared bucket, or a cached/stashed hit under `ConstantTraffic`),
+       `prepare_batch` substitutes a random decoy index not currently in flight
+       in segment `j` and shares the single recovered bucket across all
+       matching batch entries in `finish_batch`. If segment `j` has no
+       available non-in-flight decoy index (for example `batch_len > s` on
+       `protocol::Client`), `prepare_batch` rolls back its tentative
+       reservations and returns an error instead of breaking the
+       one-pair-per-key guarantee. Within-batch key equality and bucket
+       collisions therefore stay hidden from the server (the caller's nominal
+       batch size remains visible on the wire).
    - `apply_epoch_update(&KeywordEpochUpdate)`: validates `table_epoch` and
      `from_state_epoch == self.state_epoch`, applies each non-empty
      `segment_deltas[j]` to `backend[j]`, XORs deltas into cached buckets in
@@ -344,17 +366,22 @@ imports on `wasm32-unknown-unknown`):
      segment independently.
    - `write_checkpoint` / `read_checkpoint` and `to_bytes` / `from_bytes`:
      persists `KeywordTableSpec`, `(table_epoch, state_epoch)`, runtime-stash,
-     and both segment client states. **Restart and hint-reuse rule:** a
-     checkpoint must never cause a previously sent hint to be sent a second
-     time. Callers must follow the same durable recovery rule as
-     [docs/online_protocol.md, "Client State And Restart"](online_protocol.md#client-state-and-restart):
-     either persist the checkpoint atomically after `prepare_lookup` before
-     transmitting the query, or durably append each sent segment hint
-     identifier (`PreparedQuery::hint_index` for `protocol::Client`, or the
-     corresponding segment `(level, slot_idx)` / query record for
-     `MultiLevelClient`) to a write-ahead log before transmission and retire
-     every logged hint on restore (via `Client::retire_hints` / segment
-     retirement) before issuing any new query.
+     and both segment client states when no queries are in flight (matching
+     `MultiLevelClient::write_hints`, which returns `QueryInFlight` while any
+     query is reserved). **Restart and hint-reuse rule:** a checkpoint must
+     never cause a previously sent hint to be sent a second time. Following
+     the write-ahead log mechanism in
+     [docs/online_protocol.md, "Client State And Restart"](online_protocol.md#client-state-and-restart),
+     callers persist checkpoints at idle boundaries, durably append each sent
+     segment hint identifier to a write-ahead log before transmitting the
+     query (`PreparedQuery::hint_index` for `protocol::Client`, and
+     `(level, slot_idx)` for `MultiLevelClient`), and on restore retire every
+     logged hint before issuing any new query (`Client::retire_hints` for
+     `protocol::Client`, and a matching `MultiLevelClient::retire_slot` to be
+     added in `TASK-22`). (Standalone `protocol::Client::write_state` also
+     supports persisting in-flight queries, but the generic `KeywordClient`
+     checkpoint contract relies on the idle-checkpoint + WAL-retirement path so
+     it works identically across both backends.)
 3. **Explicit `CachePolicy`:**
    - `Off` (default): always issues 2 PIR queries per input key (no local
      cache bypass, no batch deduplication).
