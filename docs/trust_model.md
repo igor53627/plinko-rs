@@ -79,9 +79,24 @@ not encrypted. The repository has no transport.
 
 These points are outside the privacy claim today.
 
-- **Key to index.** PIR takes an index. The step from a key to an index needs
-  a full map from keys to indices (91 GB of mapping files for the mainnet test
-  data) or a message that reveals the key (TASK-22).
+- **Key to index (index-only layers).** `plinko::protocol` and
+  `plinko::multilevel` take integer indices directly; using them standalone on
+  keys requires a client-side key-to-index map (91 GB of mapping files for the
+  mainnet test data) or revealing the key. `plinko::keyword`
+  ([keyword_lookup.md](keyword_lookup.md), TASK-22) provides private key-value
+  lookup over both backends via 2-segment `KV-SCF` (`d = 2` index PIR queries
+  per lookup, no key map on the client, and no key bytes on the wire). Its
+  residual boundaries are: `table_seed` and any optional runtime-stash entries
+  are public; `CachePolicy::LocalHit` reveals cache-hit and batch-deduplication
+  counts on the wire (use `CachePolicy::Off` or `CachePolicy::ConstantTraffic`
+  to avoid this); and for a fresh non-member query whose digest is modeled as
+  random relative to the stored identities (not a key chosen against a known
+  `table_seed` and snapshot), the false-match probability is at most
+  `(d * b + 1) / 2^(8 * tag_size)` when the runtime-stash is disabled
+  (`<= 4.9e-19` for 8-byte tags, `<= 2.6e-38` for 16-byte tags), or
+  `(d * b + S_stash + 1) / 2^(8 * tag_size)` with a runtime-stash of up to
+  `S_stash` entries matching `a0` (`<= 1.44e-17` for 8-byte tags and
+  `S_stash = 256`).
 - **Wrong answers.** The games of the paper compute the answer with the honest
   `Answer` algorithm. The library gives no integrity: the client cannot check
   an answer. This is a decision; [integrity.md](integrity.md) gives the

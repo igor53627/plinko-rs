@@ -1,7 +1,8 @@
 # Keyword Lookup: Design Specification
 
-Status: generalized design specification for TASK-22 (no code implements this
-document yet).
+Status: implemented in `plinko::keyword` (`plinko/src/keyword.rs`,
+`plinko/src/keyword/client.rs`), benchmarked by `bench_keyword`, and covered by
+`plinko/tests/keyword_e2e_test.rs` (TASK-22).
 
 This document specifies private key-value lookup over `plinko-rs` for a general
 fixed-size key-value database, parameterized by key length, value size, tag
@@ -136,13 +137,34 @@ avoiding up to 2x capacity padding from rounding `s` to a power of two.
 Let `t = 8 * tag_size` be the tag width in bits (`2^t - 1` non-zero tags).
 
 1. **Non-member false match (key not in table):**
-   A lookup inspects at most `d * b` occupied slots (8 slots for `d = 2, b = 4`),
-   each carrying an independent uniform non-zero tag. By union bound:
-   `P_false_match <= (d * b) / (2^t - 1)`
-   - `tag_size = 8` (`t = 64`, `d = 2, b = 4`): `<= 8 / (2^64 - 1) ~= 4.3e-19`
-     (`~2^-61` per lookup).
-   - `tag_size = 16` (`t = 128`, `d = 2, b = 4`): `<= 8 / (2^128 - 1) ~= 2.4e-38`
-     (`~2^-125` per lookup).
+   Model a fresh non-member query's keyed BLAKE3 digest as producing
+   `(a0, raw_tag)` uniform over `[0, s) x {0, 1}^t` relative to the stored
+   table identities (this bound does not apply to keys adversarially chosen
+   against a known `table_seed` and snapshot). By the modular relation
+   `a1 = (a0 + h1(tag)) mod s`, a query `(a0, tag)` matches a stored table
+   entry `(a0', tag')` in either segment if and only if `a0 == a0'` and
+   `tag == tag'`.
+   - For a fixed primary bucket `a0`, let `C(a0)` be the number of distinct
+     stored tags in the table whose primary bucket is `a0` (with no assumption
+     that stored tags are independent). Because the zero-tag remap
+     (`raw_tag = [0; tag_size] -> [1, 0, ...]`) gives at most one stored tag
+     per `a0` mass `2 / 2^t` while every other tag has mass `1 / 2^t`, the
+     conditional false-match probability given `a0` is at most
+     `(C(a0) + 1) / 2^t`.
+   - Averaging over uniform `a0 in [0, s)` and using
+     `sum_{a0} C(a0) = N <= d * b * s` yields the conservative table-only
+     upper bound reported by `KeywordTableSpec::false_match_upper_bound()`
+     (when the runtime-stash is empty or disabled):
+     `(N / s + 1) / 2^t <= (d * b + 1) / 2^t`:
+     - `tag_size = 8` (`t = 64`, `d = 2, b = 4`): `<= 9 / 2^64 ~= 4.9e-19`
+       (`~2^-61` per lookup).
+     - `tag_size = 16` (`t = 128`, `d = 2, b = 4`): `<= 9 / 2^128 ~= 2.6e-38`
+       (`~2^-125` per lookup).
+   - When the optional runtime-stash is enabled with at most `S_stash`
+     distinct entries matching `a0` (worst-case `S_stash` equals the full
+     stash capacity, for example 256), counting those additional distinct tags
+     adds `S_stash / 2^t`, giving `(d * b + S_stash + 1) / 2^t`
+     (`<= 265 / 2^64 ~= 1.44e-17` for `tag_size = 8, S_stash = 256`).
 
 2. **All-or-nothing collision for stored keys (RisePIR Lemma 1):**
    Because `delta = h1(tag)` depends only on `tag`, two distinct keys `k != k'`
@@ -309,11 +331,11 @@ The library exposes a **sans-I/O state machine** matching `MultiLevelClient`
 and `protocol::Client` (no async runtime or networking in `plinko`, zero host
 imports on `wasm32-unknown-unknown`):
 
-1. **`IndexPirClient` trait:** minimal adapter (~8 methods: `num_entries`,
-   `record_size`, `epoch`, `remaining_queries`, `prepare_index_query`,
-   `finish_index_query`, `abort_index_query`, `apply_index_deltas`),
-   implemented out of the box for both `MultiLevelClient` and
-   `protocol::Client`.
+1. **`IndexPirClient` trait:** adapter covering segment geometry, query
+   preparation/abort/cancel, WAL hint retirement, and staged atomic commits
+   (`plan_finish_batch` / `commit_finish_batch` and
+   `prepare_index_deltas` / `commit_index_deltas`), implemented out of the box
+   for both `MultiLevelClient` and `protocol::Client`.
 2. **`KeywordClient<B: IndexPirClient>`:** owns `[B; 2]` (segment 0 and
    segment 1), `KeywordTableSpec`, optional runtime-stash, and optional
    XOR-updated bucket cache:
@@ -348,8 +370,8 @@ imports on `wasm32-unknown-unknown`):
        2. Pass 2 schedules all remaining slots (backend-cached buckets,
           duplicate keys, shared buckets, and keyword-cached/stashed hits).
           `IndexPirClient` exposes the reserved wire index
-          (`PreparedQuery::queried_index()` on `protocol::Client`, added in
-          `TASK-22`) so `prepare_batch` tracks every backend-reserved bucket
+          (`PreparedQuery::queried_index()` on `protocol::Client`) so
+          `prepare_batch` tracks every backend-reserved bucket
           and always picks a decoy index not currently in flight and not cached
           in segment `j`, sharing the single recovered bucket across all
           matching batch entries in `finish_batch`.
@@ -388,11 +410,11 @@ imports on `wasm32-unknown-unknown`):
      identifies both initial primary hints `0..num_primary` and promoted
      backup hints `num_primary..total_hints`), and on restore retire every
      logged hint before issuing any new query (`Client::retire_hints` for
-     `protocol::Client`, and a matching `MultiLevelClient::retire_hints` to be
-     added in `TASK-22` that retires any active primary slot holding `hint_id`
-     and permanently marks/advances past any logged backup
-     `hint_id >= num_primary` so neither original primary hints nor promoted
-     backups sent after the checkpoint can ever be reused). (Standalone
+     `protocol::Client`, and `MultiLevelClient::retire_hints`, which retires
+     any active primary slot holding `hint_id` and permanently marks/advances
+     past any logged backup `hint_id >= num_primary` so neither original
+     primary hints nor promoted backups sent after the checkpoint can ever be
+     reused). (Standalone
      `protocol::Client::write_state` also supports persisting in-flight
      queries, but the generic `KeywordClient` checkpoint contract relies on
      the idle-checkpoint + WAL-retirement path so it works identically across
@@ -408,12 +430,19 @@ imports on `wasm32-unknown-unknown`):
      issuing 2 decoy queries per such input key to keep wire traffic uniform.
 4. **Thin transport wrapper (`KeywordTransport` + `KeywordSession`):** optional
    sync convenience layer providing `get(kind, key)` and `get_batch(&keys)`
-   with automatic `abort_lookup` on transport error.
+   with automatic `abort_lookup` / `abort_batch` on transport or completion
+   error. Because `KeywordSession::get` and `get_batch` do not expose
+   `pending.hint_ids()` before sending, `KeywordSession` does **not** support
+   the WAL-before-send step required for checkpoint-and-WAL crash recovery;
+   callers needing WAL recovery must drive `client_mut()` with
+   `KeywordClient::prepare_lookup` (or `prepare_batch`), durably log
+   `pending.hint_ids()` before sending, and complete via `finish_lookup` /
+   `abort_lookup` (or `finish_batch` / `abort_batch`).
 5. **OHTTP compatibility:** `KeywordLookupQuery` carries only
-   `(table_epoch, state_epoch, segments: [Q; 2])` and never puts `session_id`
-   or `query_id` on the wire, so online lookups can be routed through an OHTTP
-   relay (RFC 9458) to hide client IP while PIR protects the queried key even
-   if relay and server collude.
+   `(table_epoch, state_epoch, segments: [Q; 2])` and omits local `session_id`
+   and `query_id` fields, so callers can route online lookups through an OHTTP
+   relay (RFC 9458) without forwarding those identifiers; any cross-request
+   unlinkability guarantees depend on the transport and deployment controls.
 
 ## Limits
 
@@ -428,20 +457,23 @@ imports on `wasm32-unknown-unknown`):
   streams the full `database.bin` once locally ([trust_model.md](trust_model.md)).
   `HintInit` must never be delegated to the server, a cloud, or a TEE.
 
-## Implementation Steps (TASK-22)
+## Implementation Status (TASK-22)
 
-1. Library module `plinko::keyword`: `KeywordTableSpec`, BLAKE3 keyed hashing
-   and modular partial-key eviction, `KvScfBuilder` / `KvScfTable` (build,
-   live `insert`/`update`/`delete` returning segment deltas, `database.bin`
-   writer, unplaceable key reporting).
-2. `IndexPirClient` implementations for `MultiLevelClient` and
-   `protocol::Client`, plus `KeywordClient<B>` (`prepare_lookup`,
-   `finish_lookup`, `abort_lookup`, `prepare_batch`/`finish_batch`,
-   `apply_epoch_update`, `CachePolicy`, checkpointing) and `KeywordSession`.
-3. End-to-end tests: build synthetic key-value tables at arbitrary
-   `(key_size, value_size, load)` -> verify through `plinko_hints` +
-   `protocol::Client` AND through `MultiLevelClient` (including `insert`,
-   `update`, `delete`, not-found lookups, `abort_lookup`, and `wasm32`
-   compilation).
-4. Update `docs/data_format.md` and `docs/trust_model.md` ("Not Covered" list)
-   once `plinko::keyword` lands.
+1. Library table core (`plinko/src/keyword.rs`): `KeywordTableSpec`, keyed
+   BLAKE3 hashing and modular partial-key eviction, `KvScfTable` (build with
+   unplaceable key reporting and optional seed retry, live
+   `insert`/`update`/`upsert`/`delete` returning segment deltas and stash ops,
+   `database.bin` and per-segment writers), plus `bench_keyword` CLI benchmark.
+2. Client and session layer (`plinko/src/keyword/client.rs`): `IndexPirClient`
+   implementations for `MultiLevelClient` and `protocol::Client`,
+   `KeywordClient<B>` (`prepare_lookup`/`finish_lookup`/`abort_lookup`,
+   two-pass `prepare_batch`/`finish_batch`/`abort_batch`, `apply_epoch_update`,
+   `CachePolicy`, `retire_hints`, `PLNKKEYW` checkpointing), and
+   `KeywordSession` / `KeywordTransport`.
+3. End-to-end tests (`plinko/tests/keyword_e2e_test.rs` and unit tests in
+   `plinko/src/keyword.rs` + `plinko/src/keyword/client.rs`): single-file
+   `database.bin` and 2-segment flows through `plinko_hints` +
+   `protocol::Client`, `MultiLevelClient` policies/updates/stash/checkpoints/WAL
+   recovery, and `wasm32-unknown-unknown --no-default-features` compilation.
+4. Documentation sync: `docs/data_format.md`, `docs/trust_model.md`,
+   `docs/README.md`, `README.md`, and `CHANGELOG.md`.

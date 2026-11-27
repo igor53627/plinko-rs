@@ -15,7 +15,7 @@ The full Ethereum state is not a target: each client must download the database 
 | Path | Role |
 |------|------|
 | `src/main.rs` | **Extractor** — reads Reth on-disk DB via `reth-db` (MDBX-backed); writes flat `database.bin` + mappings |
-| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, HintInit (`src/hint_init.rs`, binary `plinko_hints`), 1-level protocol client/server (`src/protocol.rs`), experimental multi-level PIR prototype (`src/multilevel.rs`, binary `bench_multilevel`), `wasm32-unknown-unknown` support (`--no-default-features`), optional CUDA |
+| `plinko/` | **Core crate** — iPRF, PMNS binomial sampling, HintInit (`src/hint_init.rs`, binary `plinko_hints`), 1-level protocol client/server (`src/protocol.rs`), experimental multi-level PIR prototype (`src/multilevel.rs`, binary `bench_multilevel`), 2-segment `KV-SCF` keyword PIR (`src/keyword.rs`, binary `bench_keyword`), `wasm32-unknown-unknown` support (`--no-default-features`), optional CUDA |
 | `plinko/formal/` | **Rocq** models of the algorithms and proofs about the models, not about the Rust code (`plinko/formal/README.md`) |
 | `docs/` | Protocol, data format, benchmarks, verification |
 | `tee-test/` | SEV-SNP TEE benchmark notes (historical) |
@@ -116,6 +116,7 @@ Layout and last published mainnet v3 counts: [`docs/data_format.md`](docs/data_f
 - **iPRF**: Swap-or-Not PRP + PMNS ([`plinko/src/iprf.rs`](plinko/src/iprf.rs)), with 8-way interleaved `forward_many`
 - **Binomial / PMNS**: integer-only `Binomial(count, 1/2)` sampler, the bit count of an AES-128 counter keystream per tree node (exact for a uniform keystream) ([`plinko/src/binomial.rs`](plinko/src/binomial.rs)); the iPRF range `w` must be a power of two
 - **Multi-level PIR (experimental)**: 2-level and `d`-level waterfall prototype based on [ePrint 2026/1273](https://eprint.iacr.org/2026/1273) with dynamic `UpdateHint`, failure-private `Refresh`, `PLNKMLH1` checkpoints, and zero-import `wasm32` support ([`plinko/src/multilevel.rs`](plinko/src/multilevel.rs), [`docs/multilevel_pir.md`](docs/multilevel_pir.md), `./scripts/test_wasm_multilevel.sh`)
+- **Keyword PIR (`plinko::keyword`)**: 2-segment `KV-SCF` private key-value lookup adapted from [RisePIR (ePrint 2026/2082)](https://eprint.iacr.org/2026/2082) with modular partial-key eviction, sans-I/O `KeywordClient<B>` over both `MultiLevelClient` and `protocol::Client`, `CachePolicy` (`Off`, `LocalHit`, `ConstantTraffic`), `PLNKKEYW` checkpoints, WAL `retire_hints`, `KeywordSession`, and `wasm32` support ([`plinko/src/keyword.rs`](plinko/src/keyword.rs), [`docs/keyword_lookup.md`](docs/keyword_lookup.md))
 - **TEE** (opt-in feature `tee`): `IprfTee` + constant-time binomial ([`docs/constant_time_mode.md`](docs/constant_time_mode.md)); experimental, not part of the [trust model](docs/trust_model.md#tee-mode)
 - **GPU** (opt-in features `gpu`, `cuda`): `cargo build --release -p plinko --features cuda` — [`docs/gpu_benchmark_commands.md`](docs/gpu_benchmark_commands.md); a throughput benchmark, not Plinko hints ([trust model](docs/trust_model.md#gpu-path))
 
@@ -150,6 +151,7 @@ The record size is a parameter (`plinko_hints --record-size`); runs with 32-byte
 | Integrity (what the client must trust) | [`docs/integrity.md`](docs/integrity.md) |
 | Online protocol | [`docs/online_protocol.md`](docs/online_protocol.md) |
 | Multi-level PIR prototype (experimental) | [`docs/multilevel_pir.md`](docs/multilevel_pir.md) |
+| Keyword PIR (`KV-SCF`, `plinko::keyword`) | [`docs/keyword_lookup.md`](docs/keyword_lookup.md) |
 | Hint generation | [`docs/hint_generation.md`](docs/hint_generation.md) |
 | Data format / mainnet snapshot | [`docs/data_format.md`](docs/data_format.md) |
 | Updates | [`docs/update_strategy.md`](docs/update_strategy.md) |

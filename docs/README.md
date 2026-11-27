@@ -19,7 +19,7 @@ Entry point for everything under `docs/`. The repository root [`README.md`](../R
 | [`integrity.md`](integrity.md) | What the client can check and what it must trust; the library gives no integrity of an answer |
 | [`online_protocol.md`](online_protocol.md) | Query, decoy, query format, retry rule, query limit; deviations from the paper |
 | [`multilevel_pir.md`](multilevel_pir.md) | Experimental multi-level PIR prototype (`ePrint 2026/1273`), `PLNKMLH1` checkpoints, benchmarks, and WASM |
-| [`keyword_lookup.md`](keyword_lookup.md) | Proposal: lookup by key through a cuckoo table (not implemented) |
+| [`keyword_lookup.md`](keyword_lookup.md) | Private key-value lookup (`plinko::keyword`, 2-segment `KV-SCF`, `KeywordClient<B>`, `PLNKKEYW` checkpoints, `bench_keyword`) |
 | [`constant_time_mode.md`](constant_time_mode.md) | TEE / constant-time HintInit |
 | [`update_strategy.md`](update_strategy.md) | Database versions, deltas, restart, cost, rule for a database that grows, what is not implemented |
 | [`verification.md`](verification.md) | Rocq, Kani, proptest entry points |

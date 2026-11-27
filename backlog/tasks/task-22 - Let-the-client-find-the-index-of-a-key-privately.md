@@ -1,10 +1,10 @@
 ---
 id: TASK-22
 title: Let the client look up a record by key
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-17T11:36:00Z'
-updated_date: '2026-11-17T17:43:00Z'
+updated_date: '2026-11-27T09:40:29Z'
 labels:
   - lookup
   - design
@@ -28,16 +28,18 @@ PIR takes an integer index. A client that knows a key and not the index of its r
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 docs/keyword_lookup.md describes the layout for a general key-value database, with the key size, the value size and the load as parameters, and gives the number of PIR queries per lookup
-- [ ] #2 A table builder in the library writes database.bin in that layout from a list of key and value records, and reports a key that it cannot place
-- [ ] #3 The client computes the candidate indices of a key from the public table parameters, without a key map and without a message that contains the key
-- [ ] #4 A lookup returns the value of a key that is in the table. For a key that is not in the table it returns a not-found result, except with the false-match probability that the document states (criterion 6); the client checks the tag of each answer against its key
-- [ ] #5 An end-to-end test on a synthetic key-value database goes from keys to the correct values through plinko_hints and the protocol client
-- [ ] #6 The document states the tag size, the probability of a false match, and what an insert after the build needs
+- [x] #1 docs/keyword_lookup.md describes the layout for a general key-value database, with the key size, the value size and the load as parameters, and gives the number of PIR queries per lookup
+- [x] #2 A table builder in the library writes database.bin in that layout from a list of key and value records, and reports a key that it cannot place
+- [x] #3 The client computes the candidate indices of a key from the public table parameters, without a key map and without a message that contains the key
+- [x] #4 A lookup returns the value of a key that is in the table. For a key that is not in the table it returns a not-found result, except with the false-match probability that the document states (criterion 6); the client checks the tag of each answer against its key
+- [x] #5 An end-to-end test on a synthetic key-value database goes from keys to the correct values through plinko_hints and the protocol client
+- [x] #6 The document states the tag size, the probability of a false match, and what an insert after the build needs
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Rewritten on 2026-11-17 after the scope decision (backlog/decisions/decision-1); before, the task was about Ethereum addresses and (address, slot) pairs and the mapping files of 91 GB. The earlier criterion 1 (a design document selects the layout) was checked for the Ethereum-sized proposal in docs/keyword_lookup.md; the owner did not confirm that layout, and the document is not general yet, so the new criterion 1 is open. Depends on TASK-31: a slot is a tag and a payload, so the parity must cover the whole record. Simulation crate of the proposal: /tmp/plinko-review-main/cuckoo_sim (scratch, not in the repository).
+
+Implemented generalized 2-segment KV-SCF keyword PIR in plinko::keyword (KvScfTable, KeywordTableSpec, KeywordClient<B>, IndexPirClient for MultiLevelClient and protocol::Client, PLNKKEYW checkpoints, WAL retire_hints, KeywordSession, bench_keyword) and E2E tests in plinko/tests/keyword_e2e_test.rs.
 <!-- SECTION:NOTES:END -->

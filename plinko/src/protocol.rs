@@ -303,7 +303,14 @@ impl ProtocolParams {
     ///
     /// `lambda` is the number of regular hints divided by the block size.
     pub fn for_hint_set(hints: &HintSet) -> Result<Self, ProtocolError> {
-        let geometry: HintGeometry = hints.geometry();
+        Self::for_hint_geometry(hints.geometry(), hints.num_regular(), hints.num_backup())
+    }
+
+    pub(crate) fn for_hint_geometry(
+        geometry: HintGeometry,
+        num_regular: usize,
+        num_backup: usize,
+    ) -> Result<Self, ProtocolError> {
         let num_entries: usize = usize::try_from(geometry.num_entries)
             .map_err(|_| ProtocolError::HintSetMismatch("num_entries is too large"))?;
         let block_size: usize = usize::try_from(geometry.block_size)
@@ -312,18 +319,18 @@ impl ProtocolParams {
             return Err(ProtocolError::HintSetMismatch("block_size is zero"));
         }
 
-        let lambda: usize = hints.num_regular() / block_size;
-        if lambda * block_size != hints.num_regular() {
+        let lambda: usize = num_regular / block_size;
+        if lambda * block_size != num_regular {
             return Err(ProtocolError::HintSetMismatch(
                 "the number of regular hints is not a multiple of block_size",
             ));
         }
         let params: Self = Self::new(
             num_entries,
-            hints.record_size(),
+            geometry.record_size as usize,
             Some(block_size),
             lambda,
-            Some(hints.num_backup()),
+            Some(num_backup),
         )?;
         if params.hint_geometry() != geometry {
             return Err(ProtocolError::HintSetMismatch(
@@ -604,6 +611,12 @@ impl PreparedQuery {
     pub fn hint_index(&self) -> usize {
         self.hint_idx
     }
+
+    /// Returns the database index queried on the wire (equals the requested
+    /// index on a cache miss, or the chosen decoy index on a cache hit).
+    pub fn queried_index(&self) -> usize {
+        self.queried_index
+    }
 }
 
 /// Minimum number of real blocks in a query before [`Client::prepare_query`]
@@ -620,6 +633,28 @@ const PARALLEL_DELTA_MIN_CHANGES: usize = 8;
 /// Maximum number of delta changes whose iPRF inverses are held in memory at
 /// once during parallel [`Client::apply_delta`].
 const PARALLEL_DELTA_BATCH_SIZE: usize = 256;
+
+/// Staged, validated batch of single-level reconstructions and backup promotions
+/// produced for [`crate::keyword::IndexPirClient`] and committed infallibly.
+pub struct ProtocolFinishPlan {
+    steps: Vec<ProtocolFinishStep>,
+    values: Vec<Vec<u8>>,
+}
+
+impl ProtocolFinishPlan {
+    /// Returns the reconstructed requested-record bytes staged by this plan in
+    /// prepared-query order.
+    #[inline]
+    pub(crate) fn values(&self) -> &[Vec<u8>] {
+        &self.values
+    }
+}
+
+struct ProtocolFinishStep {
+    queried_index: usize,
+    hint_idx: usize,
+    queried_entry: Vec<u8>,
+}
 
 /// Client for the in-memory protocol model.
 pub struct Client {
@@ -770,6 +805,11 @@ impl Client {
         } else {
             threads.max(1)
         };
+    }
+
+    /// Returns the protocol parameters of this client.
+    pub fn params(&self) -> &ProtocolParams {
+        &self.params
     }
 
     /// Version of the database that the hints belong to.
@@ -944,6 +984,121 @@ impl Client {
     /// `docs/online_protocol.md`).
     pub fn abandon_query(&mut self, prepared: PreparedQuery) -> Result<(), ProtocolError> {
         self.take_in_flight(&prepared).map(|_| ())
+    }
+
+    /// Cancels an unsent in-flight query without retiring its hint slot.
+    ///
+    /// # Security
+    /// Call this **only** if `prepared.query` has never left the client (for
+    /// example when rolling back a multi-segment or batch preparation after a
+    /// later segment fails locally). If the query may have reached the server,
+    /// call [`Client::abandon_query`] instead so the exposed hint is retired.
+    pub fn cancel_unsent_query(&mut self, prepared: PreparedQuery) -> Result<(), ProtocolError> {
+        self.check_in_flight(&prepared)?;
+        self.in_flight.remove(&prepared.queried_index);
+        Ok(())
+    }
+
+    /// Validates a batch of `(prepared, response)` pairs and stages their reconstructed
+    /// entries without mutating hints.
+    ///
+    /// Returning `Ok(plan)` guarantees [`Self::commit_finish_batch`] succeeds infallibly
+    /// if `self` is not mutated in between.
+    pub(crate) fn plan_finish_batch(
+        &self,
+        prepareds: &[&PreparedQuery],
+        responses: &[Response],
+    ) -> Result<ProtocolFinishPlan, ProtocolError> {
+        if prepareds.len() != responses.len() {
+            return Err(ProtocolError::InvalidParams(
+                "prepared query count does not match response count",
+            ));
+        }
+        if self.remaining_backups < prepareds.len() {
+            return Err(ProtocolError::NoBackupHintsLeft);
+        }
+        let expected: u64 = self.database_version();
+        let mut seen_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::with_capacity(prepareds.len());
+        let mut steps: Vec<ProtocolFinishStep> = Vec::with_capacity(prepareds.len());
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(prepareds.len());
+        for (&prepared, response) in prepareds.iter().zip(responses.iter()) {
+            if !seen_indices.insert(prepared.queried_index) {
+                return Err(ProtocolError::UnknownPreparedQuery);
+            }
+            self.check_in_flight(prepared)?;
+            if self.slots[prepared.hint_idx].is_none() {
+                return Err(ProtocolError::UnknownPreparedQuery);
+            }
+            if response.database_version != expected {
+                return Err(ProtocolError::DatabaseVersionMismatch {
+                    expected,
+                    got: response.database_version,
+                });
+            }
+            check_record_len(&self.params, &response.parity_0)?;
+            check_record_len(&self.params, &response.parity_1)?;
+            let mut queried_entry: Vec<u8> = if prepared.real_is_first {
+                response.parity_0.clone()
+            } else {
+                response.parity_1.clone()
+            };
+            xor_entry(&mut queried_entry, self.slot_parity(prepared.hint_idx));
+            let requested_value: Vec<u8> = if prepared.requested_index == prepared.queried_index {
+                queried_entry.clone()
+            } else {
+                self.cache
+                    .get(&prepared.requested_index)
+                    .ok_or(ProtocolError::NoHintForIndex {
+                        index: prepared.requested_index,
+                    })?
+                    .value
+                    .clone()
+            };
+            steps.push(ProtocolFinishStep {
+                queried_index: prepared.queried_index,
+                hint_idx: prepared.hint_idx,
+                queried_entry,
+            });
+            values.push(requested_value);
+        }
+        Ok(ProtocolFinishPlan { steps, values })
+    }
+
+    /// Commits a staged [`ProtocolFinishPlan`] infallibly and returns the reconstructed
+    /// records in `prepareds` order.
+    pub(crate) fn commit_finish_batch(&mut self, plan: ProtocolFinishPlan) -> Vec<Vec<u8>> {
+        for step in plan.steps {
+            self.in_flight.remove(&step.queried_index);
+            self.slots[step.hint_idx] = None;
+            let promoted_hint_idx: usize = self
+                .promote_backup(step.queried_index, &step.queried_entry)
+                .expect("backup availability validated in plan_finish_batch");
+            self.cache.insert(
+                step.queried_index,
+                CacheEntry {
+                    value: step.queried_entry,
+                    hint_idx: promoted_hint_idx,
+                },
+            );
+        }
+        plan.values
+    }
+
+    /// Validates that every hint index in `hint_indices` belongs to this client.
+    pub(crate) fn validate_retire_hints(
+        &self,
+        hint_indices: &[usize],
+    ) -> Result<(), ProtocolError> {
+        if hint_indices
+            .iter()
+            .any(|&hint_idx| hint_idx >= self.params.num_total_hints)
+        {
+            return Err(ProtocolError::InvalidParams(
+                "a hint to retire is not a hint of this client",
+            ));
+        }
+        Ok(())
     }
 
     /// Applies a delta to the hints and moves the client to the version
@@ -1124,6 +1279,18 @@ impl Client {
     #[inline]
     pub fn num_cached_entries(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Returns `true` if `index` is currently cached locally by this client.
+    #[inline]
+    pub fn is_cached(&self, index: usize) -> bool {
+        self.cache.contains_key(&index)
+    }
+
+    /// Returns `true` if a query targeting wire index `index` is currently in flight.
+    #[inline]
+    pub fn is_in_flight(&self, index: usize) -> bool {
+        self.in_flight.contains_key(&index)
     }
 
     /// Returns the number of queries that have no answer yet.

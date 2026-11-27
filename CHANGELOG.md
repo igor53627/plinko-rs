@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `plinko::keyword` (`TASK-22`): 2-segment Key-Value Segmented Cuckoo Filter (`KV-SCF`, adapted from RisePIR `ePrint 2026/2082`) for private key-value lookup over fixed-size records:
+  - Table core (`plinko/src/keyword.rs`): `KeywordTableSpec` (validated geometry, keyed BLAKE3 hashing, modular partial-key eviction with zero-tag remap, `locate`, `scan_buckets`, `false_match_upper_bound`), `KvScfTable` (`build`, `build_with_seed_retry`, unplaceable key reporting, live `insert`/`update`/`upsert`/`delete` producing segment XOR deltas and optional runtime-stash ops, `write_database`/`write_segments`, `from_database_bytes`), and `bench_keyword` CLI benchmark (`--features cli`).
+  - Client and session layer (`plinko/src/keyword/client.rs`): `IndexPirClient` trait implemented for `MultiLevelClient` and `protocol::Client`; sans-I/O `KeywordClient<B>` with single and two-pass 1-RTT batch lookups, explicit `CachePolicy` (`Off`, `LocalHit`, `ConstantTraffic`), atomic `apply_epoch_update` across independent segment epochs and runtime-stash, `PLNKKEYW` v1 BLAKE3-checksummed checkpoints with shared memory budgets, WAL `retire_hints`, OHTTP-compatible wire queries, and synchronous `KeywordSession`/`KeywordTransport` with automatic abort handling.
+  - Backend client hooks: `MultiLevelClient::retire_hints`, `MultiLevelClient::cancel_unsent_query`, `MultiLevelClient::queries_in_flight`, `PendingMultiLevelQuery::hint_id`, `protocol::Client::params`, `protocol::Client::is_cached`, `protocol::Client::is_in_flight`, `protocol::Client::cancel_unsent_query`, and `PreparedQuery::queried_index`.
+  - End-to-end tests (`plinko/tests/keyword_e2e_test.rs`) covering both single-file `database.bin` and 2-segment flows through `plinko_hints` + `protocol::Client`, plus `MultiLevelClient` and `wasm32-unknown-unknown --no-default-features` compatibility.
+- Updated `docs/keyword_lookup.md`, `docs/data_format.md`, `docs/trust_model.md`, `docs/README.md`, and `README.md` for `plinko::keyword` and the `PLNKKEYW` checkpoint format.
+
 ## [0.3.0] - 2026-11-26
 
 Library-only `wasm32-unknown-unknown` builds, faster 1-level iPRF/client query and update

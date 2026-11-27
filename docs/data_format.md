@@ -14,6 +14,7 @@ Canonical v3 on-disk layout for Plinko PIR. Implementation: [`plinko/src/schema4
 | `hints.bin` | Hint set of one client (see [Hint file](#hint-file-hintsbin)) | no (`plinko_hints --output`) |
 | client state file | Hint set and online state of one client (see [Client state file](#client-state-file)) | no (library only: `Client::write_state`) |
 | delta file | Changed records between two database versions (see [Delta file](#delta-file)) | no (library only: `plinko::delta`) |
+| keyword checkpoint | `KeywordClient` spec, stash, bucket cache, and segment states (see [Keyword table and checkpoint](#keyword-table-kv-scf-and-checkpoint-plnkkeyw)) | no (library only: `plinko::keyword`) |
 
 ### `database.bin` ordering
 
@@ -170,6 +171,40 @@ Format version 1, where `r` is the record size in bytes:
 - The reader rejects a file of another format version, a record size outside the range, versions or indices that break the rules above, a wrong checksum and data after the checksum.
 - The file has no hash of a database and no signature. The checksum detects damage; it does not show that the publisher of the database made the delta.
 - A delta is public: it holds no value of a client.
+
+## Keyword table (KV-SCF) and checkpoint (`PLNKKEYW`)
+
+For private key-value lookup (`plinko::keyword`, [`keyword_lookup.md`](keyword_lookup.md)),
+`KvScfTable::write_database` writes a flat `database.bin` containing two
+contiguous segments of `s >= 1` fixed-size bucket records (`record_size = b × (tag_size + value_size)` bytes):
+
+- `segment_0`: buckets `0..s` (`s × record_size` bytes),
+- `segment_1`: buckets `s..2s` (`s × record_size` bytes),
+- each bucket holds `b` slots `tag (tag_size bytes) || value (value_size bytes)`; an empty slot is all bytes zero.
+
+The same file works with two disjoint segment PIR instances (`segment_0` and
+`segment_1` via `KvScfTable::write_segments`, recommended for
+`plinko::multilevel`) or as a single `2s`-record `database.bin` passed directly
+to `plinko_hints --record-size <record_size>`.
+
+`KeywordClient::write_checkpoint` persists an idle 2-segment keyword client
+state in version 1 (`PLNKKEYW`, all integers little-endian, trailing 32-byte
+BLAKE3 checksum):
+
+| Field | Size | Notes |
+|-------|------|-------|
+| magic | 8 | `PLNKKEYW` |
+| format version | 4 | `1` |
+| `KeywordTableSpec` + policy | 80 | `table_seed` (32), `table_epoch` (8), `state_epoch` (8), `buckets_per_segment` (8), `bucket_size` (4), `tag_size` (4), `value_size` (4), flags `[has_key_size, cache_policy, 0, 0]` (4), `key_size` (8) |
+| runtime-stash | `4 + count × (8 + tag_size + value_size)` | sorted by `(bucket_seg0, tag)` |
+| bucket caches (2 segments) | per segment: `4 + count × (8 + record_size)` | sorted by `bucket_idx`; must be empty under `CachePolicy::Off` |
+| segment backend blobs (2) | per segment: `8 + blob_len` | `PLNKMLH1` (`MultiLevelClient`) or `PLNKSTAT` (`protocol::Client`), no in-flight queries |
+| checksum | 32 | BLAKE3 hash of all bytes before it |
+
+Master seeds and query RNG seeds are never written. The file is client-secret
+because it holds both segment hint states and any cached buckets. Callers must
+still pair checkpoints with a WAL of transmitted segment hint IDs and call
+`KeywordClient::retire_hints` after a restore.
 
 ## Limits of the extractor
 

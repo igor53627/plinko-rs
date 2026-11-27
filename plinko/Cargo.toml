@@ -58,6 +58,11 @@ path = "src/bin/bench_multilevel.rs"
 required-features = ["cli"]
 
 [[bin]]
+name = "bench_keyword"
+path = "src/bin/bench_keyword.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "bench_gpu_hints"
 path = "src/bin/bench_gpu_hints.rs"
 required-features = ["gpu", "cli"]
@@ -65,6 +70,11 @@ required-features = ["gpu", "cli"]
 [[test]]
 name = "hint_file_e2e_test"
 path = "tests/hint_file_e2e_test.rs"
+required-features = ["cli", "logging"]
+
+[[test]]
+name = "keyword_e2e_test"
+path = "tests/keyword_e2e_test.rs"
 required-features = ["cli", "logging"]
 
 [dependencies]
