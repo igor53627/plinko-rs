@@ -1,21 +1,41 @@
-//! GPU-accelerated hint generation using CUDA.
+//! Experimental GPU/CPU throughput benchmark (NOT Plinko PIR hints).
 //!
-//! This module provides a `GpuHintGenerator` that uses CUDA kernels to parallelize
-//! hint computation across GPU threads. Each thread computes one hint's parity.
+//! This module benchmarks ChaCha12 Swap-or-Not parity computation across GPU
+//! (`GpuHintGenerator`, requires `--features cuda`) and CPU (`CpuHintGenerator`)
+//! threads. It does **not** compute valid Plinko hints: there is no PMNS tree,
+//! no backup hints, and no full iPRF inverse (see `docs/trust_model.md`).
 //!
 //! # Requirements
 //!
-//! - CUDA toolkit installed (nvcc in PATH)
-//! - NVIDIA GPU with compute capability >= 8.0 (A100, H100, H200)
-//! - Build with `--features cuda`
+//! - CPU baseline: `--features gpu`
+//! - CUDA kernel: CUDA toolkit (`nvcc` in PATH), NVIDIA GPU with compute
+//!   capability >= 8.0 (A100, H100, H200), and `--features cuda`
 //!
 //! # Example
 //!
-//! ```ignore
-//! use plinko::gpu::GpuHintGenerator;
+//! ```
+//! use plinko::gpu::{CpuHintGenerator, CpuHintInput};
+//! use plinko::schema40::ENTRY_SIZE;
 //!
-//! let generator = GpuHintGenerator::new(0)?;  // GPU device 0
-//! let hints = generator.generate_hints(&database, &block_keys, &subsets)?;
+//! let num_entries = 16u64;
+//! let chunk_size = 4u64;
+//! let set_size = 4u64;
+//! let total_hints = 2u32;
+//! let entries = vec![0u8; num_entries as usize * ENTRY_SIZE];
+//! let block_keys = vec![[0u32; 8]; set_size as usize];
+//! let hint_subsets = vec![0x0Fu8; total_hints as usize];
+//!
+//! let generator = CpuHintGenerator::new();
+//! let hints = generator.generate_hints(CpuHintInput {
+//!     entries: &entries,
+//!     block_keys: &block_keys,
+//!     hint_subsets: &hint_subsets,
+//!     num_entries,
+//!     chunk_size,
+//!     set_size,
+//!     total_hints,
+//! });
+//! assert_eq!(hints.len(), total_hints as usize);
 //! ```
 
 #[cfg(feature = "cuda")]
@@ -27,9 +47,9 @@ use std::sync::Arc;
 
 use crate::schema40::ENTRY_SIZE;
 
-/// Plinko parameters for GPU kernel
-#[cfg(feature = "cuda")]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+/// Parameters passed to the GPU benchmark kernel (`#[repr(C)]`, 40 bytes).
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "cuda", derive(Pod, Zeroable))]
 #[repr(C)]
 pub struct PlinkoParams {
     pub num_entries: u64,
@@ -44,9 +64,9 @@ pub struct PlinkoParams {
 #[cfg(feature = "cuda")]
 unsafe impl DeviceRepr for PlinkoParams {}
 
-/// iPRF key for one block (256-bit ChaCha key as 8 × u32)
-#[cfg(feature = "cuda")]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+/// 256-bit ChaCha key for one block (`#[repr(C)]`, 32 bytes).
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "cuda", derive(Pod, Zeroable))]
 #[repr(C)]
 pub struct IprfBlockKey {
     pub key: [u32; 8],
@@ -55,9 +75,9 @@ pub struct IprfBlockKey {
 #[cfg(feature = "cuda")]
 unsafe impl DeviceRepr for IprfBlockKey {}
 
-/// Hint output (48-byte parity to cover full 40B entry + 8B padding for alignment)
-#[cfg(feature = "cuda")]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+/// Benchmark parity output (48 bytes: 40-byte entry parity + 8 bytes of alignment padding).
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "cuda", derive(Pod, Zeroable))]
 #[repr(C)]
 pub struct HintOutput {
     pub parity: [u8; 48],
@@ -66,7 +86,33 @@ pub struct HintOutput {
 #[cfg(feature = "cuda")]
 unsafe impl DeviceRepr for HintOutput {}
 
-/// GPU hint generator using CUDA
+/// GPU throughput benchmark runner using CUDA (does not compute Plinko hints).
+///
+/// # Example
+///
+/// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use plinko::gpu::{GpuHintGenerator, IprfBlockKey, PlinkoParams};
+/// use plinko::schema40::ENTRY_SIZE;
+///
+/// let generator = GpuHintGenerator::new(0)?;
+/// let params = PlinkoParams {
+///     num_entries: 16,
+///     chunk_size: 4,
+///     set_size: 4,
+///     lambda: 1,
+///     total_hints: 2,
+///     blocks_per_hint: 2,
+///     hint_start_offset: 0,
+/// };
+/// let entries = vec![0u8; params.num_entries as usize * ENTRY_SIZE];
+/// let block_keys = vec![IprfBlockKey { key: [0u32; 8] }; params.set_size as usize];
+/// let hint_subsets = vec![0x0Fu8; params.total_hints as usize];
+/// let hints = generator.generate_hints(&entries, &block_keys, &hint_subsets, params)?;
+/// assert_eq!(hints.len(), params.total_hints as usize);
+/// # Ok(())
+/// # }
+/// ```
 #[cfg(feature = "cuda")]
 pub struct GpuHintGenerator {
     device: Arc<CudaDevice>,
@@ -129,7 +175,7 @@ impl GpuHintGenerator {
     ///
     /// # Returns
     ///
-    /// Vector of hint parities (total_hints × 32 bytes)
+    /// Vector of benchmark parities (`total_hints` × 48 bytes; 40-byte parity + 8-byte padding)
     pub fn generate_hints(
         &self,
         entries: &[u8],
@@ -218,11 +264,7 @@ impl GpuHintGenerator {
             .iter()
             .map(|bk| {
                 let mut prp_key = [0u32; 8];
-                // Use a simple CPU-side implementation of the same SHA-256 derivation
-                // In production, we would use a proper crypto crate, but for this PR
-                // we'll just use the block key directly if it's already a PRP key,
-                // or implement the derivation if needed.
-                // Looking at the CUDA kernel, it was SHA256(key || "prp").
+                // Derive PRP key with SHA-256(key || "prp") to match the CUDA benchmark kernel.
 
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
@@ -663,12 +705,11 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "cuda")]
     #[test]
     fn test_params_layout() {
-        // Verify struct sizes match CUDA kernel expectations
-        assert_eq!(std::mem::size_of::<PlinkoParams>(), 32);
+        // Verify struct sizes match CUDA kernel expectations (plinko/cuda/hint_kernel.cu)
+        assert_eq!(std::mem::size_of::<PlinkoParams>(), 40);
         assert_eq!(std::mem::size_of::<IprfBlockKey>(), 32); // ChaCha: 8 × u32
-        assert_eq!(std::mem::size_of::<HintOutput>(), 32);
+        assert_eq!(std::mem::size_of::<HintOutput>(), 48); // 40B parity + 8B alignment padding
     }
 }
