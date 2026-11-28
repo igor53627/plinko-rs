@@ -76,11 +76,11 @@
 
 use super::{
     block_iprfs, CacheEntry, Client, HintSlot, InFlight, PreparedQuery, ProtocolError,
-    ProtocolParams, CLIENT_CACHED_PMNS_LEVELS,
+    ProtocolParams, CLIENT_CACHED_PMNS_LEVELS, PARALLEL_QUERY_MIN_BLOCKS,
 };
 use crate::checked_io::{u32_at, u64_at, HashingReader, HashingWriter, TrailerError};
 use crate::hints::{self, HintFileError, HintHeader, HintSet};
-use crate::iprf::{Iprf, PrfKey128};
+use crate::iprf::{Iprf, PrfKey128, SwapOrNotSr};
 use crate::subsets::{SubsetPrf, INVALID_CUTOFF};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -178,7 +178,7 @@ impl From<TrailerError> for ClientStateError {
 
 /// Worst-case hashbrown bucket table + control bytes (7/8 load factor, power-of-two
 /// buckets, plus a 64-byte trailing SIMD control group bound) for `count` entries.
-fn hashmap_table_bytes<K, V>(count: usize) -> Option<usize> {
+pub(crate) fn hashmap_table_bytes<K, V>(count: usize) -> Option<usize> {
     if count == 0 {
         return Some(0);
     }
@@ -599,14 +599,35 @@ impl Client {
                     "client state exceeds memory budget",
                 ))?;
         let build_query_temp: usize = if num_in_flight > 0 {
+            let half: usize = params.num_blocks / 2;
+            // Inside `try_build_query`, live buffers during `Iprf::forward_many` are:
+            // - `select_values: Vec<u32>` (`num_blocks`)
+            // - `query_iprfs: Vec<&Iprf>` (`<= half`)
+            // - `Iprf::forward_many` scratch across `<= half` iPRFs: `prps: Vec<&SwapOrNotSr>`,
+            //   `vals: Vec<u64>`, and either `active: Vec<usize>` or the output `Vec<u64>`
+            // - parallel `out: Vec<u64>` (`<= half`) on native targets when `half >= PARALLEL_QUERY_MIN_BLOCKS`
+            let forward_many_per_iprf: usize = std::mem::size_of::<&SwapOrNotSr>()
+                .checked_add(std::mem::size_of::<u64>())
+                .and_then(|v| {
+                    v.checked_add(std::mem::size_of::<usize>().max(std::mem::size_of::<u64>()))
+                })
+                .ok_or(ClientStateError::Invalid(
+                    "client state exceeds memory budget",
+                ))?;
+            let parallel_out_bytes: usize =
+                if !cfg!(target_arch = "wasm32") && half >= PARALLEL_QUERY_MIN_BLOCKS {
+                    half.checked_mul(std::mem::size_of::<u64>()).ok_or(
+                        ClientStateError::Invalid("client state exceeds memory budget"),
+                    )?
+                } else {
+                    0
+                };
             params
                 .num_blocks
                 .checked_mul(std::mem::size_of::<u32>())
-                .and_then(|v| {
-                    v.checked_add(
-                        (params.num_blocks / 2).checked_mul(std::mem::size_of::<&Iprf>())?,
-                    )
-                })
+                .and_then(|v| v.checked_add(half.checked_mul(std::mem::size_of::<&Iprf>())?))
+                .and_then(|v| v.checked_add(half.checked_mul(forward_many_per_iprf)?))
+                .and_then(|v| v.checked_add(parallel_out_bytes))
                 .ok_or(ClientStateError::Invalid(
                     "client state exceeds memory budget",
                 ))?

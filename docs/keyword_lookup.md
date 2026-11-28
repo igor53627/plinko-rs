@@ -304,7 +304,108 @@ Notice that packing `b = 4` slots per bucket shrinks the number of PIR entries
 by `3.6x`, which roughly **halves online upload and `HintInit` CPU** relative
 to the 40-byte index-only baseline, while backup hints scale linearly with
 `Q * record_size` (using `b = 2` or a smaller session budget `Q` halves backup
-memory when RAM is tighter than upload).
+memory when RAM is tighter than upload). For wall-clock measurements of the
+1M, 10M, and 100M EOA rows (including `b = 4` vs `b = 2` on 100M keys), see
+[Measured Benchmarks](#measured-benchmarks-bench_keyword-apple-m3-ultra) below.
+
+### Measured Benchmarks (`bench_keyword`, Apple M3 Ultra)
+
+Measured on Apple M3 Ultra (32 cores, `RUSTFLAGS="--cfg aes_armv8"`, release
+build, `v0.4.0`) with `key_size = 20 B` and `tag_size = 8 B` (`false_match`
+bound `4.88e-19` for `b = 4`, `2.71e-19` for `b = 2`). All runs built with
+**zero stash** (`0` unplaceable keys) and verified every PIR lookup and
+post-delta lookup against plaintext `KvScfTable::get`.
+
+Reproduce:
+
+```bash
+RUSTFLAGS="--cfg aes_armv8" cargo build --release -p plinko --bin bench_keyword
+./target/release/bench_keyword --num-keys 100000000 --key-size 20 --value-size 24 \
+  --tag-size 8 --bucket-size 4 --load 0.85 --kappa 100 --query-budget 4096
+```
+
+#### Scaling 1M to 10M keys (`b = 4`, `Q = 1024`, 32T)
+
+```text
++-----------------------------------+-------------------+-------------------+-------------------+-------------------+
+| Metric (key=20B, tag=8B, Q=1024)  | 1M default        | 1M compact EOA    | 10M default       | 10M high-sec      |
+|                                   | val=32B, l=0.90   | val=24B, l=0.85   | val=32B, l=0.90   | val=32B, l=0.90   |
+|                                   | kappa=64          | kappa=64          | kappa=64          | kappa=100         |
++-----------------------------------+-------------------+-------------------+-------------------+-------------------+
+| Buckets / segment (record_size)   | 138,889 (160 B)   | 147,059 (128 B)   | 1,388,889 (160 B) | 1,388,889 (160 B) |
+| DB size (database.bin)            | 42.39 MiB         | 35.90 MiB         | 423.86 MiB        | 423.86 MiB        |
+| Build (1T, 0 stash)               | 318.9 ms (3.14M/s)| 279.5 ms (3.58M/s)| 4.09 s (2.44M/s)  | 4.09 s (2.45M/s)  |
+| Evictions (max / tail p99)        | 43 / 19           | 20 / 9            | 52 / 20           | 52 / 20           |
+| Plaintext lookup (100k, 50/50)    | 35.2 ms (2.84M/s) | 32.5 ms (3.08M/s) | 41.4 ms (2.42M/s) | 41.5 ms (2.41M/s) |
+| Live update / delete (1k ops)     | 0.48 / 0.39 ms    | 0.45 / 0.35 ms    | 0.63 / 0.53 ms    | 0.63 / 0.53 ms    |
+| Live insert (1k ops, deltas/op)   | 1.50 ms (3.79)    | 0.83 ms (1.90)    | 2.02 ms (3.85)    | 2.04 ms (3.85)    |
+| 2-seg FlatB HintInit (32T)        | 53.38 ms          | 47.90 ms          | 313.24 ms         | 539.32 ms         |
+| Hints (2 segments)                | 2.89 MiB          | 2.31 MiB          | 5.37 MiB          | 5.59 MiB          |
+| Upload L0 (2 segments)            | 1.19 KiB          | 1.26 KiB          | 3.64 KiB          | 3.64 KiB          |
+| Online PIR (prep / server / fin)  | 107 / 52 / 3.2 us | 92 / 30 / 2.9 us  | 212 / 176 / 8.8us | 363 / 287 / 9.4us |
+| Apply 100 deltas (2 segs, 32T)    | 1.49 ms           | 1.36 ms           | 1.48 ms           | 1.44 ms           |
++-----------------------------------+-------------------+-------------------+-------------------+-------------------+
+```
+
+Additional 1M / 10M points:
+- 1M high-sec (`val = 32 B`, `load = 0.90`, `kappa = 100`, `Q = 1024`):
+  `HintInit = 107.84 ms`, `hints = 3.00 MiB`, `L0 upload = 1.19 KiB`,
+  `prep = 107.1 us`, `server = 39.8 us`, `finish = 3.3 us`,
+  `apply 100 deltas = 1.57 ms`.
+- 10M compact EOA (`val = 24 B`, `load = 0.85`, `kappa = 64`, `Q = 1024`):
+  `DB = 359.03 MiB`, `build = 3.69 s` (`2.71 Mkeys/s`), `HintInit = 249.33 ms`,
+  `hints = 4.31 MiB`, `L0 upload = 3.86 KiB`, `apply 100 deltas = 1.41 ms`.
+- Writing `database.bin` to local NVMe measured `4.62 ms` (`9.62 GB/s`) at 1M
+  and `47.81 ms` (`9.30 GB/s`) at 10M.
+
+#### 100M EOA profiles: `b = 4` (`load = 0.85`) vs `b = 2` (`load = 0.80`)
+
+All 100M runs use `key_size = 20 B`, `tag_size = 8 B`, `kappa = 100`
+(`140.2` bits of session security for `b = 4`), `Q = 4096`, and 32 threads:
+
+```text
++-----------------------------------+-------------------+-------------------+-------------------+-------------------+
+| Metric (100M EOA, kappa=100,      | 24 B slot (v=16B) | 24 B slot (v=16B) | 32 B slot (v=24B) | 32 B slot (v=24B) |
+| Q=4096, 32T)                      | b=4, load=0.85    | b=2, load=0.80    | b=4, load=0.85    | b=2, load=0.80    |
++-----------------------------------+-------------------+-------------------+-------------------+-------------------+
+| Bucket size (record_size)         | 96 B              | 48 B (0.50x)      | 128 B             | 64 B (0.50x)      |
+| Buckets / segment                 | 14,705,883        | 31,250,000 (2.13x)| 14,705,883        | 31,250,000 (2.13x)|
+| DB size (stream)                  | 2.63 GiB          | 2.79 GiB (+6.2%)  | 3.51 GiB          | 3.73 GiB (+6.2%)  |
+| Build 100M keys (1T, 0 stash)     | 38.89 s (2.57M/s) | 49.60 s (2.02M/s) | 39.42 s (2.54M/s) | 46.00 s (2.17M/s) |
+| Evictions (max / tail p99)        | 35 / 9            | 98 / 32           | 35 / 9            | 98 / 32           |
+| Plaintext lookup (100k, 50/50)    | 41.99 ms (2.38M/s)| 42.57 ms (2.35M/s)| 42.93 ms (2.33M/s)| 48.42 ms (2.07M/s)|
+| Live update / delete (1k ops)     | 0.82 / 0.71 ms    | 0.79 / 0.59 ms    | 0.86 / 0.73 ms    | 0.90 / 0.75 ms    |
+| Live insert (1k ops, deltas/op)   | 1.37 ms (1.95)    | 2.59 ms (4.96)    | 1.42 ms (1.95)    | 3.04 ms (4.96)    |
+| 2-seg FlatB HintInit (32T)        | 3.87 s            | 6.44 s (+66.5%)   | 3.71 s            | 5.81 s (+56.8%)   |
+| Hints (2 segments)                | 8.90 MiB          | 6.72 MiB (-24.5%) | 11.81 MiB         | 8.85 MiB (-25.1%) |
+|   per segment                     | 4.45 MiB          | 3.36 MiB          | 5.91 MiB          | 4.43 MiB          |
+| Upload L0 (2 segments)            | 21.04 KiB         | 24.22 KiB (+15.1%)| 21.04 KiB         | 24.22 KiB (+15.1%)|
+| Download L0 (2 segments)          | 384 B             | 192 B (-50.0%)    | 512 B             | 256 B (-50.0%)    |
+| Online PIR (prep / server / fin)  | 1.36 / 0.81 / 17u | 1.63 / 0.81 / 36u | 1.36 / 0.91 / 17u | 1.63 / 0.54 / 36u |
+|   total CPU per private lookup    | 2.19 ms           | 2.47 ms           | 2.29 ms           | 2.20 ms           |
+| Apply 100 deltas (2 segs, 32T)    | 1.61 ms           | 1.65 ms           | 1.51 ms           | 1.99 ms           |
++-----------------------------------+-------------------+-------------------+-------------------+-------------------+
+```
+
+Key observations from the measured runs:
+- **Exact geometry match:** measured `DB`, `hints`, and `L0 upload` on both
+  100M `b = 4` profiles match the analytical table (`2.63 / 3.51 GiB`,
+  `8.90 / 11.81 MiB`, `21.04 KiB`).
+- **`HintInit` at 100M is AES/PRG-bound per bucket:** `b = 4` takes `3.71-3.87 s`
+  on 32 cores (versus the `~2.6-2.9 s` bandwidth-weighted extrapolation), and
+  `b = 2` takes `5.81-6.44 s` (`+57%` to `+67%`) because the bucket count grows
+  `2.13x`.
+- **`b = 4` vs `b = 2` tradeoff:** `b = 2` (`load = 0.80`) shrinks client hints
+  by **~25%** (`6.72 MiB` / `8.85 MiB`) and halves reply download (`192-256 B`)
+  at nearly identical total online CPU (`2.20-2.47 ms`), while `b = 4`
+  (`load = 0.85`) cuts live-insert delta amplification by **2.5x** (`1.95` vs
+  `4.96` deltas/insert), keeps `L0 upload` 15% smaller, and runs `HintInit`
+  ~1.6x faster.
+- **Flat measured delta latency across 1M-100M:** `bench_keyword` calls
+  `apply_deltas_batch` across both segments (`~50` deltas per segment on 32
+  threads); although FlatB delta work scales with hint count (`O(sqrt(N))`),
+  thread-scope overhead dominates at this batch size, keeping measured wall
+  time flat at `1.36-1.99 ms` per 100 deltas from 1M through 100M keys.
 
 ### Simulation Reference For `(d, b, load)`
 
