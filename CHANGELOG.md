@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Unified `plinko::db::derive_plinko_params` and `cost_estimate` on `plinko::protocol::default_block_size` (and even `c >= 2`, matching `ProtocolParams::new`, `plinko_hints`, and the client) and removed the separate second geometry from `cost_estimate` (`TASK-21`).
 - Marked `plinko::gpu`, `bench_gpu_hints`, `plinko/cuda/hint_kernel.cu`, and `docs/gpu_benchmark_commands.md` consistently as a synthetic throughput benchmark (not Plinko hints), removing remaining "production run" labels (`TASK-21`).
+- Archived closed backlog tasks via `backlog cleanup` (`TASK-15`).
 
 ### Fixed
 
