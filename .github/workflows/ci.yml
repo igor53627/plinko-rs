@@ -58,6 +58,7 @@ jobs:
           workspaces: |
             plinko
             scripts/wasm_multilevel_smoke
+            scripts/wasm_keyword_smoke
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -73,6 +74,11 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/scripts/wasm_multilevel_smoke/target
         run: ./scripts/test_wasm_multilevel.sh
+
+      - name: Run plinko::keyword KV-SCF WASM E2E smoke test
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/scripts/wasm_keyword_smoke/target
+        run: ./scripts/test_wasm_keyword.sh
 
   clippy:
     name: Clippy
@@ -108,3 +114,4 @@ jobs:
         run: |
           cargo fmt --manifest-path plinko/Cargo.toml -- --check
           cargo fmt --manifest-path scripts/wasm_multilevel_smoke/Cargo.toml -- --check
+          cargo fmt --manifest-path scripts/wasm_keyword_smoke/Cargo.toml -- --check

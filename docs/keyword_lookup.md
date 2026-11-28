@@ -575,6 +575,7 @@ imports on `wasm32-unknown-unknown`):
    `plinko/src/keyword.rs` + `plinko/src/keyword/client.rs`): single-file
    `database.bin` and 2-segment flows through `plinko_hints` +
    `protocol::Client`, `MultiLevelClient` policies/updates/stash/checkpoints/WAL
-   recovery, and `wasm32-unknown-unknown --no-default-features` compilation.
+   recovery, and zero-import `wasm32-unknown-unknown --no-default-features`
+   execution (`./scripts/test_wasm_keyword.sh`).
 4. Documentation sync: `docs/data_format.md`, `docs/trust_model.md`,
    `docs/README.md`, `README.md`, and `CHANGELOG.md`.
