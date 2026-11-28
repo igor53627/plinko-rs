@@ -13,8 +13,8 @@ use crate::multilevel::{
     PendingMultiLevelQuery,
 };
 use crate::protocol::{
-    Client as ProtocolClient, ClientStateError, PreparedQuery, ProtocolError, ProtocolFinishPlan,
-    Query as ProtocolQuery, Response as ProtocolResponse,
+    hashmap_table_bytes, Client as ProtocolClient, ClientStateError, PreparedQuery, ProtocolError,
+    ProtocolFinishPlan, Query as ProtocolQuery, Response as ProtocolResponse,
 };
 use rand::Rng;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2221,17 +2221,18 @@ impl<B: IndexPirClient> KeywordClient<B> {
             state_epoch,
         )?;
 
-        // Read runtime-stash (charge payload + HashMap/Vec per-entry overhead).
+        // Read runtime-stash (charge HashMap bucket table capacity + heap key/value payloads).
         let mut len_buf: [u8; 4] = [0u8; 4];
         inp.read_hashed(&mut len_buf)?;
         let stash_len: usize = u32::from_le_bytes(len_buf) as usize;
-        let stash_entry_bytes: usize = std::mem::size_of::<((usize, Vec<u8>), Vec<u8>)>()
-            .checked_add(16)
-            .and_then(|v| v.checked_add(tag_size))
-            .and_then(|v| v.checked_add(value_size))
+        let stash_table_bytes: usize = hashmap_table_bytes::<(usize, Vec<u8>), Vec<u8>>(stash_len)
+            .ok_or(KeywordClientError::Checkpoint("stash size overflow"))?;
+        let stash_payload_per_entry: usize = tag_size
+            .checked_add(value_size)
             .ok_or(KeywordClientError::Checkpoint("stash entry size overflow"))?;
         let stash_total: usize = stash_len
-            .checked_mul(stash_entry_bytes)
+            .checked_mul(stash_payload_per_entry)
+            .and_then(|v| v.checked_add(stash_table_bytes))
             .ok_or(KeywordClientError::Checkpoint("stash size overflow"))?;
         charge(stash_total)?;
 
@@ -2256,7 +2257,7 @@ impl<B: IndexPirClient> KeywordClient<B> {
             }
         }
 
-        // Read keyword bucket caches (charge payload + HashMap/Vec per-entry overhead).
+        // Read keyword bucket caches (charge HashMap bucket table capacity + bucket payloads).
         let rec: usize = spec.record_size();
         let mut bucket_cache: [HashMap<usize, Vec<u8>>; NUM_SEGMENTS] =
             [HashMap::new(), HashMap::new()];
@@ -2268,12 +2269,11 @@ impl<B: IndexPirClient> KeywordClient<B> {
                     "non-empty bucket cache with CachePolicy::Off",
                 ));
             }
-            let entry_bytes: usize = std::mem::size_of::<(usize, Vec<u8>)>()
-                .checked_add(16)
-                .and_then(|v| v.checked_add(rec))
-                .ok_or(KeywordClientError::Checkpoint("cache entry size overflow"))?;
+            let cache_table_bytes: usize = hashmap_table_bytes::<usize, Vec<u8>>(cache_len)
+                .ok_or(KeywordClientError::Checkpoint("cache size overflow"))?;
             let total_bytes: usize = cache_len
-                .checked_mul(entry_bytes)
+                .checked_mul(rec)
+                .and_then(|v| v.checked_add(cache_table_bytes))
                 .ok_or(KeywordClientError::Checkpoint("cache size overflow"))?;
             charge(total_bytes)?;
             cache
@@ -4013,6 +4013,224 @@ mod tests {
                 ClientStateError::Invalid("client state exceeds memory budget")
             ),
             "unexpected error: {err:?}"
+        );
+
+        // 3) Outer checkpoint HashMap budgets: a 1-entry stash + 1-entry bucket_cache per segment
+        // must charge the reserved HashMap bucket table capacity, not just naive per-entry size.
+        let mut rng = ChaCha20Rng::seed_from_u64(99);
+        let spec_map = KeywordTableSpec::new(16, 1, 4, 4, Some(8), [0x33; 32], 0, 0).unwrap();
+        let (table_map, _) = KvScfTable::build(
+            spec_map.clone(),
+            [(0x01, &1u64.to_le_bytes()[..], &[7u8; 4][..])],
+        )
+        .unwrap();
+        let ml_params_map = MultiLevelParams::custom(
+            16,
+            spec_map.record_size(),
+            vec![LevelSpec {
+                block_size: 4,
+                num_blocks: 4,
+                num_primary: 32,
+                num_backup: 16,
+                backend: LevelBackend::FlatAes,
+            }],
+        )
+        .unwrap();
+        let c0_m = MultiLevelClient::hint_init(
+            ml_params_map.clone(),
+            &seeds[0],
+            table_map.segment_bytes(0).unwrap(),
+            1,
+        )
+        .unwrap();
+        let c1_m = MultiLevelClient::hint_init(
+            ml_params_map.clone(),
+            &seeds[1],
+            table_map.segment_bytes(1).unwrap(),
+            1,
+        )
+        .unwrap();
+        let mut kw_map =
+            KeywordClient::new(spec_map.clone(), [c0_m, c1_m], CachePolicy::LocalHit).unwrap();
+        // Populate 1 cached bucket in each segment via a real lookup.
+        let LookupPlan::Query { query, pending } = kw_map
+            .prepare_lookup(0x01, &1u64.to_le_bytes(), &mut rng)
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        let ans = KeywordLookupAnswer {
+            table_epoch: 0,
+            state_epoch: 0,
+            segments: [
+                MultiLevelServer::answer(
+                    table_map.segment_bytes(0).unwrap(),
+                    &ml_params_map,
+                    &query.segments[0],
+                    0,
+                )
+                .unwrap(),
+                MultiLevelServer::answer(
+                    table_map.segment_bytes(1).unwrap(),
+                    &ml_params_map,
+                    &query.segments[1],
+                    0,
+                )
+                .unwrap(),
+            ],
+        };
+        kw_map.finish_lookup(&pending, &ans, &mut rng).unwrap();
+        // Also populate 1 runtime-stash entry.
+        kw_map
+            .apply_epoch_update(
+                &KeywordEpochUpdate {
+                    table_epoch: 0,
+                    from_state_epoch: 0,
+                    to_state_epoch: 1,
+                    segment_deltas: [vec![], vec![]],
+                    stash_ops: vec![StashOp::Insert(StashEntry {
+                        bucket_seg0: 0,
+                        tag: vec![0xAA; 4],
+                        value: vec![0xBB; 4],
+                    })],
+                },
+                1,
+            )
+            .unwrap();
+        let ckpt_map: Vec<u8> = kw_map.to_bytes().unwrap();
+        let b0_len: usize = kw_map.backends()[0].to_bytes().unwrap().len();
+        let b1_len: usize = kw_map.backends()[1].to_bytes().unwrap().len();
+        let (_, r0): (MultiLevelClient, usize) = MultiLevelClient::from_bytes_with_limit_accounted(
+            &kw_map.backends()[0].to_bytes().unwrap(),
+            &seeds[0],
+            usize::MAX,
+        )
+        .unwrap();
+        let (_, r1): (MultiLevelClient, usize) = MultiLevelClient::from_bytes_with_limit_accounted(
+            &kw_map.backends()[1].to_bytes().unwrap(),
+            &seeds[1],
+            usize::MAX,
+        )
+        .unwrap();
+        let rec: usize = spec_map.record_size();
+        // Old naive per-entry budget (no HashMap bucket table allocation overhead):
+        let naive_stash: usize = std::mem::size_of::<((usize, Vec<u8>), Vec<u8>)>() + 16 + 4 + 4;
+        let naive_cache: usize = (std::mem::size_of::<(usize, Vec<u8>)>() + 16 + rec) * 2;
+        let naive_budget: usize = b0_len + b1_len + r0 + r1 + naive_stash + naive_cache;
+        // Exact table-inclusive budget:
+        let exact_stash: usize =
+            hashmap_table_bytes::<(usize, Vec<u8>), Vec<u8>>(1).unwrap() + 4 + 4;
+        let exact_cache: usize = (hashmap_table_bytes::<usize, Vec<u8>>(1).unwrap() + rec) * 2;
+        let exact_budget: usize = b0_len + b1_len + r0 + r1 + exact_stash + exact_cache;
+        assert!(
+            exact_budget > naive_budget,
+            "table-inclusive budget ({exact_budget}) must exceed naive per-entry budget ({naive_budget})"
+        );
+        assert!(
+            KeywordClient::<MultiLevelClient>::read_checkpoint_with_budget(
+                ckpt_map.as_slice(),
+                &seeds,
+                naive_budget,
+            )
+            .is_err(),
+            "naive per-entry budget must be rejected once HashMap bucket capacity is charged"
+        );
+        KeywordClient::<MultiLevelClient>::read_checkpoint_with_budget(
+            ckpt_map.as_slice(),
+            &seeds,
+            exact_budget + 1024, // headroom for MultiLevelClient temporary decode buffers
+        )
+        .expect("budget covering HashMap bucket capacity + backend decode must succeed");
+
+        // 4) ProtocolClient rebuild budget: an in-flight query over 128 blocks (half = 64,
+        // crossing PARALLEL_QUERY_MIN_BLOCKS on native targets) must charge `Iprf::forward_many`
+        // scratch and parallel `out` in `read_state_with_limit`.
+        let num_blocks_big: usize = 128;
+        let block_size_big: usize = 4;
+        let num_entries_big: usize = num_blocks_big * block_size_big;
+        let rec_big: usize = 8;
+        let params_big =
+            ProtocolParams::new(num_entries_big, rec_big, Some(block_size_big), 4, None).unwrap();
+        let db_big: Vec<u8> = vec![0x11; num_entries_big * rec_big];
+        let mut proto_client =
+            ProtocolClient::offline_init(params_big.clone(), master_seed, query_seed, 0, &db_big)
+                .unwrap();
+        let _pq = proto_client.prepare_query(0).unwrap();
+        let mut state_bytes: Vec<u8> = Vec::new();
+        proto_client.write_state(&mut state_bytes).unwrap();
+        // Find the exact minimum accepted budget via binary search, and verify it exceeds the
+        // old pre-fix formula that omitted `Iprf::forward_many` scratch + parallel `out`.
+        let mut lo: usize = 0;
+        let mut hi: usize = 4 * 1024 * 1024;
+        while lo < hi {
+            let mid: usize = lo + (hi - lo) / 2;
+            if ProtocolClient::read_state_with_limit(
+                master_seed,
+                query_seed,
+                state_bytes.as_slice(),
+                mid,
+            )
+            .is_ok()
+            {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let min_in_flight_budget: usize = lo;
+        // Compare against the same client with 0 queries in flight.
+        let proto_idle =
+            ProtocolClient::offline_init(params_big, master_seed, query_seed, 0, &db_big).unwrap();
+        let mut idle_bytes: Vec<u8> = Vec::new();
+        proto_idle.write_state(&mut idle_bytes).unwrap();
+        let mut lo_idle: usize = 0;
+        let mut hi_idle: usize = 4 * 1024 * 1024;
+        while lo_idle < hi_idle {
+            let mid: usize = lo_idle + (hi_idle - lo_idle) / 2;
+            if ProtocolClient::read_state_with_limit(
+                master_seed,
+                query_seed,
+                idle_bytes.as_slice(),
+                mid,
+            )
+            .is_ok()
+            {
+                hi_idle = mid;
+            } else {
+                lo_idle = mid + 1;
+            }
+        }
+        // Without `forward_many` scratch, `rebuild_temp` (~1.4 KiB) was smaller than
+        // `block_iprfs_temp` (order + 128 * 16 B = 2056 B), so the old peak was `lo_idle +
+        // in_flight_retained + pmns_cache_bytes + order_bytes`. With the fix, `rebuild_temp`
+        // strictly exceeds `block_iprfs_temp` by at least `1024` bytes on 64-bit native targets.
+        let half_big: usize = num_blocks_big / 2;
+        let block_keys_big: usize = num_blocks_big * 16;
+        let pmns_cache_big: usize =
+            num_blocks_big * ((1usize << 2) - 1) * std::mem::size_of::<u32>();
+        let prepared_one: usize = std::mem::size_of::<PreparedQuery>()
+            + num_blocks_big.div_ceil(8)
+            + half_big * std::mem::size_of::<u32>();
+        let old_build_temp: usize =
+            num_blocks_big * std::mem::size_of::<u32>() + half_big * std::mem::size_of::<usize>();
+        let forward_many_extra: usize = half_big
+            * (std::mem::size_of::<usize>()
+                + std::mem::size_of::<u64>()
+                + std::mem::size_of::<usize>().max(std::mem::size_of::<u64>()))
+            + if !cfg!(target_arch = "wasm32") {
+                half_big * std::mem::size_of::<u64>()
+            } else {
+                0
+            };
+        let new_rebuild_no_order: usize = prepared_one + old_build_temp + forward_many_extra;
+        assert!(
+            prepared_one + old_build_temp < block_keys_big && new_rebuild_no_order > block_keys_big,
+            "test geometry must make rebuild_temp dominate block_keys_big only with forward_many scratch"
+        );
+        assert!(
+            min_in_flight_budget
+                >= lo_idle + pmns_cache_big + (new_rebuild_no_order - block_keys_big),
+            "in-flight budget ({min_in_flight_budget}) must charge forward_many scratch + parallel out above idle ({lo_idle})"
         );
     }
 

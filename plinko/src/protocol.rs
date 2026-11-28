@@ -39,6 +39,7 @@ use std::fmt::{Display, Formatter};
 
 mod state;
 
+pub(crate) use state::hashmap_table_bytes;
 pub use state::{ClientStateError, CLIENT_STATE_MAGIC, CLIENT_STATE_VERSION};
 
 /// PMNS tree levels that the client keeps per block (see [`Iprf::with_cached_levels`]).
