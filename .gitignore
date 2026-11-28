@@ -1,4 +1,5 @@
 /target
+/scripts/wasm_*/target
 /data
 deltas/
 **/*.rs.bk

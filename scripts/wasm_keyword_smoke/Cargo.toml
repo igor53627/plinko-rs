@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "wasm_keyword_smoke"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+plinko = { path = "../../plinko", default-features = false }
+rand = { version = "0.8", default-features = false, features = ["alloc", "small_rng"] }
+rand_chacha = "0.3"
