@@ -1,7 +1,9 @@
-//! GPU Hint Generation Benchmark
+//! GPU Throughput Benchmark (NOT Plinko PIR hints)
 //!
-//! Benchmarks hint generation on GPU (H100/H200) vs CPU.
-//! Designed to run on Modal with synthetic datasets.
+//! Benchmarks ChaCha12 Swap-or-Not parity throughput on GPU (H100/H200) vs CPU.
+//! This binary does **not** compute valid Plinko hints: it uses public block
+//! keys, two fixed synthetic subsets, no PMNS tree, no backup hints, and no
+//! iPRF inverse (see `docs/trust_model.md`).
 //!
 //! Usage:
 //!   cargo run -p plinko --bin bench_gpu_hints --features cuda -- --db data/synthetic/database.bin
@@ -17,7 +19,11 @@ use std::time::Instant;
 use plinko::gpu::{GpuHintGenerator, IprfBlockKey, PlinkoParams};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Benchmark GPU hint generation")]
+#[command(
+    author,
+    version,
+    about = "GPU parity throughput benchmark (not Plinko hints)"
+)]
 struct Args {
     /// Path to database.bin (40-byte schema v3). Required unless --synthetic-entries is used.
     #[arg(long, required_unless_present = "synthetic_entries")]
@@ -31,8 +37,8 @@ struct Args {
     #[arg(long, default_value_t = 128)]
     lambda: u32,
 
-    /// Override chunk size (w). Default: derived from database size.
-    /// Mainnet value: 131072 (2^17)
+    /// Override chunk size (w). Default: derived via default_block_size.
+    /// Mainnet value: 65536 (2^16)
     #[arg(long)]
     chunk_size: Option<u64>,
 
@@ -54,12 +60,12 @@ struct Args {
     max_hints: Option<u32>,
 
     /// Override set size (c) to simulate larger database workload
-    /// Mainnet value: 16404
+    /// Mainnet value: 27988
     #[arg(long)]
     set_size: Option<u64>,
 
-    /// Output file path to save generated hints (binary format, 32 bytes per hint)
-    /// If specified, runs in production mode (1 iteration, saves output)
+    /// Output file path to save raw benchmark parities (binary format, 40 bytes per parity; not a Plinko hint file).
+    /// If specified, runs a single pass and saves output.
     #[arg(long)]
     output: Option<PathBuf>,
 
@@ -76,8 +82,9 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!("GPU Hint Generation Benchmark");
-    println!("==============================");
+    println!("GPU Throughput Benchmark (not Plinko hints)");
+    println!("===========================================");
+    println!("Note: Uses public synthetic block keys and fixed subsets; no PMNS, no backup hints, no iPRF inverse.");
     println!();
 
     // Load database or generate synthetic
@@ -109,10 +116,12 @@ fn main() -> Result<()> {
 
     // Use override chunk_size if provided, otherwise use derived value
     let (chunk_size, mut set_size) = if let Some(w) = args.chunk_size {
-        // Recalculate set_size for the overridden chunk_size
-        let mut c = num_entries.div_ceil(w);
-        c = c.div_ceil(4) * 4; // Round to multiple of 4
-        println!("  Using override chunk_size (mainnet params)");
+        // Recalculate set_size for the overridden chunk_size (even, >= 2)
+        let mut c = num_entries.div_ceil(w).max(2);
+        if c % 2 != 0 {
+            c = c.saturating_add(1);
+        }
+        println!("  Using override chunk_size");
         (w, c)
     } else {
         (chunk_size, set_size)
@@ -190,11 +199,11 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "cuda"))]
     let _hints_scale_factor = hints_scale_factor;
 
-    // Production mode check
-    let production_mode = args.output.is_some();
-    if production_mode {
+    // Single-pass output save mode (raw benchmark parities, not a Plinko hint file)
+    let save_output = args.output.is_some();
+    if save_output {
         println!(
-            "  PRODUCTION MODE: Will save hints to {:?}",
+            "  OUTPUT MODE: Will save raw benchmark parities (not Plinko hints) to {:?}",
             args.output.as_ref().unwrap()
         );
         println!(
@@ -232,13 +241,8 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    // Create fake hint subsets (for benchmarking, use random pattern)
-    // IMPORTANT: In production mode with distributed workers, we must ensure
-    // hint_subsets corresponds to the correct range.
-    // Ideally we would accept real subsets or generate them deterministically.
-    // For now, we generate synthetic subsets for range 0..total_hints, which
-    // is consistent with the GPU generating hints 0..total_hints locally.
-    // The GPU kernel will apply hint_start offset for the iPRF value.
+    // Create synthetic hint subsets for benchmarking (not Plinko PRF cutoffs).
+    // The GPU kernel adds hint_start_offset to hint_idx for the Swap-or-Not input.
     let subset_bytes_per_hint = (set_size as usize).div_ceil(8);
     let mut hint_subsets = vec![0u8; total_hints as usize * subset_bytes_per_hint];
 
@@ -284,10 +288,10 @@ fn main() -> Result<()> {
             hint_start_offset: hint_start, // Pass hint_start to kernel
         };
 
-        if production_mode {
-            // Production mode: single run, save output
+        if save_output {
+            // Single-pass benchmark run, save raw parities to disk
             println!(
-                "Generating {} hints (starting at {})...",
+                "Generating {} benchmark parities (starting at {})...",
                 total_hints, hint_start
             );
             println!("Calling GPU generate_hints...");

@@ -101,42 +101,29 @@ impl Database40 {
     }
 }
 
-/// Compute chunk and set sizes for partitioning a database of entries.
+/// Compute chunk (`w`) and set (`c`) sizes for partitioning a database of
+/// entries.
 ///
-/// `plinko/formal/specs/DbSpec.v` is a hand-written model of this function
-/// (integer arithmetic). No tool compares the model with this code.
+/// Uses [`crate::protocol::default_block_size`] for `w` and rounds `c` up to
+/// an even integer of at least 2, matching [`crate::protocol::ProtocolParams::new`].
+/// Returns `(1, 1)` when `db_entries == 0`.
 pub fn derive_plinko_params(db_entries: u64) -> (u64, u64) {
     if db_entries == 0 {
         return (1, 1);
     }
-    let target_chunk = isqrt(4u64.saturating_mul(db_entries));
-
-    let mut chunk_size = 1u64;
-    while chunk_size < target_chunk {
-        chunk_size = chunk_size.saturating_mul(2);
-    }
-
-    let mut set_size = db_entries.div_ceil(chunk_size);
-    set_size = set_size.div_ceil(4) * 4;
-    (chunk_size, set_size)
-}
-
-/// Integer square root: returns floor(sqrt(n))
-fn isqrt(n: u64) -> u64 {
-    if n <= 1 {
-        return n;
-    }
-    let bits = 64 - n.leading_zeros();
-    let shift = bits.div_ceil(2);
-    let mut x = 1u64 << shift;
-
-    loop {
-        let y = (x + n / x) / 2;
-        if y >= x {
-            return x;
+    let chunk_size = match usize::try_from(db_entries) {
+        Ok(n) => crate::protocol::default_block_size(n) as u64,
+        Err(_) => {
+            let raw = (db_entries as f64).sqrt().ceil() as u64;
+            raw.max(1).next_power_of_two()
         }
-        x = y;
+    };
+
+    let mut set_size = db_entries.div_ceil(chunk_size).max(2);
+    if set_size % 2 != 0 {
+        set_size = set_size.saturating_add(1);
     }
+    (chunk_size, set_size)
 }
 
 #[cfg(test)]
@@ -181,6 +168,30 @@ mod tests {
         assert_eq!((chunk, set), (1, 1));
     }
 
+    #[test]
+    fn derive_plinko_params_matches_protocol_params_and_mainnet() {
+        use crate::protocol::{default_block_size, ProtocolParams};
+
+        for n in [
+            1usize,
+            2,
+            15,
+            16,
+            17,
+            1000,
+            1024,
+            1025,
+            65_536,
+            1_834_095_877,
+        ] {
+            let (w, c) = derive_plinko_params(n as u64);
+            assert_eq!(w, default_block_size(n) as u64);
+            let params = ProtocolParams::new(n, DB_ENTRY_SIZE_V3, None, 1, None).unwrap();
+            assert_eq!((w, c), (params.block_size as u64, params.num_blocks as u64));
+        }
+        assert_eq!(derive_plinko_params(1_834_095_877), (65_536, 27_988));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             cases: 512,
@@ -194,20 +205,16 @@ mod tests {
             prop_assert!(chunk_size.is_power_of_two());
             prop_assert!(chunk_size >= 1);
 
-            let target = isqrt(4u64.saturating_mul(db_entries));
-            prop_assert!(chunk_size >= target);
-
-            let half_chunk = chunk_size / 2;
-            if half_chunk > 0 && target > 0 {
-                prop_assert!(half_chunk < target);
+            if let Ok(n) = usize::try_from(db_entries) {
+                prop_assert_eq!(chunk_size, crate::protocol::default_block_size(n) as u64);
             }
 
-            prop_assert!(set_size > 0);
-            prop_assert_eq!(set_size % 4, 0);
+            prop_assert!(set_size >= 2);
+            prop_assert_eq!(set_size % 2, 0);
 
-            let base_sets = db_entries.div_ceil(chunk_size);
+            let base_sets = db_entries.div_ceil(chunk_size).max(2);
             prop_assert!(set_size >= base_sets);
-            prop_assert!(set_size <= base_sets + 3);
+            prop_assert!(set_size <= base_sets + 1);
 
             let capacity = chunk_size.checked_mul(set_size).expect("overflow in capacity");
             prop_assert!(capacity >= db_entries);
@@ -220,15 +227,14 @@ mod tests {
             let n = 1u64 << exp;
             let (chunk, set) = derive_plinko_params(n);
             assert!(chunk.is_power_of_two());
-            assert!(set % 4 == 0);
+            assert!(set >= 2 && set % 2 == 0);
             assert!(chunk * set >= n);
         }
 
         for base in [15u64, 16, 17, 1023, 1024, 1025, 65535, 65536, 65537] {
             let (chunk, set) = derive_plinko_params(base);
-            let target = isqrt(4 * base);
             assert!(chunk.is_power_of_two());
-            assert!(chunk >= target);
+            assert!(set >= 2 && set % 2 == 0);
             assert!(chunk * set >= base);
         }
 
@@ -236,67 +242,8 @@ mod tests {
             let n = root * root;
             let (chunk, set) = derive_plinko_params(n);
             assert!(chunk.is_power_of_two());
+            assert!(chunk >= root);
             assert!(chunk * set >= n);
-        }
-    }
-
-    #[test]
-    fn test_isqrt() {
-        assert_eq!(isqrt(0), 0);
-        assert_eq!(isqrt(1), 1);
-        assert_eq!(isqrt(2), 1);
-        assert_eq!(isqrt(3), 1);
-        assert_eq!(isqrt(4), 2);
-        assert_eq!(isqrt(9), 3);
-        assert_eq!(isqrt(16), 4);
-        assert_eq!(isqrt(17), 4);
-        assert_eq!(isqrt(24), 4);
-        assert_eq!(isqrt(25), 5);
-        assert_eq!(isqrt(100), 10);
-        assert_eq!(isqrt(u64::MAX), 4294967295);
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig { cases: 1000, .. ProptestConfig::default() })]
-
-        #[test]
-        fn isqrt_property(n in 0u64..1_000_000_000_000u64) {
-            let s = isqrt(n);
-            prop_assert!(s.saturating_mul(s) <= n);
-            let s_plus_1_sq = (s + 1).saturating_mul(s + 1);
-            prop_assert!(n < s_plus_1_sq || s_plus_1_sq == u64::MAX);
-        }
-    }
-
-    #[test]
-    fn derive_plinko_params_matches_f64_reference() {
-        fn derive_f64(db_entries: u64) -> (u64, u64) {
-            if db_entries == 0 {
-                return (1, 1);
-            }
-            let target_chunk = (2.0 * (db_entries as f64).sqrt()) as u64;
-            let mut chunk_size = 1u64;
-            while chunk_size < target_chunk {
-                chunk_size *= 2;
-            }
-            let mut set_size = (db_entries as f64 / chunk_size as f64).ceil() as u64;
-            set_size = set_size.div_ceil(4) * 4;
-            (chunk_size, set_size)
-        }
-
-        for n in 1..10000u64 {
-            let (chunk_int, set_int) = derive_plinko_params(n);
-            let (chunk_f64, set_f64) = derive_f64(n);
-            assert_eq!(
-                (chunk_int, set_int),
-                (chunk_f64, set_f64),
-                "Mismatch at n={}: int=({}, {}), f64=({}, {})",
-                n,
-                chunk_int,
-                set_int,
-                chunk_f64,
-                set_f64
-            );
         }
     }
 }

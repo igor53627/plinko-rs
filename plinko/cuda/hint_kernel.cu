@@ -1,19 +1,20 @@
 /**
- * GPU Hint Generation Kernel for Plinko PIR
+ * GPU Throughput Benchmark Kernel (NOT Plinko PIR hints)
+ *
+ * This CUDA kernel benchmarks ChaCha12 Swap-or-Not parity computation on GPU.
+ * It does NOT compute valid Plinko hints: there is no PMNS tree, no backup
+ * hints, no iPRF inverse, and the benchmark driver supplies public block keys
+ * and fixed synthetic subsets (see docs/trust_model.md).
  *
  * Key derivation:
  * - Block keys are derived using SHA-256: prp_key = SHA256(block_key || "prp")
- * - This matches the production Rust implementation
  *
  * Optimizations:
- * 1. Batched ChaCha8 - one block produces data for multiple SwapOrNot rounds
+ * 1. Batched ChaCha12 - one block produces data for multiple SwapOrNot rounds
  * 2. Warp-level parallelism - 32 threads share block key loads via shuffle
  * 3. SHA-256 key derivation done once per block per warp, then broadcast
- * 4. Fast PRF Bit - eliminates dead code in ChaCha8 for the swap decision bit
- * 5. Vectorized Loads - uses 128-bit loads (ulong2) for database entries
- *
- * Uses ChaCha8 for PRP (ARX only - no memory lookups)
- * Uses SHA-256 for key derivation (ARX + bitwise ops)
+ * 4. Fast PRF Bit - eliminates dead code in ChaCha12 for the swap decision bit
+ * 5. Vectorized Loads - uses 128-bit loads (ulong2) for 48-byte aligned entries
  */
 
 #include <cstdint>
@@ -57,19 +58,14 @@ struct HintOutput {
 // ============================================================================
 
 /**
- * Compacts 40-byte entries into 32-byte dense arrays.
- * 
- * This enables:
- * 1. Perfect 128-bit alignment for reads (ulong2)
- * 2. 20% reduction in global memory traffic during hint generation
- * 3. Removal of padding/tag bytes that are unused for parity
+ * Expands 40-byte entries into 48-byte 16-byte-aligned arrays for ulong2 loads.
  */
 extern "C" __global__ void compact_entries_kernel(
     const uint8_t* __restrict__ raw_entries,
     uint8_t* __restrict__ packed_entries,
     uint64_t num_entries
 ) {
-    uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_entries) return;
 
     // Read 40 bytes (5x 64-bit words)
@@ -452,12 +448,12 @@ extern "C" __global__ void hint_gen_kernel_warp(
     uint32_t lane = threadIdx.x % WARP_SIZE;
 
     uint64_t parity[4] = {0, 0, 0, 0};
-    uint32_t subset_bytes = (params.set_size + 7) / 8;
+    uint64_t subset_bytes = (params.set_size + 7) / 8;
 
     // Process blocks - lane 0 loads key, broadcasts to warp
     for (uint64_t block_idx = 0; block_idx < params.set_size; block_idx++) {
         // Check subset membership (each thread checks its own hint)
-        uint32_t byte_idx = hint_idx * subset_bytes + (block_idx / 8);
+        uint64_t byte_idx = (uint64_t)hint_idx * subset_bytes + (block_idx / 8);
         uint8_t bit_mask = 1 << (block_idx % 8);
         bool in_subset = (hint_subsets[byte_idx] & bit_mask) != 0;
 
@@ -550,10 +546,10 @@ extern "C" __global__ void hint_gen_kernel(
     if (hint_idx >= params.total_hints) return;
 
     uint64_t parity[4] = {0, 0, 0, 0};
-    uint32_t subset_bytes = (params.set_size + 7) / 8;
+    uint64_t subset_bytes = (params.set_size + 7) / 8;
 
     for (uint64_t block_idx = 0; block_idx < params.set_size; block_idx++) {
-        uint32_t byte_idx = hint_idx * subset_bytes + (block_idx / 8);
+        uint64_t byte_idx = (uint64_t)hint_idx * subset_bytes + (block_idx / 8);
         uint8_t bit_mask = 1 << (block_idx % 8);
         if ((hint_subsets[byte_idx] & bit_mask) == 0) continue;
 
@@ -597,10 +593,10 @@ extern "C" __global__ void hint_gen_kernel_tiled(
     uint32_t lane = threadIdx.x % WARP_SIZE;
 
     uint64_t parity[4] = {0, 0, 0, 0};
-    uint32_t subset_bytes = (params.set_size + 7) / 8;
+    uint64_t subset_bytes = (params.set_size + 7) / 8;
 
     for (uint64_t block_idx = 0; block_idx < params.set_size; block_idx++) {
-        uint32_t byte_idx = hint_idx * subset_bytes + (block_idx / 8);
+        uint64_t byte_idx = (uint64_t)hint_idx * subset_bytes + (block_idx / 8);
         uint8_t bit_mask = 1 << (block_idx % 8);
         bool in_subset = (hint_subsets[byte_idx] & bit_mask) != 0;
 
@@ -673,10 +669,10 @@ extern "C" __global__ void hint_gen_kernel_opt(
     parity_vec[1] = make_ulong2(0, 0);
     parity_vec[2] = make_ulong2(0, 0);
     
-    uint32_t subset_bytes = (params.set_size + 7) / 8;
+    uint64_t subset_bytes = (params.set_size + 7) / 8;
 
     for (uint64_t block_idx = 0; block_idx < params.set_size; block_idx++) {
-        uint32_t byte_idx = hint_idx * subset_bytes + (block_idx / 8);
+        uint64_t byte_idx = (uint64_t)hint_idx * subset_bytes + (block_idx / 8);
         uint8_t bit_mask = 1 << (block_idx % 8);
         bool in_subset = (hint_subsets[byte_idx] & bit_mask) != 0;
 

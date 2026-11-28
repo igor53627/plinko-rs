@@ -6,9 +6,13 @@ Quick reference for running the GPU throughput benchmark on Modal Labs.
 >
 > - `bench_gpu_hints` is a throughput benchmark: public block keys, two fixed
 >   block subsets, no backup hints, no iPRF inverse (TASK-21,
->   [`trust_model.md`](trust_model.md#gpu-path)). "Production run" below means
->   the full hint count of that benchmark. The file from "Download Generated
->   Hints" holds raw 40-byte parities; no client code reads it.
+>   [`trust_model.md`](trust_model.md#gpu-path)). A "full-scale run" below means
+>   the full hint count of that benchmark. The file from "Download Benchmark
+>   Output" holds raw parities and no client code reads it: the archived run
+>   `20260123_174356` used 32-byte records (`1,073,741,824` bytes, ~1.07 GB for
+>   33,554,432 hints), whereas the current writer uses 40-byte records
+>   (`1,342,177,280` bytes, ~1.34 GB for 33,554,432 hints; `671,088,640` bytes,
+>   ~0.67 GB for the current 16,777,216 `default_block_size` count).
 > - The reports name ChaCha8 and ChaCha20. The kernel has `CHACHA_ROUNDS 12`
 >   since `c52c4f4` (2026-01-24) and no option for the round count
 >   (`plinko/cuda/hint_kernel.cu`). The revision of each run is not recorded,
@@ -35,7 +39,7 @@ unset MODAL_TOKEN_ID && unset MODAL_TOKEN_SECRET
 
 ### 2x H200 Quick Test (1% hints, full data)
 
-Fast benchmark to measure per-hint timing with production parameters.
+Fast benchmark to measure per-hint timing with mainnet-scale parameters.
 
 ```bash
 unset MODAL_TOKEN_ID && unset MODAL_TOKEN_SECRET && \
@@ -50,9 +54,9 @@ modal run scripts/modal_run_bench.py \
 **Expected time:** ~75-80 seconds per worker (ChaCha8)
 **Expected cost:** ~$0.20
 
-### 50x H200 Production Run (all hints)
+### 50x H200 Full-Scale Benchmark Run (all hints)
 
-Full production hint generation with all 33.5M hints.
+Full-scale benchmark run across 50 GPUs (writes raw benchmark parities, not Plinko hints).
 
 ```bash
 unset MODAL_TOKEN_ID && unset MODAL_TOKEN_SECRET && \
@@ -62,7 +66,7 @@ modal run scripts/modal_run_bench.py --generate --num-gpus 50
 **Expected time:** ~4.1 min GPU time, ~10 min wall clock (ChaCha8)
 **Expected cost:** ~$20
 
-### Download Generated Hints
+### Download Benchmark Output
 
 ```bash
 # List available runs
@@ -92,7 +96,7 @@ modal run scripts/modal_run_bench.py \
 # Re-run combine step only (if generation succeeded but combine failed)
 modal run scripts/modal_run_bench.py --combine-only --run-id <run_id> --num-gpus 50
 
-# Custom run ID for production
+# Custom run ID for a full-scale benchmark run
 modal run scripts/modal_run_bench.py --generate --num-gpus 50 --run-id my_custom_run
 ```
 
@@ -105,8 +109,8 @@ modal run scripts/modal_run_bench.py --generate --num-gpus 50 --run-id my_custom
 | `--replicate` | false | Replicate data to each worker |
 | `--data-pct` | 100.0 | Percentage of mainnet data |
 | `--hint-pct` | 1.0 | Percentage of hints to generate |
-| `--generate` | false | Production mode: save hints to volume |
-| `--num-gpus` | 50 | Number of GPUs for production run |
+| `--generate` | false | Output-save mode: save raw benchmark parities to volume (not Plinko hints) |
+| `--num-gpus` | 50 | Number of GPUs for full-scale benchmark run |
 | `--run-id` | auto | Custom run ID (auto-generated if empty) |
 | `--combine-only` | false | Only run combine step |
 
@@ -143,7 +147,7 @@ Results:
 1. *Compaction (40B -> 32B) & Alignment: ~1.37×*
 2. *Tighter Set Size (13,996 vs 16,404): ~1.17× (processing only active entries)*
 
-### ChaCha8 + SHA-256 (Archived old-layout production run)
+### ChaCha8 + SHA-256 (Archived old-layout full-scale benchmark run)
 
 #### 2x H200 (1% hints)
 
@@ -155,7 +159,7 @@ Configuration:
   GPUs:            2× H200
   Data:            100% mainnet (~73 GB disk, v3) replicated
   Hints:           1% = 335,544 (167,772 per GPU)
-  set_size:        16,404 (production)
+  set_size:        16,404 (archived old layout)
   Key derivation:  SHA-256(block_key || "prp")
   Cipher:          ChaCha8
 
@@ -166,11 +170,11 @@ Results:
 ============================================================
 ```
 
-#### 50x H200 (100% hints) - Run ID: 20260123_174356
+#### 50x H200 (100% benchmark hints) - Run ID: 20260123_174356
 
 ```text
 ============================================================
-RESULTS - 50× H200 Production Hint Generation (with SHA-256)
+RESULTS - 50× H200 Full-Scale Benchmark Run (with SHA-256)
 ============================================================
 Run ID:              20260123_174356
 
@@ -179,13 +183,13 @@ Database Parameters:
   Entry size:        40 bytes (disk)
   Database size:     ~73 GB
 
-Plinko Parameters:
+Benchmark Parameters (old 2*sqrt(N) geometry):
   λ (lambda):        128
   w (chunk size):    131,072
   c (set size):      16,404
   t (SwapOrNot):     759 rounds
   Cipher:            ChaCha8
-  Key derivation:    SHA-256 (matches production)
+  Key derivation:    SHA-256 (matches GPU kernel benchmark)
 
 Hint Parameters:
   Total hints:       33,554,432 (= 2 × λ × w)
@@ -226,7 +230,7 @@ Configuration:
   GPUs:            2× H200
   Data:            100% mainnet (~73 GB disk, v3) replicated
   Hints:           1% = 335,544 (167,772 per GPU)
-  set_size:        16,404 (production)
+  set_size:        16,404 (archived old layout)
   Key derivation:  SHA-256(block_key || "prp")
   Cipher:          ChaCha20
 
@@ -237,11 +241,11 @@ Results:
 ============================================================
 ```
 
-#### 50x H200 (100% hints) - Run ID: 20260123_221733
+#### 50x H200 (100% benchmark hints) - Run ID: 20260123_221733
 
 ```text
 ============================================================
-RESULTS - 50× H200 Production Hint Generation (ChaCha20)
+RESULTS - 50× H200 Full-Scale Benchmark Run (ChaCha20)
 ============================================================
 Run ID:              20260123_221733
 
@@ -250,7 +254,7 @@ Database Parameters:
   Entry size:        40 bytes (disk)
   Database size:     ~73 GB
 
-Plinko Parameters:
+Benchmark Parameters (old 2*sqrt(N) geometry):
   λ (lambda):        128
   w (chunk size):    131,072
   c (set size):      16,404
@@ -290,4 +294,4 @@ Cost Breakdown (H200 @ $0.001261/sec):
 | **ChaCha8** | 4,331 hints/sec | 4.1 min | 1.00× |
 | **ChaCha20** | 2,178 hints/sec | 7.6 min | 0.50× |
 
-**Recommendation:** Use Optimized ChaCha8 for production (40B compaction).
+**Note:** These results measure the synthetic GPU benchmark only (not Plinko hints). Use `plinko_hints` for Plinko HintInit (see [`docs/hint_generation.md`](hint_generation.md) and [`docs/trust_model.md`](trust_model.md)).

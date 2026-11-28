@@ -35,3 +35,6 @@ __pycache__/
 
 # Local roborev config (copy from ~/pse/roborev if needed)
 .roborev.toml
+
+# Backlog CLI lock directory
+backlog/.locks/

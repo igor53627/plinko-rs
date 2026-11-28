@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Unified `plinko::db::derive_plinko_params` and `cost_estimate` on `plinko::protocol::default_block_size` (and even `c >= 2`, matching `ProtocolParams::new`, `plinko_hints`, and the client) and removed the separate second geometry from `cost_estimate` (`TASK-21`).
+- Marked `plinko::gpu`, `bench_gpu_hints`, `plinko/cuda/hint_kernel.cu`, and `docs/gpu_benchmark_commands.md` consistently as a synthetic throughput benchmark (not Plinko hints), removing remaining "production run" labels (`TASK-21`).
+- Archived closed backlog tasks via `backlog cleanup` (`TASK-15`).
+
+### Fixed
+
+- Fixed 32-bit index overflow (`uint32_t` -> `uint64_t`) in `plinko/cuda/hint_kernel.cu` subset indexing across all four hint kernels and in `compact_entries_kernel` (`TASK-21`).
+- Fixed `PlinkoParams` (40 bytes) and `HintOutput` (48 bytes) size assertions and runnable doctest in `plinko/src/gpu.rs` (`TASK-21`).
+
 ## [0.4.0] - 2026-11-27
 
 Private key-value lookup over fixed-size records (`plinko::keyword`, `TASK-22`), implementing
